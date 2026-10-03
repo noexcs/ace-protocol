@@ -1,6 +1,5 @@
 {
   "$schema": "./packages/ace-runtime/schema/ace-config.schema.json",
-  "sender": "agent-a",
   "defaultActivation": "next_turn",
   "subscribe": [
     {

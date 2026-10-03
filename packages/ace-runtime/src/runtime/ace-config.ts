@@ -168,10 +168,7 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		}
 	}
 
-	if (sender !== undefined && publications) validateSender(sender, source);
-	if (publications && sender === undefined) {
-		throw new AceConfigError(`${source}: sender is required when publish is configured (peers identify you by it)`);
-	}
+	if (sender !== undefined) validateSender(sender, source);
 
 	return {
 		defaultActivation,
@@ -247,6 +244,11 @@ export function channelWarnings(config: AceConfigFile): string[] {
 	}
 
 	const warnings: string[] = [];
+	if (config.sender !== undefined) {
+		warnings.push(
+			`sender "${config.sender}" is unused: this session publishes as "<coding-agent>:<sessionId>" (the same value as its directory member)`,
+		);
+	}
 	for (const subscription of config.subscribe) {
 		if (subscription.enabled === false) continue;
 		if (subscription.activation !== undefined && subscription.activation !== "default") continue;

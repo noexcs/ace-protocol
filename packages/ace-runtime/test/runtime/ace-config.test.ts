@@ -91,7 +91,6 @@ describe("parseAceConfig", () => {
 			"activation on a publish channel",
 			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, activation: "immediate" }] },
 		],
-		["publish without a sender", { subscribe: [inbox], publish: [toB] }],
 		["an empty publish array", { sender: "agent-a", subscribe: [inbox], publish: [] }],
 		[
 			"a publish channel without a stream",
@@ -287,7 +286,19 @@ describe("resolveAceConfig", () => {
 		expect(resolved.subscribe[0]?.name).toBe("inbox");
 		expect(resolved.publish[0]?.name).toBe("to-b");
 		expect(resolved.disabled).toEqual([]);
-		expect(resolved.warnings).toEqual([]);
+		// A configured `sender` is unused now: the session publishes as its directory member.
+		expect(resolved.warnings.join("\n")).toContain('sender "agent-a" is unused');
+	});
+
+	it("accepts publish channels without a sender, which the identity no longer needs", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, { subscribe: [inbox], publish: [toB] });
+
+		const resolved = resolveAceConfig({ cwd, env: {} });
+
+		expect(resolved.publish[0]?.name).toBe("to-b");
+		expect(resolved.sender).toBeUndefined();
+		expect(resolved.warnings.join("\n")).not.toContain("is unused");
 	});
 
 	it("filters disabled channels out and reports them", () => {

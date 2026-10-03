@@ -9,7 +9,6 @@
  *
  * ```json
  * {
- *   "sender": "agent-a",
  *   "defaultActivation": "next_turn",
  *   "subscribe": [
  *     { "name": "inbox", "transport": "redis-streams", "description": "direct messages from peers",
@@ -77,6 +76,7 @@ import {
 	type Registration,
 	type RegistryEntry,
 	type ResolvedAceConfig,
+	registryMember,
 	resolveAceConfig,
 	resolveTarget,
 	validateAceMessage,
@@ -179,6 +179,7 @@ function describeEndpoint(endpoint: EndpointConfig): string {
 export function buildPublishToolText(
 	config?: ResolvedAceConfig,
 	sessionId?: string,
+	sender?: string,
 ): { description: string; promptGuidelines: string[] } {
 	const intro =
 		"Publish an ACE 0.1 event to a peer agent or service. The recipient's agent receives the body as an " +
@@ -197,8 +198,8 @@ export function buildPublishToolText(
 	const lines = [
 		intro,
 		"",
-		`You are "${config.sender ?? "(unknown sender)"}"${session}: events you publish are stamped ` +
-			`sender="<your sender>:<sessionId>" plus a short description of where you run.`,
+		`You are "${sender ?? "(unknown sender)"}"${session}: every event you publish carries that sender ` +
+			`and a short description of where you run.`,
 		"",
 		"Targets (pass the name as `target`; required, a list publishes to several):",
 		...(config.publish.length > 0 ? config.publish.map(describeEndpoint) : ["(none configured)"]),
@@ -279,6 +280,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.
+	/**
+	 * The identity this session publishes under: its directory member when it has one, otherwise the
+	 * same `<coding-agent>:<sessionId>` shape. A sender never needs to be registered to send, but when it
+	 * is, member and sender are the same value.
+	 */
+	function senderIdentity(): string {
+		return registration?.member ?? registryMember(codingAgentName(pi), sessionId ?? "(no session)");
+	}
+
 	/** Where a publish call goes: a configured channel, or a session the directory knows. */
 	type PublishTarget =
 		| { kind: "channel"; name: string; publisher: AcePublisher }
@@ -368,14 +378,12 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: "ace_publish",
 			label: "ACE Publish",
-			...buildPublishToolText(config, sessionId),
+			...buildPublishToolText(config, sessionId, senderIdentity()),
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {
-				const sender = resolvedConfig?.sender;
-				if (sender === undefined) {
-					throw new Error(`no sender configured; add "sender" to ${ACE_CONFIG_FILENAME}`);
-				}
+				// One identity everywhere: the same value as this session's directory member.
+				const sender = senderIdentity();
 				// The id is the runtime's: the caller reads it back from the result instead of choosing it.
 				// The sender reads like a directory member (`<sender>:<sessionId>`) and carries a
 				// self-description, so a receiver can show who and where it is without any lookup: the
@@ -383,7 +391,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				const message = validateAceMessage({
 					aceVersion: "0.1",
 					id: `evt_${randomUUID()}`,
-					sender: sessionId === undefined ? sender : `${sender}:${sessionId}`,
+					sender,
 					...(sessionId === undefined ? {} : { sessionId }),
 					senderDescription: describeSender(
 						hostFacts({
@@ -565,7 +573,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			await runtime.start();
 			resolvedConfig = resolved;
 			pi.registerTool(publishTool(resolved));
-			const identity = `${resolved.sender ?? "(no sender)"} session ${formatSessionLabel(sessionId)}`;
+			const identity = senderIdentity();
 			const publishing =
 				resolved.publish.length > 0 ? `; publish ${resolved.publish.map(describeEndpoint).join(", ")}` : "";
 			const disabled = resolved.disabled.length > 0 ? ` [disabled: ${resolved.disabled.join(", ")}]` : "";
@@ -681,7 +689,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			const state = adapter.isRunning() ? "running" : "idle";
 			const subscribe = resolvedConfig?.subscribe.map((endpoint) => endpoint.name).join(", ") ?? "?";
 			const publish = resolvedConfig?.publish.map((endpoint) => endpoint.name).join(", ") ?? "none";
-			const identity = resolvedConfig?.sender ?? "(no sender)";
+			const identity = senderIdentity();
 			report(
 				ctx,
 				`[ace] ${identity}${sessionId ? ` session ${formatSessionLabel(sessionId)}` : ""} (${resolvedConfig?.source ?? "started"}), ` +

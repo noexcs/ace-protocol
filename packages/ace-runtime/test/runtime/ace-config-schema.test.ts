@@ -107,7 +107,6 @@ describe("ACE runtime configuration JSON Schema", () => {
 			"activation on a publish channel",
 			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, activation: "immediate" }] },
 		],
-		["publish without a sender", { subscribe: [inbox], publish: [toB] }],
 		["an empty publish array", { sender: "agent-a", subscribe: [inbox], publish: [] }],
 		[
 			"a publish channel without a stream",

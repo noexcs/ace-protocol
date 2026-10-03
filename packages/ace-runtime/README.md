@@ -91,7 +91,6 @@ session you are chatting in — no separate runtime process, no second session.
 cat > .ace.json <<'JSON'
 {
   "$schema": "/path/to/ace-runtime/schema/ace-config.schema.json",
-  "sender": "agent-a",
   "defaultActivation": "next_turn",
   "subscribe": [
     {
@@ -125,7 +124,7 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 
 | Field | Meaning |
 |---|---|
-| `sender` | Sender identifier this session publishes under (RFC §5.3); required once `publish` channels exist. Charset `[A-Za-z0-9._@:-]`, max 128 |
+| `sender` | **Deprecated, unused**: a session publishes as `<coding-agent>:<sessionId>` (its directory member). Accepted so old files keep loading; a warning is reported when present |
 | `defaultActivation` | `immediate` \| `next_turn` \| `manual`; the RFC §8 fallback when neither subscription nor message decides |
 | `subscribe[]` | Channels this agent receives events from; `name` is the key its transport is registered under |
 | `publish[]` | Channels the `ace_publish` tool may send to; `name` is the target the model passes |
@@ -207,10 +206,12 @@ agent A                                    agent B
   .ace.json                                  .ace.json
   subscribe: from-b = ace:to-a                subscribe: from-a = ace:to-b
   publish:   to-b   = ace:to-b                publish:   to-a   = ace:to-a
-  sender:    agent-a                          sender:    agent-b
        │  ace_publish ──► ace:to-b ──────────────►  injected into B's conversation
        │  ◄────────────── ace:to-a ◄──── ace_publish (B replies)
 ```
+
+Each side's events carry the sender `<coding-agent>:<sessionId>` (the same value as its directory member),
+so B sees whether a message came from A's current session without any lookup.
 
 `ace_publish` takes `body` (the event text the peer's agent reads) and `target` — a configured name, a
 directory member (or a prefix matching exactly one live session), or a list of either, to publish one

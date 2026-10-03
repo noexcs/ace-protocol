@@ -21,7 +21,7 @@
 | 地址 | 永不进消息：地址只存在于 `.ace.json` 与注册表（RFC §4.1） |
 | `id` | 只在 `(sender, id)` 组合下标识一条消息（RFC §5.2） |
 | `senderDescription` | 可选字段（本实现定义，长度 1..512、禁控制字符）：发送方自述"我在哪"（agent/session/cwd/host/ip/platform/pid）。**仅供显示，永不作为授权** |
-| `sender` 的形状 | 协议不规定；本实现的发布端写 `<配置的 sender>:<完整 sessionId>`（member 形状），接收端**原样显示、不查目录** |
+| `sender` 的形状 | 协议不规定；本实现写 `<coding-agent>:<完整 sessionId>`——**和目录 member 是同一个值**。接收端原样显示、不查目录 |
 
 ---
 
@@ -33,7 +33,7 @@
 
 | 键 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `sender` | string | 配了 `publish` 时必填 | 发布时盖章的身份**前缀**；实际写入消息的 `sender` 是 `<sender>:<完整 sessionId>`（见 §4.1）。字符集 `[A-Za-z0-9._@:-]{1,128}` |
+| `sender` | string | 否（**已退役**） | 不再参与身份：发送方身份是 `<coding-agent>:<sessionId>`，与目录 member 相同。保留该键只为老文件仍能加载；存在时给一条 warning |
 | `defaultActivation` | enum | 否 | `immediate` \| `next_turn` \| `manual`，缺省 `next_turn` |
 | `subscribe` | 数组（非空） | **是** | 接收通道；名字在数组内唯一 |
 | `publish` | 数组（非空） | 否 | 发送目标；名字在数组内唯一 |
@@ -169,7 +169,7 @@
 
 **发送不需要注册**：发布端自己构造身份与自述，接收端直接显示，不查目录。
 
-- `sender` = `<配置的 sender>:<完整 sessionId>`（member 形状，便于与 `ace_agents` 的成员行对上）；
+- `sender` = **`<coding-agent>:<完整 sessionId>`**，与这条会话在目录里的 member 完全同值（有注册时直接用 member，没注册时用同一形状）；
 - `senderDescription` = `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`（来自 `hostFacts`，发送时构造）；
 - 接收方的 `allowedSenders` 匹配的是这个 member 形状的值，所以老配置里的 `agent-a` 要写成 `agent-a:*`。
 
@@ -375,5 +375,4 @@ npm run replay:dead-letters [--dry-run] [--url URL] [--dir DIR] [file…]
 | Backlog / 重放 | 部分做：死信有重放命令（§6.10）；事件流本身仍无 backlog（消费组从队尾起） |
 | 其他传输 | 未做：仅 `redis-streams`（+测试用 in-memory） |
 
-| 目录成员 vs 消息 `sender` 的前缀 | **不一致，待定**：目录 member 用 coding agent（`oh-my-pi:<sessionId>`），消息 `sender` 用配置里的 `sender`（`agent-a:<sessionId>`）。同一个会话在目录里和消息里前缀不同，按 sessionId 仍可对上，但两套命名未统一 |
-| 目录中的 ACE `sender` | 未收录：member 用 coding agent + session，ACE 身份的 `sender` 不在目录条目里 |
+| 身份命名 | 已统一：目录 member 与消息 `sender` **都是 `<coding-agent>:<sessionId>`**。未注册的发送方用同一形状，只是目录里没有它的条目 |

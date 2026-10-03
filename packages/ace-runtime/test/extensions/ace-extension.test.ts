@@ -37,9 +37,13 @@ const config: ResolvedAceConfig = {
 
 describe("ace_publish tool text", () => {
 	it("names this agent, its session, its targets and its subscribed channels", () => {
-		const { description } = buildPublishToolText(config, "01a102b8-f016-75ab-87eb-63551c257fda");
+		const { description } = buildPublishToolText(
+			config,
+			"01a102b8-f016-75ab-87eb-63551c257fda",
+			"oh-my-pi:01a102b8-f016-75ab-87eb-63551c257fda",
+		);
 
-		expect(description).toContain('You are "agent-a", session 257fda');
+		expect(description).toContain('You are "oh-my-pi:01a102b8-f016-75ab-87eb-63551c257fda", session 257fda');
 		expect(description).toContain('"to-b" (agent-b) → redis-streams ace:in.b');
 		expect(description).toContain('"all" (every agent) → redis-streams ace:topic');
 		expect(description).toContain('"inbox" (direct messages from peers) → redis-streams ace:in.a');
@@ -83,11 +87,11 @@ describe("ace_publish tool text", () => {
 		expect(description).toContain('"bus" (the pipeline) → kafka ace.events');
 	});
 
-	it("says how events are stamped, with and without a session", () => {
-		expect(buildPublishToolText(config).description).toContain('You are "agent-a": events you publish are stamped');
-		expect(buildPublishToolText(config, "01a102b8-f016-75ab-87eb-63551c257fda").description).toContain(
-			'You are "agent-a", session 257fda:',
+	it("names the identity events are stamped with, and admits when it is not known yet", () => {
+		expect(buildPublishToolText(config, undefined, "oh-my-pi:abc").description).toContain(
+			'You are "oh-my-pi:abc": every event you publish carries that sender',
 		);
+		expect(buildPublishToolText(config).description).toContain('You are "(unknown sender)"');
 	});
 });
 

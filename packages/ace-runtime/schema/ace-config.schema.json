@@ -11,7 +11,7 @@
 		"sender": {
 			"type": "string",
 			"pattern": "^[A-Za-z0-9._@:-]{1,128}$",
-			"description": "Sender identifier this session publishes under (RFC §5.3); required once publish channels exist."
+			"description": "Deprecated and unused: a session publishes as \"<coding-agent>:<sessionId>\", which is also its directory member. Accepted so existing files keep loading; a warning is reported when present."
 		},
 		"defaultActivation": {
 			"type": "string",
@@ -96,20 +96,6 @@
 			"additionalProperties": false
 		}
 	},
-	"allOf": [
-		{
-			"if": {
-				"required": [
-					"publish"
-				]
-			},
-			"then": {
-				"required": [
-					"sender"
-				]
-			}
-		}
-	],
 	"additionalProperties": false,
 	"$defs": {
 		"channel": {
