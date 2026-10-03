@@ -4,15 +4,15 @@ import type { AceMessage, ConcreteActivation } from "../protocol/ace-message.ts"
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.ts";
 import type { Transport } from "../transport/transport.ts";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.ts";
-import {
-	AceConfigError,
-	type EndpointConfig,
-	endpointAddress,
-	senderAllowed,
-	validateEndpointConfig,
-} from "./endpoint-config.ts";
+import { AceConfigError, type EndpointConfig, endpointAddress, validateEndpointConfig } from "./endpoint-config.ts";
 import { type DispatchResult, EventDispatcher } from "./event-dispatcher.ts";
-import { EventSpool, type EventSpoolOptions, type SpooledBatch } from "./event-spool.ts";
+import {
+	DEFAULT_SPOOL_RULE,
+	EventSpool,
+	type EventSpoolOptions,
+	type SpooledBatch,
+	type SpoolRule,
+} from "./event-spool.ts";
 import { AceMetrics } from "./metrics.ts";
 import { PendingEventStore } from "./pending-event-store.ts";
 import { SeenMessageIds } from "./seen-message-ids.ts";
@@ -36,8 +36,8 @@ export interface AceRuntimeOptions {
 	dedupCapacity?: number;
 	/** Retention limits for `manual` events. */
 	manual?: { max?: number; ttlMs?: number };
-	/** Burst handling: where spool files go. Thresholds come from each subscription's config. */
-	spool?: Omit<EventSpoolOptions, "onBatch" | "onError" | "logger" | "rules">;
+	/** Burst handling: where spool files go. Thresholds are built in (`DEFAULT_SPOOL_RULE`) unless overridden here. */
+	spool?: Omit<EventSpoolOptions, "onBatch" | "onError" | "logger" | "rules"> & { rule?: SpoolRule };
 	/** Injectable clock for retention windows and spool windows; defaults to `Date.now`. */
 	now?: () => number;
 }
@@ -105,17 +105,20 @@ export class AceRuntime {
 		this.metrics = options.metrics ?? new AceMetrics();
 		this.dedupCapacity = options.dedupCapacity ?? 1024;
 		this.now = options.now ?? (() => Date.now());
-		this.spool = options.spool
-			? new EventSpool({
-					now: this.now,
-					...options.spool,
-					rules: (subscriptionName) => this.subscribe.find((entry) => entry.name === subscriptionName)?.spool,
-					onBatch: (batch) => this.summarizeBatch(batch),
-					logger: this.logger,
-					onError: (error) =>
-						this.logger.error?.(`[ACE] spool error: ${error instanceof Error ? error.message : String(error)}`),
-				})
-			: undefined;
+		if (options.spool) {
+			const { rule, ...spoolOptions } = options.spool;
+			this.spool = new EventSpool({
+				...spoolOptions,
+				now: this.now,
+				rules: () => rule ?? DEFAULT_SPOOL_RULE,
+				onBatch: (batch) => this.summarizeBatch(batch),
+				logger: this.logger,
+				onError: (error) =>
+					this.logger.error?.(`[ACE] spool error: ${error instanceof Error ? error.message : String(error)}`),
+			});
+		} else {
+			this.spool = undefined;
+		}
 
 		this.pendingEventStore = new PendingEventStore({
 			now: this.now,
@@ -163,8 +166,7 @@ export class AceRuntime {
 	}
 
 	/**
-	 * Full ACE path for one raw message: validate → sender policy → dedup → activation → burst
-	 * policy → dispatch.
+	 * Full ACE path for one raw message: validate → dedup → activation → burst policy → dispatch.
 	 *
 	 * Throws {@link AceValidationError} for non-conforming messages. The transport-facing path
 	 * ({@link start}) logs and drops those instead, and lets other errors propagate so the transport
@@ -182,12 +184,6 @@ export class AceRuntime {
 		}
 
 		const activation = resolveActivation(message, subscription, this.defaultActivation);
-
-		if (!senderAllowed(subscription, message.sender)) {
-			this.metrics.increment(subscription.name, "senderRejected");
-			this.logger.warn?.(`[ACE] refused id=${message.id} sender=${message.sender} subscribe=${subscription.name}`);
-			return { activation, disposition: "dropped", subscriptionName: subscription.name };
-		}
 
 		const seen = this.seenFor(subscription.name);
 		if (seen.has(message.sender, message.id)) {

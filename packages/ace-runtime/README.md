@@ -38,7 +38,7 @@ holds a `.ace.json` starts ACE.
 
 ```bash
 # 1. released tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.5/ace-runtime-0.1.5.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -67,10 +67,10 @@ or skip the plugin system and link the entry into the host's extension directory
 to, so keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
-mkdir -p ~/ace-runtime-0.1.4 ~/.omp/agent/extensions
-tar xzf ace-runtime-0.1.4.tgz -C ~/ace-runtime-0.1.4 --strip-components=1
-cd ~/ace-runtime-0.1.4 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.5/ace-runtime-0.1.5.tgz
+mkdir -p ~/ace-runtime-0.1.5 ~/.omp/agent/extensions
+tar xzf ace-runtime-0.1.5.tgz -C ~/ace-runtime-0.1.5 --strip-components=1
+cd ~/ace-runtime-0.1.5 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -93,7 +93,7 @@ sudo apt update && sudo apt install -y redis-server && sudo service redis-server
 redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.5/ace-runtime-0.1.5.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
   "subscribe": [ { "name": "inbox", "transport": "redis-streams",
@@ -269,9 +269,6 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 | `subscribe[].activation` | Receiver override for this channel (RFC §8); `default` delegates to the message. Not allowed on `publish` |
 | `*.description` | Who sits on the other end; shown to the model in the `ace_publish` description |
 | `*.enabled` | `false` keeps the channel configured but starts nothing for it (default `true`) |
-| `subscribe[].allowedSenders` | Glob patterns (`*`, `?`) of accepted senders (RFC §18); absent means any sender, an empty list is an error |
-| `subscribe[].spool` | Spill bursts to a file beyond these thresholds: `{ afterEvents, windowMs }`, both ≥ 1 |
-| `spool` | Where burst files go (`{ dir, retentionMs?, maxFiles? }`); defaults to `<cwd>/.ace/spool` when a subscription sets thresholds |
 | `manual` | Retention for `manual` events (`{ max?, ttlMs? }`, defaults 100 events / 24h) |
 | `registry` | Agent directory this session publishes itself to (`{ url, prefix? }`); absent means no registration (RFC §22 item 1) |
 | `*.config` | Transport settings, validated against the kind; unknown keys are errors |
@@ -282,19 +279,21 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 groups. `ACE_CONFIG` selects a different config file path; runtime lines always go to stderr, and the UI status
 slot holds the channel topology.
 
+Two things that used to be configuration are deliberately built in and absent from the file: burst spooling
+(`<cwd>/.ace/spool`, 20 events per one-second window) and the inbound filter — nothing drops an event because of
+its `sender`; the user's trust decision in the conversation is what gates action.
+
 Secrets stay out of the file: `${VAR}` in any string is resolved from the environment when the file is read
 (`"url": "redis://:${REDIS_PASSWORD}@broker:6379"`), `$$` writes a literal `${`, and an unset variable fails the
 load instead of silently becoming an empty string.
 
-### Bursts, allowlists, redelivery
+### Bursts and redelivery
 
-Three per-subscription policies keep a busy channel from flooding a conversation:
+Two built-in policies keep a busy channel from flooding a conversation; neither is configuration.
 
-- **Allowlist** — `allowedSenders: ["ci:*", "agent-*"]`: only matching senders are injected, everything else is
-  dropped and acknowledged before it reaches the agent.
-- **Burst spooling** — `spool: { afterEvents, windowMs }`: the first `afterEvents` events of a window are injected
-  normally, the rest are appended to a JSONL file under `spool.dir`, and the agent gets **one** summary event naming
-  the file, the senders and the window. 200 CI failures cost one turn instead of 200.
+- **Burst spooling** — beyond 20 events inside a one-second window, the rest are appended to a JSONL file under
+  `<cwd>/.ace/spool`, and the agent gets **one** summary event naming the file, the senders and the window. 200 CI
+  failures cost one turn instead of 200.
 - **Redelivery** — `reclaimIdleMs` / `reclaimAttempts`: an event whose handler failed stays in the group's pending
   list, is claimed back after `reclaimIdleMs`, and is retried up to `reclaimAttempts` deliveries before the runtime
   reports and acknowledges it rather than retrying forever.
@@ -304,7 +303,7 @@ are remembered** — a redelivery after a failure is retried, never mistaken for
 
 When an entry is dropped after `reclaimAttempts`, the transport hands its last copy to the dead-letter sink first:
 one JSONL line per event (raw payload, broker id, attempts, reason) in `dead-letter.<timestamp>.jsonl`, in the same
-directory as the burst files and with the same retention (`retentionMs` / `maxFiles`). The entry is acknowledged
+directory as the burst files and with the same built-in retention (24h / 50 files). The entry is acknowledged
 **only once that line is fsynced**; a sink that cannot write leaves the entry pending — visible in the group's PEL —
 and reports the write error once. No summary event is injected: the agent already failed to receive it
 `reclaimAttempts` times, so feeding it back would loop. `/ace` and `/ace stats` count what was recorded, and
@@ -315,7 +314,7 @@ and reports the write error once. No summary event is injected: the agent alread
 autocomplete it after adding a `$schema` line (a local path inside the installed package works equally):
 
 ```json
-{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.4/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
+{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.5/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
 ```
 
 The schema covers structure, types, per-kind required keys, and "publish needs a sender". Two rules are semantic and
@@ -377,6 +376,8 @@ With `registry` configured, every session publishes itself so peers can find it 
   the stream, and whichever session reads the directory next sweeps the leftovers of the ones that
   died without one (measured: `SIGTERM` does not run `session_shutdown`, so the read path is what
   keeps the directory clean);
+- `ace_channels` lists this session's subscription and publication channels — read-only, straight from
+  `.ace.json`, without broker settings; a `publish` name is a valid `ace_publish` target, a `subscribe` name is not;
 - `ace_agents` lists what is live right now; `ace_publish` accepts a member — or a prefix matching
   **exactly one** session — as `target`, and a list of targets to publish one event to several peers
   at once. An ambiguous prefix fails and names the candidates instead of guessing;
@@ -503,7 +504,7 @@ client, and the transport, so the test suite drives a fake client.
 | `src/logger.ts` | log lines that never carry a message body |
 | `extensions/` | `ace.ts`: Pi extension that injects events into the session it runs in |
 | `test/` | protocol, runtime, adapter and transport unit tests, plus real-Pi-session integration tests |
-| `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real broker (reclaim, dedup, allowlist, spool, manual) |
+| `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real broker (reclaim, dedup, open inbound, burst spooling, manual, shutdown order) |
 | `scripts/verify-omp.ts` | `npm run verify:omp`: the extension inside a real `omp --mode rpc` session (event reaches the conversation, turn settles, entry acknowledged) |
 | `schema/` | normative ACE 0.1 JSON Schema |
 

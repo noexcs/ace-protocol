@@ -100,20 +100,6 @@ describe("parseAceConfig", () => {
 		["a sender with a newline", { sender: "agent\na", subscribe: [inbox], publish: [toB] }],
 		["an over-long sender", { sender: "a".repeat(129), subscribe: [inbox], publish: [toB] }],
 		["a duplicated subscribe name", { subscribe: [inbox, inbox] }],
-		[
-			"allowedSenders on a publish channel",
-			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, allowedSenders: ["ci"] }] },
-		],
-		["a non-array allowedSenders", { subscribe: [{ ...inbox, allowedSenders: "ci" }] }],
-		["an empty allowedSenders pattern", { subscribe: [{ ...inbox, allowedSenders: [""] }] }],
-		[
-			"spool on a publish channel",
-			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, spool: { afterEvents: 1, windowMs: 10 } }] },
-		],
-		["spool without windowMs", { subscribe: [{ ...inbox, spool: { afterEvents: 1 } }] }],
-		["spool with a zero threshold", { subscribe: [{ ...inbox, spool: { afterEvents: 0, windowMs: 10 } }] }],
-		["an unknown spool key", { subscribe: [{ ...inbox, spool: { afterEvents: 1, windowMs: 10, dir: "/tmp" } }] }],
-		["file-level spool without a dir", { subscribe: [inbox], spool: { retentionMs: 10 } }],
 		["a zero manual limit", { subscribe: [inbox], manual: { max: 0 } }],
 		["an unknown manual key", { subscribe: [inbox], manual: { ttl: 10 } }],
 		["a duplicated publish name", { sender: "agent-a", subscribe: [inbox], publish: [toB, toB] }],
@@ -121,20 +107,10 @@ describe("parseAceConfig", () => {
 		expect(() => parseAceConfig(document, ".ace.json")).toThrow(AceConfigError);
 	});
 
-	it("accepts allowedSenders, spool thresholds and file-level limits", () => {
-		const parsed = parseAceConfig(
-			{
-				subscribe: [{ ...inbox, allowedSenders: ["ci.*"], spool: { afterEvents: 5, windowMs: 2000 } }],
-				manual: { max: 10, ttlMs: 1000 },
-				spool: { dir: "/tmp/ace", retentionMs: 1000, maxFiles: 3 },
-			},
-			".ace.json",
-		);
+	it("accepts manual retention limits", () => {
+		const parsed = parseAceConfig({ subscribe: [inbox], manual: { max: 10, ttlMs: 1000 } }, ".ace.json");
 
-		expect(parsed.subscribe[0]?.allowedSenders).toEqual(["ci.*"]);
-		expect(parsed.subscribe[0]?.spool).toEqual({ afterEvents: 5, windowMs: 2000 });
 		expect(parsed.manual).toEqual({ max: 10, ttlMs: 1000 });
-		expect(parsed.spool).toEqual({ dir: "/tmp/ace", retentionMs: 1000, maxFiles: 3 });
 	});
 
 	it("accepts a sender without publish channels", () => {
@@ -173,16 +149,6 @@ describe("channelWarnings", () => {
 		expect(
 			channelWarnings({ subscribe: [inbox, { ...inbox, name: "b", config: { stream: "ace:in.b", group: "g" } }] }),
 		).toEqual([]);
-	});
-
-	it("warns when a subscription does not pin activation", () => {
-		const warnings = channelWarnings({ subscribe: [{ ...inbox, activation: undefined }] });
-
-		expect(warnings.some((warning) => warning.includes("does not pin activation"))).toBe(true);
-	});
-
-	it("leaves a disabled subscription alone", () => {
-		expect(channelWarnings({ subscribe: [{ ...inbox, activation: undefined, enabled: false }] })).toEqual([]);
 	});
 });
 

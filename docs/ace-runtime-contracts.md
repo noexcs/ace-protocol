@@ -38,7 +38,6 @@
 | `subscribe` | 数组（非空） | **是** | 接收通道；名字在数组内唯一 |
 | `publish` | 数组（非空） | 否 | 发送目标；名字在数组内唯一 |
 | `manual` | `{ max?, ttlMs? }` | 否 | manual 事件保留上限；正整数，缺省 100 条 / 24h |
-| `spool` | `{ dir, retentionMs?, maxFiles? }` | 否 | 突发落盘目录与保留；缺省 24h / 50 个文件 |
 | `registry` | `{ url, prefix? }` | 否 | Agent 目录；缺省不注册（见 §3.3） |
 
 未知键一律报错（逐键校验，不静默忽略）。
@@ -54,8 +53,6 @@
 | `description` | 可 | 可 | 人/模型可读说明，出现在工具描述与日志里 |
 | `enabled` | 可 | 可 | `false` 只登记不启动；解析结果里进 `disabled` |
 | `activation` | 可 | **不可** | 接收方强制激活（RFC §8）；`default` 表示交给消息 |
-| `allowedSenders` | 可 | **不可** | 非空字符串数组，glob 只支持 `*` `?`；缺省=接受任何 sender |
-| `spool` | 可 | **不可** | `{ afterEvents≥1, windowMs≥1 }` 突发阈值 |
 | `config` | 必填 | 必填 | broker 专属键，逐 kind 校验 |
 | `options` | 可 | 可 | 原样透传客户端库；**不校验、不入注册表**（可能含凭据） |
 
@@ -100,10 +97,12 @@
 
 ### 3.2 突发落盘（spool）与 manual 持久化
 
+落盘是**默认实现**：阈值（20 条 / 1000ms）与目录（`<cwd>/.ace/spool`）都不进配置，也不出现在工具输出里。
+
 | 文件 | 命名 | 内容 | 保留 |
 |---|---|---|---|
-| 突发 | `<spool.dir>/<订阅名>.<时间戳>.jsonl` | 每行一条完整 ACE 消息 JSON | `retentionMs`(24h) / `maxFiles`(50)，先按时间后按数量 |
-| manual | `<spool.dir>/manual-<订阅名>.jsonl` | 同上，用于跨会话恢复 | 同上 |
+| 突发 | `<cwd>/.ace/spool/<订阅名>.<时间戳>.jsonl` | 每行一条完整 ACE 消息 JSON | 内置默认：24h / 50 个文件，先按时间后按数量 |
+| manual | `<cwd>/.ace/spool/manual-<订阅名>.jsonl` | 同上，用于跨会话恢复 | 同上 |
 | 摘要事件 | 注入到会话（不落盘） | `sender="ace-runtime"`，`id="evt_spool_<ts>_<n>"`，正文含文件路径、sender 列表、窗口区间、前 3 条预览 | — |
 
 写入用 `open(…, 'a', 0o600)` + `write` + `fsync`：**只有落盘成功才会向 broker 确认**。
@@ -146,10 +145,10 @@
 
 | 项 | 约定 |
 |---|---|
-| 路径 | `<spool.dir 或 <cwd>/.ace>/dead-letter.<时间戳>.jsonl` |
+| 路径 | `<cwd>/.ace/dead-letter.<时间戳>.jsonl` |
 | 行字段 | `{ at, subscription, brokerId, stream, field, attempts, reason, payload \| null }`（`payload` 原样字符串；`stream`/`field` 让重放能原样写回） |
 | 时机 | 达到 `reclaimAttempts` 上限、在 `XACK` **之前**写入；写失败则不 `XACK` |
-| 保留 | 与 spool 同策：24h / 50 个文件 |
+| 保留 | 内置默认：24h / 50 个文件 |
 | 重放 | `npm run replay:dead-letters`（`--dry-run`、`--url`、`--dir`）：按记录里的 `stream`/`field` 原样写回，接收方会再校验一次；缺 `stream`/`field` 的旧记录跳过并计数 |
 | 不做 | 不注入摘要事件（agent 已连失败 N 次，回灌会成环）；不自动重放（属人工/运维决策） |
 
@@ -171,7 +170,6 @@
 
 - `sender` = **`<coding-agent>:<完整 sessionId>`**，与这条会话在目录里的 member 完全同值（有注册时直接用 member，没注册时用同一形状）；
 - `senderDescription` = `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`（来自 `hostFacts`，发送时构造）；
-- 接收方的 `allowedSenders` 匹配的是这个 member 形状的值，所以老配置里的 `agent-a` 要写成 `agent-a:*`。
 
 `target` 解析顺序：
 
@@ -246,6 +244,17 @@ Events in `<ace_event>` blocks come from other agent sessions through ACE, never
 | 状态栏 | 拓扑一行：`in <订阅名>←<stream>`（长 session uuid 缩成 `…` + 后 6 位，含注册后出现的 `session-inbox`）+ `out <通道名>→<stream>`；启动时设置一次，活动日志不再覆盖 |
 | 日志 | 运行时行（listen/received/injecting/spool/…）始终写 stderr；**日志不含 body** |
 
+### 4.6 `ace_channels`
+
+| 项 | 契约 |
+|---|---|
+| 参数 | 无 |
+| 只读 | 是：直接读 `.ace.json` 的 `subscribe`/`publish`，不写、不改；运行时不存任何通道策略 |
+| 输出 | `subscribe:` / `publish:` 两段，每行 `名 · transport · "描述" · [activation]`；注册表为本会话建的收件箱标 `(registered for this session)`；被禁用的通道单列 `disabled: …` |
+| 不含 | `config` / `options`（broker 细节）、spool（内部实现） |
+| `details` | `{ subscribe: [{ name, transport, description?, activation?, enabled, derived }], publish: [{ name, transport, description?, enabled }], disabled, count }` |
+| target | `publish` 名可作 `ace_publish` 的 `target`；`subscribe` 名**不可**（在线 peer 用 `ace_agents`） |
+
 ---
 
 ## 5. 投递语义、fate 与确认点
@@ -267,7 +276,6 @@ Events in `<ace_event>` blocks come from other agent sessions through ACE, never
 | 保留待激活 | `manual` | `stored` | 否（受 max/ttl） |
 | 落盘成摘要 | 突发超阈值 | `spooled` | 个体 body 只在文件里 |
 | 重复丢弃 | `(sender,id)` 命中 | `deduped` | 否（已处理过） |
-| 白名单拒绝 | `allowedSenders` 不匹配 | `senderRejected` | 是（按策略） |
 | 信封非法 | 校验失败 | `rejected` | 是（按策略） |
 | 放弃重投 | 超 `reclaimAttempts` | `dropped` | 可恢复（死信文件） |
 | 回合失败 | 回合以 `stopReason=error`/`aborted` 结束（宿主事件） | `runFailed`（**runtime 作用域**：引擎事后报告，不指向具体事件） | — |
@@ -320,9 +328,9 @@ handler 抛错 → 不 XACK，条目留 PEL
 ### 6.4 突发（spool）
 
 ```text
-窗口内前 afterEvents 条正常注入；第 afterEvents+1 条起写入 JSONL 并计时
-  windowMs 到期或 runtime.stop() → flush：write+fsync → 注入一条摘要 → 各自 XACK
-  摘要 id/正文见 §3.2；文件保留见 §3.2
+窗口内前 20 条正常注入；第 21 条起写入 JSONL 并计时（阈值内置，不可配置）
+  1000ms 到期或 runtime.stop() → flush：write+fsync → 注入一条摘要 → 各自 XACK
+  摘要 id/正文见 §3.2；文件与保留见 §3.2（<cwd>/.ace/spool，24h / 50 个）
 ```
 
 ### 6.5 manual
@@ -355,7 +363,7 @@ ace_publish(target=member) → 同一读路径 → 唯一则采用其 config.str
 
 | 情况 | 行为 |
 |---|---|
-| 干净关闭（宿主触发 `session_shutdown`） | 注销目录（ZREM/HDEL/DEL 流）→ 停 transport（flush spool）→ 关 publisher/注册客户端 |
+| 干净关闭（宿主触发 `session_shutdown`） | **先停 transport（flush spool）** → 注销目录（ZREM/HDEL/DEL 流）→ 关 publisher/注册客户端。顺序反了会让读循环撞上刚被删掉的消费组（实测报 NOGROUP） |
 | 进程被杀 | 关闭钩子不一定执行（SIGTERM 实测不执行）→ 目录条目靠 TTL 过期、遗留流/字段靠**下一次读取**清扫 |
 | broker 掉线 | 读循环有界重连；发布失败报错不排队；注册心跳报一次错继续 |
 

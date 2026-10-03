@@ -55,8 +55,6 @@ export interface AceConfigFile {
 	publish?: EndpointConfig[];
 	/** Retention limits for `manual` events (defaults: 100 events, 24h). */
 	manual?: { max?: number; ttlMs?: number };
-	/** Where burst files go; the thresholds themselves live on each subscription. */
-	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
 	/** Agent directory this session publishes itself to (RFC §22 item 1). Absent: no registration. */
 	registry?: { url: string; prefix?: string };
 }
@@ -82,8 +80,6 @@ export interface ResolvedAceConfig {
 	warnings: string[];
 	/** Retention limits for `manual` events, resolved from the file. */
 	manual: { max?: number; ttlMs?: number };
-	/** Burst spool directory and retention, when configured. */
-	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
 	/** Agent directory to register in, when configured. */
 	registry?: { url: string; prefix?: string };
 	source: string;
@@ -111,26 +107,6 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 	const publications = value.publish === undefined ? undefined : parseEndpoints(value.publish, source, "publish");
 	if (publications) {
 		for (const publication of publications) validatePublicationSettings(publication);
-	}
-
-	if (value.spool !== undefined) {
-		if (!isPlainObject(value.spool)) {
-			throw new AceConfigError(`${source}: spool must be an object, received ${describeValue(value.spool)}`);
-		}
-		rejectUnknownKeys(value.spool, ["dir", "retentionMs", "maxFiles"], `${source}: spool`);
-		if (typeof value.spool.dir !== "string" || value.spool.dir.length === 0) {
-			throw new AceConfigError(
-				`${source}: spool.dir must be a non-empty string, received ${describeValue(value.spool.dir)}`,
-			);
-		}
-		for (const key of ["retentionMs", "maxFiles"]) {
-			const limit = value.spool[key];
-			if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) {
-				throw new AceConfigError(
-					`${source}: spool.${key} must be a positive integer, received ${describeValue(limit)}`,
-				);
-			}
-		}
 	}
 
 	if (value.registry !== undefined) {
@@ -176,9 +152,6 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		subscribe: subscriptions,
 		...(publications ? { publish: publications } : {}),
 		...(value.manual === undefined ? {} : { manual: value.manual as { max?: number; ttlMs?: number } }),
-		...(value.spool === undefined
-			? {}
-			: { spool: value.spool as { dir: string; retentionMs?: number; maxFiles?: number } }),
 		...(value.registry === undefined ? {} : { registry: value.registry as { url: string; prefix?: string } }),
 	};
 }
@@ -247,13 +220,6 @@ export function channelWarnings(config: AceConfigFile): string[] {
 	if (config.sender !== undefined) {
 		warnings.push(
 			`sender "${config.sender}" is unused: this session publishes as "<coding-agent>:<sessionId>" (the same value as its directory member)`,
-		);
-	}
-	for (const subscription of config.subscribe) {
-		if (subscription.enabled === false) continue;
-		if (subscription.activation !== undefined && subscription.activation !== "default") continue;
-		warnings.push(
-			`subscribe "${subscription.name}" does not pin activation: a sender may demand immediate; set "activation" to "next_turn" unless you want that`,
 		);
 	}
 	for (const [key, subscriptions] of byAddress) {
@@ -325,7 +291,6 @@ export function resolveAceConfig(options: {
 		...(config.sender === undefined ? {} : { sender: config.sender }),
 		warnings: channelWarnings(config),
 		manual: config.manual ?? {},
-		...(config.spool === undefined ? {} : { spool: config.spool }),
 		...(config.registry === undefined ? {} : { registry: config.registry }),
 		source,
 	};

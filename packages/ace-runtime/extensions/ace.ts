@@ -182,6 +182,36 @@ function shortAddress(address: string): string {
 }
 
 /**
+ * The listing `ace_channels` returns: this session's channels as the model needs them — name, transport,
+ * description, activation — without the deployment plumbing (`config`/`options`) or the burst internals.
+ */
+export function formatChannelListing(
+	subscriptions: readonly EndpointConfig[],
+	publications: readonly EndpointConfig[],
+	options: { derivedName?: string; disabled?: readonly string[] } = {},
+): string {
+	const line = (endpoint: EndpointConfig): string =>
+		[
+			endpoint.name,
+			endpoint.transport,
+			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
+			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
+			endpoint.name === options.derivedName ? "(registered for this session)" : undefined,
+		]
+			.filter((part) => part !== undefined)
+			.join(" · ");
+	return [
+		"subscribe:",
+		...subscriptions.map((endpoint) => `  ${line(endpoint)}`),
+		"publish:",
+		...(publications.length === 0 ? ["  (none)"] : publications.map((endpoint) => `  ${line(endpoint)}`)),
+		...(options.disabled === undefined || options.disabled.length === 0
+			? []
+			: [`disabled: ${options.disabled.join(", ")}`]),
+	].join("\n");
+}
+
+/**
  * The session's topology as one status line: what it reads (`subscription←stream`, including the inbox the
  * directory registered for this session) and where it can write (`channel→stream`).
  */
@@ -256,6 +286,9 @@ export function buildPublishToolText(
 	return { description: lines.join("\n"), promptGuidelines: guidelines };
 }
 
+/** Parameters of the channel listing tool: none — it lists this session's own configuration. */
+const CHANNELS_PARAMETERS = Type.Object({});
+
 /** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
 const PUBLISH_PARAMETERS = Type.Object({
 	body: Type.String({ description: "Event body; the peer's agent reads this" }),
@@ -276,6 +309,9 @@ const AGENTS_PARAMETERS = Type.Object({
 	agent: Type.Optional(Type.String({ description: 'Filter by coding agent, e.g. "oh-my-pi" or "pi"' })),
 	limit: Type.Optional(Type.Number({ description: "Maximum rows to return (default 20, cap 50)" })),
 });
+
+/** Subscription name of the inbox the agent directory registers for this session. */
+const SESSION_INBOX = "session-inbox";
 
 /** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
@@ -415,6 +451,61 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		};
 	}
 
+	/**
+	 * The channels this session reads and can write, straight from `.ace.json`.
+	 *
+	 * Read-only on purpose: there is no channel policy to mutate — whether a sender may drive the session is
+	 * a decision the user makes in the conversation, not a setting here.
+	 */
+	function channelsTool(): ToolDefinition<typeof CHANNELS_PARAMETERS> {
+		return {
+			name: "ace_channels",
+			label: "ACE Channels",
+			description:
+				"List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not — address live peers with ace_agents.",
+			promptGuidelines: [
+				"Use a `publish` channel name, or a live member from ace_agents, as the ace_publish `target`.",
+			],
+			parameters: CHANNELS_PARAMETERS,
+			async execute() {
+				const config = resolvedConfig;
+				if (!config) {
+					throw new Error(`ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`);
+				}
+				const derivedName = registration === undefined ? undefined : SESSION_INBOX;
+				return {
+					content: [
+						{
+							type: "text",
+							text: formatChannelListing(config.subscribe, config.publish, {
+								...(derivedName === undefined ? {} : { derivedName }),
+								disabled: config.disabled,
+							}),
+						},
+					],
+					details: {
+						subscribe: config.subscribe.map((endpoint) => ({
+							name: endpoint.name,
+							transport: endpoint.transport,
+							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
+							...(endpoint.activation === undefined ? {} : { activation: endpoint.activation }),
+							enabled: endpoint.enabled !== false,
+							derived: endpoint.name === derivedName,
+						})),
+						publish: config.publish.map((endpoint) => ({
+							name: endpoint.name,
+							transport: endpoint.transport,
+							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
+							enabled: endpoint.enabled !== false,
+						})),
+						disabled: config.disabled,
+						count: config.subscribe.length + config.publish.length,
+					},
+				};
+			},
+		};
+	}
+
 	function publishTool(config?: ResolvedAceConfig): ToolDefinition<typeof PUBLISH_PARAMETERS> {
 		return {
 			name: "ace_publish",
@@ -501,6 +592,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(publishTool());
 	pi.registerTool(agentsTool());
+	pi.registerTool(channelsTool());
 
 	// A failed run does not reject `inject`; the failure shows up on the assistant message that ends
 	// it. Watch `message_end`, not `turn_end`: oh-my-pi treats `turn_end` as a *boundary* event, and
@@ -554,9 +646,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		publishers = createPublishers(resolved.publish, {
 			onError: (error) => report(ctx, `[ace] publish transport error: ${describeError(error)}`, "error"),
 		});
-		const spoolDir =
-			resolved.spool?.dir ??
-			(resolved.subscribe.some((entry) => entry.spool) ? join(ctx.cwd, ".ace", "spool") : undefined);
+		// Bursts are always spooled, with built-in thresholds (see DEFAULT_SPOOL_RULE); the directory is not
+		// configuration, so it simply sits next to the session's other ACE state.
+		const spoolDir = join(ctx.cwd, ".ace", "spool");
 		// The advertised stream is this session's inbox: subscribe to it, or the address a peer
 		// discovered through the directory would have nobody reading it.
 		let subscriptions = resolved.subscribe;
@@ -581,7 +673,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				subscriptions = [
 					...resolved.subscribe,
 					{
-						name: "session-inbox",
+						name: SESSION_INBOX,
 						transport: "redis-streams",
 						description: "this session's inbox (agent directory)",
 						config: { stream: registration.stream, group: registration.group, url: resolved.registry.url },
@@ -597,12 +689,10 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		}
 
 		const metrics = new AceMetrics();
-		// Dead letters go next to the burst files: same directory, same retention policy, different
-		// prefix. Nothing is written until an entry is actually given up on.
+		// Dead letters go next to the burst files: same directory, different prefix. Nothing is written
+		// until an entry is actually given up on.
 		deadLetters = new DeadLetterSink({
-			dir: resolved.spool?.dir ?? join(ctx.cwd, ".ace"),
-			...(resolved.spool?.retentionMs === undefined ? {} : { retentionMs: resolved.spool.retentionMs }),
-			...(resolved.spool?.maxFiles === undefined ? {} : { maxFiles: resolved.spool.maxFiles }),
+			dir: join(ctx.cwd, ".ace"),
 			logger,
 			onError: (error) => report(ctx, `[ace] dead letter: ${describeError(error)}`, "error"),
 		});
@@ -610,15 +700,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			engine: adapter,
 			metrics,
 			subscribe: subscriptions,
-			...(spoolDir
-				? {
-						spool: {
-							dir: spoolDir,
-							...(resolved.spool?.retentionMs === undefined ? {} : { retentionMs: resolved.spool.retentionMs }),
-							...(resolved.spool?.maxFiles === undefined ? {} : { maxFiles: resolved.spool.maxFiles }),
-						},
-					}
-				: {}),
+			spool: { dir: spoolDir },
 			manual: resolved.manual,
 			transports: createTransports(subscriptions, {
 				metrics,
@@ -655,9 +737,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			// directory just registered for this session, which is exactly what a reader wants to see.
 			if (ctx.hasUI) ctx.ui.setStatus("ace", formatChannelSummary(subscriptions, resolved.publish));
 			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
-			if (resolved.subscribe.some((entry) => entry.spool)) {
-				console.error(`[ace] spooling bursts to ${spoolDir}`);
-			}
 		} catch (error) {
 			// Nothing is running, so the next session in this process may try again.
 			if (claimedRuntime) {

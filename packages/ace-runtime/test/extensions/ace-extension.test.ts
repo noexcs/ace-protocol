@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import aceExtension, { buildPublishToolText, describeDiscovered, formatChannelSummary } from "../../extensions/ace.ts";
+import aceExtension, {
+	buildPublishToolText,
+	describeDiscovered,
+	formatChannelListing,
+	formatChannelSummary,
+} from "../../extensions/ace.ts";
 import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { RegistryEntry, ResolvedAceConfig } from "../../src/index.ts";
 import { formatSessionLabel } from "../../src/utils.ts";
@@ -197,6 +202,54 @@ describe("status line", () => {
 		];
 
 		expect(formatChannelSummary(subscriptions, [])).toBe("ace: inbox←ace:in.a");
+	});
+});
+
+describe("channel listing", () => {
+	it("lists both directions, marks the derived inbox and names disabled channels", () => {
+		const listing = formatChannelListing(
+			[
+				{
+					name: "from-wsl",
+					transport: "redis-streams",
+					description: "the WSL agent",
+					activation: "next_turn",
+					config: { stream: "ace:lan:in.mac" },
+					options: {},
+				},
+				{
+					name: "session-inbox",
+					transport: "redis-streams",
+					config: { stream: "ace:lan:events:oh-my-pi:01a1" },
+					options: {},
+				},
+			],
+			[
+				{
+					name: "to-wsl",
+					transport: "redis-streams",
+					description: "WSL agent inbox",
+					config: { stream: "ace:lan:in.wsl" },
+					options: {},
+				},
+			],
+			{ derivedName: "session-inbox", disabled: ["stale"] },
+		);
+
+		expect(listing).toBe(
+			[
+				"subscribe:",
+				'  from-wsl · redis-streams · "the WSL agent" · [next_turn]',
+				"  session-inbox · redis-streams · (registered for this session)",
+				"publish:",
+				'  to-wsl · redis-streams · "WSL agent inbox"',
+				"disabled: stale",
+			].join("\n"),
+		);
+	});
+
+	it("says so when this session publishes nowhere", () => {
+		expect(formatChannelListing([], [])).toBe("subscribe:\npublish:\n  (none)");
 	});
 });
 

@@ -6,7 +6,6 @@ export type AceCounter =
 	| "received"
 	| "rejected"
 	| "deduped"
-	| "senderRejected"
 	| "injected"
 	| "queued"
 	| "stored"

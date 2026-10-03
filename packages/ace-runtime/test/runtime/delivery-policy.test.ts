@@ -44,7 +44,7 @@ function setup(
 		subscription?: Partial<EndpointConfig>;
 		dedupCapacity?: number;
 		manual?: { max?: number; ttlMs?: number };
-		spool?: { dir: string };
+		spool?: { dir: string; rule?: { afterEvents: number; windowMs: number } };
 		now?: () => number;
 		setTimer?: (callback: () => void, ms: number) => { cancel: () => void };
 	} = {},
@@ -66,6 +66,7 @@ function setup(
 			: {
 					spool: {
 						dir: options.spool.dir,
+						...(options.spool.rule === undefined ? {} : { rule: options.spool.rule }),
 						...(options.now === undefined ? {} : { now: options.now }),
 						...(options.setTimer === undefined ? {} : { setTimer: options.setTimer }),
 					},
@@ -113,28 +114,6 @@ describe("delivery policy: deduplication", () => {
 		await runtime.handleRawMessage({ ...validRaw, id: "evt_1" }, endpoint);
 
 		expect(engine.injections.map((injection) => injection.message.id)).toEqual(["evt_1", "evt_2", "evt_1"]);
-	});
-});
-
-describe("delivery policy: sender allowlist", () => {
-	it("drops events from senders outside the allowlist and counts them", async () => {
-		const { engine, metrics, runtime, endpoint } = setup({ subscription: { allowedSenders: ["ci.*", "agent-?"] } });
-
-		const refused = await runtime.handleRawMessage({ ...validRaw, sender: "stranger" }, endpoint);
-		const accepted = await runtime.handleRawMessage({ ...validRaw, sender: "ci.runner-7" }, endpoint);
-
-		expect(refused).toMatchObject({ disposition: "dropped" });
-		expect(accepted).toMatchObject({ disposition: "injected" });
-		expect(engine.injections).toHaveLength(1);
-		expect(metrics.snapshot().inbox?.senderRejected).toBe(1);
-	});
-
-	it("accepts every sender when no allowlist is configured", async () => {
-		const { engine, runtime, endpoint } = setup();
-
-		await runtime.handleRawMessage({ ...validRaw, sender: "stranger" }, endpoint);
-
-		expect(engine.injections).toHaveLength(1);
 	});
 });
 
@@ -195,8 +174,7 @@ describe("delivery policy: burst spilling", () => {
 	it("spills the overflow and injects one summary event instead", async () => {
 		const timer = manualTimer();
 		const { engine, runtime, endpoint } = setup({
-			subscription: { spool: { afterEvents: 1, windowMs: 100 } },
-			spool: { dir: temporaryDirectory() },
+			spool: { dir: temporaryDirectory(), rule: { afterEvents: 1, windowMs: 100 } },
 			setTimer: timer.setTimer,
 		});
 

@@ -147,7 +147,6 @@ async function scenario(
 		name: "inbox",
 		transport: "redis-streams",
 		activation: "next_turn",
-		...(options.spool === undefined ? {} : { spool: options.spool }),
 		config: { stream, group, url, blockMs: 50, ...options.config },
 		options: {},
 		...options.subscription,
@@ -162,7 +161,7 @@ async function scenario(
 		metrics,
 		subscribe: [subscription],
 		transports: { [subscription.name]: transport },
-		...(options.spool === undefined ? {} : { spool: { dir: `/tmp/ace-verify-${run}` } }),
+		...(options.spool === undefined ? {} : { spool: { dir: `/tmp/ace-verify-${run}`, rule: options.spool } }),
 		dedupCapacity: 16,
 	});
 
@@ -248,22 +247,17 @@ await scenario("dedup", async ({ engine, stream }) => {
 	);
 });
 
-// 5. A sender outside the allowlist is dropped (and acknowledged).
-await scenario(
-	"allowlist",
-	async ({ engine, publish, stream, group }) => {
-		await publish(message("evt_stranger", { sender: "stranger" }));
-		await settle(300);
-		const outstanding = await pending(stream, group);
-		check(
-			"sender allowlist",
-			"dropped + acked",
-			`injections=${engine.injections.length} pending=${outstanding}`,
-			engine.injections.length === 0 && outstanding === 0,
-		);
-	},
-	{ subscription: { allowedSenders: ["ci"] } },
-);
+// 5. Inbound is open by design: ACE filters nothing, the user's trust decision gates action instead.
+await scenario("open-inbound", async ({ engine, publish }) => {
+	await publish(message("evt_stranger", { sender: "stranger" }));
+	await waitFor(() => engine.injections.length === 1);
+	check(
+		"open inbound",
+		"a sender nobody vetted is still delivered",
+		`injections=${engine.injections.length}`,
+		engine.injections.length === 1,
+	);
+});
 
 // 6. A manual event is retained, then activated explicitly.
 await scenario(

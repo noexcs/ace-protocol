@@ -53,28 +53,6 @@
 			},
 			"additionalProperties": false
 		},
-		"spool": {
-			"type": "object",
-			"description": "Where burst files go; thresholds live on each subscription.",
-			"required": [
-				"dir"
-			],
-			"properties": {
-				"dir": {
-					"type": "string",
-					"minLength": 1
-				},
-				"retentionMs": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"maxFiles": {
-					"type": "integer",
-					"minimum": 1
-				}
-			},
-			"additionalProperties": false
-		},
 		"registry": {
 			"type": "object",
 			"description": "Agent directory this session registers itself in (RFC §22 item 1); omitted means no registration.",
@@ -145,34 +123,6 @@
 						"default"
 					],
 					"description": "Subscribe only: receiver override for this channel (RFC §8); default delegates to the message."
-				},
-				"allowedSenders": {
-					"type": "array",
-					"minItems": 1,
-					"description": "Subscribe only: glob patterns of accepted senders (e.g. ci:*, agent-*); omit to accept any.",
-					"items": {
-						"type": "string",
-						"minLength": 1
-					}
-				},
-				"spool": {
-					"type": "object",
-					"description": "Subscribe only: spill bursts to a file beyond these thresholds.",
-					"required": [
-						"afterEvents",
-						"windowMs"
-					],
-					"properties": {
-						"afterEvents": {
-							"type": "integer",
-							"minimum": 1
-						},
-						"windowMs": {
-							"type": "integer",
-							"minimum": 1
-						}
-					},
-					"additionalProperties": false
 				}
 			},
 			"additionalProperties": false
@@ -296,20 +246,6 @@
 					"not": {
 						"required": [
 							"activation"
-						]
-					}
-				},
-				{
-					"not": {
-						"required": [
-							"allowedSenders"
-						]
-					}
-				},
-				{
-					"not": {
-						"required": [
-							"spool"
 						]
 					}
 				},

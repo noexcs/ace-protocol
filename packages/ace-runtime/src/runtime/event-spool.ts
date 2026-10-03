@@ -27,6 +27,13 @@ export interface SpoolRule {
 	windowMs: number;
 }
 
+/**
+ * Burst thresholds used for every subscription: a surge (more than 20 events inside one second) spills to
+ * a file and injects one summary instead of 20 turns. Not configuration — the mechanism is a default
+ * implementation detail, not a tuning knob.
+ */
+export const DEFAULT_SPOOL_RULE: SpoolRule = { afterEvents: 20, windowMs: 1000 };
+
 export interface EventSpoolOptions {
 	/** Directory for spool files; created with owner-only permissions. */
 	dir: string;
