@@ -27,7 +27,8 @@
 		"check": "biome check --error-on-warnings . && tsc --noEmit",
 		"example:basic": "node examples/basic.ts",
 		"example:redis": "node examples/redis-streams.ts",
-		"verify:live": "node scripts/verify-live.ts"
+		"verify:live": "node scripts/verify-live.ts",
+		"verify:omp": "node scripts/verify-omp.ts"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.0.1",

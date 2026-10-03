@@ -2,8 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# upstream Pi checkout, kept for integration testing against its sources
+# upstream checkouts, kept for integration testing against their sources
 pi/
+oh-my-pi/
 
 # runtime state (spool files, logs)
 .ace/

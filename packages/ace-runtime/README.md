@@ -316,6 +316,7 @@ client, and the transport, so the test suite drives a fake client.
 | `extensions/` | `ace.ts`: Pi extension that injects events into the session it runs in |
 | `test/` | protocol, runtime, adapter and transport unit tests, plus real-Pi-session integration tests |
 | `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real broker (reclaim, dedup, allowlist, spool, manual) |
+| `scripts/verify-omp.ts` | `npm run verify:omp`: the extension inside a real `omp --mode rpc` session (event reaches the conversation, turn settles, entry acknowledged) |
 | `schema/` | normative ACE 0.1 JSON Schema |
 
 ## Protocol summary
@@ -341,16 +342,32 @@ otherwise                     → runtime default (next_turn)
 `default` is a delegation value, never an executed action, so a runtime default is typed as
 `immediate | next_turn | manual`.
 
-## Activation semantics on Pi
-
-Both engines (the SDK adapter and the in-session extension) map activation the same way; the SDK one calls Pi
-directly, the extension passes Pi a delivery mode and lets the session decide.
+## Activation semantics across hosts
 
 | Effective activation | Agent idle | Agent running |
 |---|---|---|
-| `next_turn` | `prompt()`: body enters context, turn starts | `followUp()`: queued, processed after the current run's pending work |
-| `immediate` | `prompt()`: body enters context, turn starts | `steer()`: queued at the earliest public processing point |
+| `next_turn` | body enters context, turn starts | queued, processed after the current run's pending work |
+| `immediate` | body enters context, turn starts | queued at the earliest public processing point |
 | `manual` | retained in memory, no turn | retained in memory, no turn |
+
+The SDK adapter calls Pi directly (`prompt()` / `steer()` / `followUp()`). The in-session extension asks the
+host to deliver the message, and the hosts disagree about what a delivery mode means, so the adapter owns that
+mapping instead of trusting the host:
+
+| activation | agent | upstream Pi | oh-my-pi (`omp`) |
+|---|---|---|---|
+| `next_turn` | idle | no delivery mode — the prompt path starts the turn | `aside` (starts a turn) |
+| `next_turn` | running | `followUp` (after the run's pending work) | `aside` (next step boundary; never interrupts a tool batch) |
+| `immediate` | idle | no delivery mode (prompt path) | no delivery mode (prompt path) |
+| `immediate` | running | `steer` | `steer` |
+
+oh-my-pi queues `steer`/`followUp` **without starting a turn**, so an event injected into an idle session
+waits in a queue that nothing drains — while the broker entry is acknowledged. That is silent loss, measured on
+omp 18.5.0, which is why the adapter never passes those modes to an idle agent, and why on oh-my-pi it waits
+until the injected text appears in the conversation before the transport may acknowledge the entry
+(`AceDeliveryObserver`; `deliveryTimeoutMs`, default 30s). A host that never surfaces the event leaves it in the
+group's pending list for redelivery instead of losing it. `ACE_DELIVERY=aside|portable` overrides host
+detection when a host changes its surface.
 
 `immediate` preempts at Pi's next **turn boundary** instead of aborting the running turn, so no partial output
 or in-flight tool call is discarded. Mid-turn cancellation is deliberately out of the MVP (design doc §28/§29).
@@ -384,6 +401,7 @@ Pass `renderEvent` to `PiAdapter` to change the format.
 | Transport or injection failure | propagated, so the transport can retry or dead-letter (RFC §17, design doc §30) |
 | Unreachable broker | the start fails once with the URL; reconnection is bounded and an outage after the start is reported at most once until commands succeed again |
 | Agent turn failure | reported through `PiAdapter`'s `onRunError`, since Pi records it on the assistant message rather than rejecting `prompt()` |
+| Injected but never surfaced (extension, oh-my-pi) | the injection fails after `deliveryTimeoutMs`; the entry stays pending so reclaim can redeliver it (RFC §17). The retry may duplicate an event that the host did deliver late — at-least-once, and the event id in the injected header makes the duplicate visible |
 
 Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the body.
 
@@ -393,6 +411,9 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
   (design doc §12). No persistence, no query API, no inbox API.
 - Transports: `InMemoryTransport` and `RedisStreamsTransport`. Kafka/NATS adapters, a CLI, agent registry,
   dynamic targets, bindings, result events and acknowledgement APIs are out of scope (design doc §27, §37).
+- No backlog: a subscription's consumer group is created at the stream's tail (`XGROUP CREATE … $`), so events
+  published before the agent subscribed are skipped rather than replayed. Replay stays an infrastructure
+  capability (RFC §17); the runtime consumes from now on.
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
 - A reclaimed entry that fails `reclaimAttempts` times is reported and acknowledged — there is no dead-letter queue,
@@ -428,6 +449,7 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 ```bash
 npm test           # unit + integration tests (faux model, fake Redis client, no network)
 npm run verify:live   # the same runtime against a real broker (needs redis-server; no model needed)
+npm run verify:omp    # the extension inside a real oh-my-pi session (needs omp + a model; one small turn)
 npm run check      # biome + tsc
 npm run build
 npm run example:basic   # in-memory transport, needs ACE_MODEL

@@ -187,8 +187,9 @@ describe("channelWarnings", () => {
 	});
 });
 
-// `${NAME}` built without a template placeholder, which the linter forbids in plain strings.
-const ref = (name: string): string => "$" + "{" + name + "}";
+// `${NAME}` for fixtures that must contain a placeholder literally: built by interpolation, with the
+// brace escaped so the source never contains the sequence the linter forbids in plain strings.
+const ref = (name: string): string => `$\u007B${name}}`;
 
 describe("interpolateEnv", () => {
 	it("substitutes environment values anywhere in the document", () => {
@@ -197,7 +198,7 @@ describe("interpolateEnv", () => {
 				subscribe: [
 					{
 						...inbox,
-						config: { stream: "ace:in", group: "g", url: "redis://:" + ref("REDIS_PASSWORD") + "@broker:6379" },
+						config: { stream: "ace:in", group: "g", url: `redis://:${ref("REDIS_PASSWORD")}@broker:6379` },
 					},
 				],
 			},
@@ -215,7 +216,7 @@ describe("interpolateEnv", () => {
 	});
 
 	it("keeps a literal dollar with $$", () => {
-		expect(interpolateEnv("cost: $" + ref("PRICE"), { PRICE: "5" }, ".ace.json")).toBe("cost: " + ref("PRICE"));
+		expect(interpolateEnv(`cost: $${ref("PRICE")}`, { PRICE: "5" }, ".ace.json")).toBe(`cost: ${ref("PRICE")}`);
 	});
 
 	it("is applied when loading the file", () => {

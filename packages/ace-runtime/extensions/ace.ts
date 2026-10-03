@@ -28,9 +28,13 @@
  * pi --extension /path/to/ace-runtime/extensions/ace.ts
  * ```
  *
- * Receiving: while a turn runs, `next_turn` events are queued after it (`followUp`) and `immediate`
- * events at its next boundary (`steer`); while Pi is idle the event starts a turn. `manual` events are
- * retained in memory — inspect and activate them with `/ace`, `/ace pending`, `/ace activate <sender> <id>`.
+ * Receiving: `immediate` events cut into a running turn (`steer`) and start one when the agent is idle;
+ * `next_turn` events never interrupt — they queue for the next boundary (`followUp` on Pi, `aside` on
+ * oh-my-pi, which also starts a turn when idle). Where the host cannot promise the agent will see an
+ * injected event (oh-my-pi's idle queue), the adapter waits until the event shows up in the conversation
+ * before letting the transport acknowledge it, so a stalled session leaves the event pending instead of
+ * losing it. `manual` events are retained in memory — inspect and activate them with `/ace`,
+ * `/ace pending`, `/ace activate <sender> <id>`.
  *
  * Publishing: once the configuration is known, `ace_publish` is re-registered with a description that
  * names this agent (with its session label), every channel it can reach, and where events land. The
@@ -48,12 +52,14 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { Type } from "typebox";
 import {
 	ACE_CONFIG_FILENAME,
+	AceDeliveryObserver,
 	type AceLogger,
 	AceMetrics,
 	type AcePublisher,
 	AceRuntime,
 	createPublishers,
 	createTransports,
+	detectHostDelivery,
 	type EndpointConfig,
 	formatSessionLabel,
 	PiExtensionAdapter,
@@ -188,7 +194,20 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let sessionId: string | undefined;
 	let transportErrorReported = false;
 
-	const adapter = new PiExtensionAdapter({ pi, isIdle: () => sessionContext?.isIdle() ?? true });
+	// Where the host's delivery cannot be trusted to reach the agent (oh-my-pi queues into an idle
+	// session without starting a turn), wait for the event to appear in the conversation. Upstream Pi's
+	// `sendUserMessage` always starts a turn, so wiring the observer there would add a wait with no
+	// measured problem behind it.
+	const host = detectHostDelivery(pi);
+	const delivery = host.supportsAside ? new AceDeliveryObserver() : undefined;
+	if (delivery) pi.on("message_start", (event) => delivery.accept(event));
+
+	const adapter = new PiExtensionAdapter({
+		pi,
+		isIdle: () => sessionContext?.isIdle() ?? true,
+		host,
+		...(delivery ? { observeDelivery: delivery } : {}),
+	});
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.

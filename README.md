@@ -25,9 +25,10 @@ drives a turn (or is queued/deferred per `activation`), and two Pi agents can ta
 a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary and the split plan.
 
-Verified today: 292 tests, `npm run verify:live` (seven scenarios against a real Redis Streams broker:
+Verified today: 310 tests, `npm run verify:live` (seven scenarios against a real Redis Streams broker:
 delivery, poison messages, reclaim after a failed delivery, dedup, sender allowlists, manual activation,
-burst spooling), and two live Pi sessions exchanging events.
+burst spooling), `npm run verify:omp` (the extension inside a real `omp --mode rpc` session: the event reaches
+the conversation, the turn settles, the entry is acknowledged), and two live Pi sessions exchanging events.
 
 ## Quick start
 
@@ -64,6 +65,7 @@ cd packages/ace-runtime
 npm test            # unit + integration tests; no broker or credentials needed
 npm run check       # biome + tsc --noEmit
 npm run verify:live # the runtime against a real broker (redis-server); no model needed
+npm run verify:omp  # the extension inside a real oh-my-pi session (needs omp + a model)
 npm run build
 ```
 

@@ -8,6 +8,7 @@
  */
 
 export * from "./agent/agent-engine.ts";
+export * from "./agent/event-delivery-observer.ts";
 export * from "./agent/pi-adapter.ts";
 export * from "./agent/pi-extension-adapter.ts";
 export * from "./logger.ts";
