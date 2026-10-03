@@ -11,6 +11,10 @@ export interface DeadLetterRecord {
 	subscription: string;
 	/** Broker entry id, to trace it back to the stream. */
 	brokerId: string;
+	/** Stream it came from; `replay:dead-letters` publishes back here. */
+	stream: string;
+	/** Field the payload was stored under, so a replay writes the same shape. */
+	field: string;
 	/** How many deliveries were attempted before giving up. */
 	attempts: number;
 	/** Why it was dropped. */
@@ -67,6 +71,8 @@ export class DeadLetterSink {
 			at: this.now(),
 			subscription,
 			brokerId: entry.brokerId,
+			stream: entry.stream,
+			field: entry.field,
 			attempts: entry.attempts,
 			reason: entry.reason,
 			payload: entry.payload ?? null,

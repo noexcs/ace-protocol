@@ -28,7 +28,8 @@
 		"example:basic": "node examples/basic.ts",
 		"example:redis": "node examples/redis-streams.ts",
 		"verify:live": "node scripts/verify-live.ts",
-		"verify:omp": "node scripts/verify-omp.ts"
+		"verify:omp": "node scripts/verify-omp.ts",
+		"replay:dead-letters": "node scripts/replay-dead-letters.ts"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.0.1",

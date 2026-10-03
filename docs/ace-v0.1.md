@@ -2046,7 +2046,7 @@ distributed runtime
 | 阶梯 | 状态 | 说明 |
 |---|---|---|
 | immediate interruption | ✅ | 运行中 `steer` 抢占，idle 起 turn；打断时机由宿主的 `interruptMode` 决定 |
-| persistent delivery | 🟡 部分 | 成功才 ack、PEL 重投、死信落盘、突发落盘；**未做**：backlog 重放（消费组从队尾起）、持久化去重 |
+| persistent delivery | 🟡 部分 | 成功才 ack、PEL 重投、死信落盘 + 重放命令、突发落盘；**未做**：事件流 backlog 重放（消费组从队尾起）、持久化去重 |
 | multi-agent | ✅ | 两个会话互发已验证；发布时盖章 `sessionId`（RFC §5.4） |
 | agent discovery | ✅ 基础版 | `registry` + `ace_agents` + 按 member 发布（本文未涵盖；RFC §22 第 1 项） |
 | dynamic routing | 🟡 部分 | 按 member / 唯一前缀寻址已做；能力广告与多副本挑选未做 |
@@ -2059,7 +2059,9 @@ distributed runtime
 3. **死信文件**：超过 `reclaimAttempts` 先写 `dead-letter.<ts>.jsonl`（fsync）再 ack；写失败则不 ack。
 4. **Agent 目录**：`ZSet`（在线）+ `Hash`（档案）+ 每会话独占 `Stream`（收件箱），心跳续期，读路径清扫崩溃残留。
 5. **子代理门控**：oh-my-pi 会把扩展重绑到它 spawn 的每个会话，因此只在 `ctx.agent.kind === "main"` 时注册与订阅。
-6. **验证资产**：`npm run verify:live`（真 broker，9 场景）、`npm run verify:omp`（真 oh-my-pi 会话，2 场景）、CI 跑 test/check/build/verify:live。
+6. **死信重放命令**：`npm run replay:dead-letters`（按记录里的 `stream`/`field` 原样写回，接收方再校验一次）。
+7. **回合失败计数**：引擎以可选能力 `onRunError(listener)` 上报，运行时记在 `runtime` 作用域（`stopReason=error`/`aborted`）。
+8. **验证资产**：`npm run verify:live`（真 broker，10 场景）、`npm run verify:omp`（真 oh-my-pi 会话，2 场景）、CI 跑 test/check/build/verify:live。
 
 ---
 

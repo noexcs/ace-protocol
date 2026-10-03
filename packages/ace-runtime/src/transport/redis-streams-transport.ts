@@ -106,6 +106,10 @@ export function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStrea
 export interface DroppedEntry {
 	/** Broker entry id, so the record can be traced back to the stream. */
 	brokerId: string;
+	/** Stream the entry came from; a replay publishes back to exactly this stream. */
+	stream: string;
+	/** Entry field carrying the AceMessage JSON, so a replay writes the same shape. */
+	field: string;
 	/** Raw payload exactly as stored, `undefined` when the entry lacked the field. */
 	payload: string | undefined;
 	/** Delivery attempts made before giving up. */
@@ -263,6 +267,8 @@ export class RedisStreamsTransport implements Transport {
 				try {
 					await this.onDropped?.({
 						brokerId: entry.id,
+						stream: this.config.stream,
+						field: this.config.field,
 						payload: entry.payload,
 						attempts,
 						reason: `after ${attempts} delivery attempts`,

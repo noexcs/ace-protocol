@@ -12,6 +12,7 @@ export class FakeAgentEngine implements AgentEngine {
 	running = false;
 	/** Upcoming `inject` calls that fail instead of recording, for redelivery tests. */
 	failures = 0;
+	private readonly runErrorListeners: Array<(error: unknown) => void> = [];
 
 	async inject(message: AceMessage, mode: InjectionMode): Promise<void> {
 		if (this.failures > 0) {
@@ -26,4 +27,14 @@ export class FakeAgentEngine implements AgentEngine {
 	}
 
 	async waitForIdle(): Promise<void> {}
+
+	/** The runtime registers here to count failed runs. */
+	onRunError(listener: (error: unknown) => void): void {
+		this.runErrorListeners.push(listener);
+	}
+
+	/** Simulate a turn that ended in failure. */
+	reportRunFailure(error: unknown = new Error("fake engine run failed")): void {
+		for (const listener of this.runErrorListeners) listener(error);
+	}
 }

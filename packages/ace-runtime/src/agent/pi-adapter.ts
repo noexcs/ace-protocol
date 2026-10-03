@@ -85,14 +85,15 @@ function userMessageText(message: AgentMessage): string | undefined {
 export class PiAdapter implements AgentEngine {
 	readonly session: AgentSession;
 
-	private readonly onRunError: (error: unknown) => void;
+	private readonly hostOnRunError: (error: unknown) => void;
+	private readonly runErrorListeners: Array<(error: unknown) => void> = [];
 	private readonly renderEvent: (message: AceMessage) => string;
 	private readonly queuedEvents: QueuedEvent[] = [];
 
 	constructor(options: PiAdapterOptions) {
 		this.session = options.session;
 		this.renderEvent = options.renderEvent ?? renderAceEvent;
-		this.onRunError = options.onRunError ?? (() => {});
+		this.hostOnRunError = options.onRunError ?? (() => {});
 
 		this.session.subscribe((event) => {
 			if (event.type === "message_end") {
@@ -185,9 +186,21 @@ export class PiAdapter implements AgentEngine {
 		}
 	}
 
+	/** Listeners the runtime registers to count failed runs. */
+	onRunError(listener: (error: unknown) => void): void {
+		this.runErrorListeners.push(listener);
+	}
+
 	private reportRunError(error: unknown): void {
+		for (const listener of this.runErrorListeners) {
+			try {
+				listener(error);
+			} catch {
+				// A failing listener must not take down the agent run either.
+			}
+		}
 		try {
-			this.onRunError(error);
+			this.hostOnRunError(error);
 		} catch {
 			// A failing error hook must not take down the agent run.
 		}

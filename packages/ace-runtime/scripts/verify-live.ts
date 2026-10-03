@@ -16,7 +16,9 @@
  * end-to-end step (it needs the Pi CLI and a model; the broker scenarios never do).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createClient } from "redis";
 import {
 	type AceMessage,
@@ -25,11 +27,15 @@ import {
 	type AgentEngine,
 	AgentRegistry,
 	createRedisAgentRegistry,
+	createRedisStreamsAddClient,
+	DeadLetterSink,
 	type EndpointConfig,
 	type InjectionMode,
+	parseDeadLetters,
 	RedisStreamsPublisher,
 	RedisStreamsTransport,
 	registryMember,
+	replayDeadLetters,
 } from "../src/index.ts";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -383,6 +389,79 @@ await (async () => {
 		await registry.close();
 		await admin.del(prefix);
 		await admin.del(`${prefix}:entry`);
+	}
+})();
+
+// 10. Dead letters: a dropped event is recorded with its stream, and a replay puts it back.
+await (async () => {
+	const stream = `ace:verify:dlq:${run}`;
+	const dir = mkdtempSync(join(tmpdir(), "ace-verify-dlq-"));
+	const subscription: EndpointConfig = {
+		name: "inbox",
+		transport: "redis-streams",
+		config: { stream, group: "dlq", url, blockMs: 50, reclaimIdleMs: 200, reclaimAttempts: 1, count: 1 },
+		options: {},
+	};
+	const sink = new DeadLetterSink({ dir });
+	const failing = new RedisStreamsTransport(subscription, {
+		onError: () => {},
+		onDropped: (entry) => sink.record("inbox", entry),
+	});
+	const publisher = createRedisStreamsAddClient(url, () => {});
+	const event = JSON.stringify({
+		aceVersion: "0.1",
+		id: "evt_dlq_1",
+		sender: "ci",
+		activation: "next_turn",
+		body: "replay me",
+	});
+	let healthy: RedisStreamsTransport | undefined;
+	try {
+		await failing.start(async () => {
+			throw new Error("agent unavailable");
+		});
+		await settle(300); // subscribe before publishing: the group starts at the tail
+		await publisher.add(stream, "message", event);
+		const dropped = await waitFor(() => readdirSync(dir).some((name) => name.startsWith("dead-letter.")), 10_000);
+		await failing.stop();
+
+		const file = join(dir, readdirSync(dir).find((name) => name.startsWith("dead-letter.")) ?? "missing");
+		const parsed = parseDeadLetters(readFileSync(file, "utf8"));
+		const record = parsed.records[0];
+
+		const seen: string[] = [];
+		healthy = new RedisStreamsTransport(
+			{ ...subscription, config: { ...subscription.config, consumer: "healthy" } },
+			{ onError: () => {} },
+		);
+		await healthy.start(async (raw) => {
+			seen.push(String(raw));
+		});
+		const outcome = await replayDeadLetters(parsed.records, async (target, field, payload) => {
+			await publisher.add(target, field, payload);
+		});
+		const delivered = await waitFor(() => seen.length > 0, 10_000);
+
+		check(
+			"dead letter replay",
+			"a dropped event is recorded with its stream and can be put back",
+			`dropped=${dropped} records=${parsed.records.length} stream=${record?.stream === stream} field=${record?.field === "message"} replayed=${outcome.replayed} redelivered=${delivered && seen[0] === event}`,
+			dropped &&
+				parsed.records.length === 1 &&
+				record?.stream === stream &&
+				record?.field === "message" &&
+				outcome.replayed === 1 &&
+				delivered &&
+				seen[0] === event,
+		);
+	} catch (error) {
+		check("dead letter replay", "scenario completes", error instanceof Error ? error.message : String(error), false);
+	} finally {
+		await healthy?.stop();
+		await failing.stop();
+		await publisher.close();
+		rmSync(dir, { recursive: true, force: true });
+		await admin.del(stream);
 	}
 })();
 

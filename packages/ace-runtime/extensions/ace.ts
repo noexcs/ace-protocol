@@ -107,6 +107,21 @@ function isSubagentContext(ctx: ExtensionContext): boolean {
 	return agent.kind === "sub";
 }
 
+/**
+ * The failure a finished turn ended with, when the host reports one.
+ *
+ * Pi ends a failed run with an assistant message whose `stopReason` is `error` or `aborted`
+ * (`@earendil-works/pi-agent-core` types); a normal turn stops with `stop`. Read without assuming a
+ * shape, because upstream Pi and oh-my-pi type this event slightly differently.
+ */
+function turnFailureReason(event: unknown): string | undefined {
+	if (typeof event !== "object" || event === null || !("message" in event)) return undefined;
+	const message: unknown = event.message;
+	if (typeof message !== "object" || message === null || !("stopReason" in message)) return undefined;
+	const reason = message.stopReason;
+	return reason === "error" || reason === "aborted" ? reason : undefined;
+}
+
 /** Which coding agent this extension runs in; `ACE_AGENT_NAME` overrides the probe. */
 function codingAgentName(pi: unknown): string {
 	const override = process.env.ACE_AGENT_NAME?.trim();
@@ -441,6 +456,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(publishTool());
 	pi.registerTool(agentsTool());
+
+	// A failed run does not reject `inject`; the failure shows up on the assistant message that ends
+	// it. Watch `message_end`, not `turn_end`: oh-my-pi treats `turn_end` as a *boundary* event, and
+	// merely registering for it stopped the session from ever settling (measured, 2/2 runs).
+	pi.on("message_end", (event) => {
+		const reason = turnFailureReason(event);
+		if (reason !== undefined) adapter.reportRunFailure(new Error(`turn ended with stopReason=${reason}`));
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return; // one runtime, in the interactive session

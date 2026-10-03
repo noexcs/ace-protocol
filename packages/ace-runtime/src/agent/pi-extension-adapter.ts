@@ -90,6 +90,7 @@ export class PiExtensionAdapter implements AgentEngine {
 	private readonly observeDelivery?: DeliveryObserver;
 	private readonly deliveryTimeoutMs: number;
 	private readonly setTimer: (callback: () => void, ms: number) => { cancel: () => void };
+	private readonly runErrorListeners: Array<(error: unknown) => void> = [];
 
 	constructor(options: PiExtensionAdapterOptions) {
 		this.pi = options.pi;
@@ -142,6 +143,27 @@ export class PiExtensionAdapter implements AgentEngine {
 			throw new Error(
 				`injected event id=${message.id} sender=${message.sender} was not observed in the conversation within ${this.deliveryTimeoutMs}ms`,
 			);
+		}
+	}
+
+	/** Listeners the runtime registers to count failed runs. */
+	onRunError(listener: (error: unknown) => void): void {
+		this.runErrorListeners.push(listener);
+	}
+
+	/**
+	 * Report a failed turn the host surfaced as an event (`turn_end` with a failure stop reason).
+	 *
+	 * The extension adapter cannot see turn outcomes on its own — it only hands messages over — so the
+	 * extension watches the host's events and calls this.
+	 */
+	reportRunFailure(error: unknown): void {
+		for (const listener of this.runErrorListeners) {
+			try {
+				listener(error);
+			} catch {
+				// A failing listener must not take down the session.
+			}
 		}
 	}
 

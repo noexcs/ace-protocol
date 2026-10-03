@@ -171,7 +171,9 @@ one JSONL line per event (raw payload, broker id, attempts, reason) in `dead-let
 directory as the burst files and with the same retention (`retentionMs` / `maxFiles`). The entry is acknowledged
 **only once that line is fsynced**; a sink that cannot write leaves the entry pending — visible in the group's PEL —
 and reports the write error once. No summary event is injected: the agent already failed to receive it
-`reclaimAttempts` times, so feeding it back would loop. `/ace` and `/ace stats` count what was recorded.
+`reclaimAttempts` times, so feeding it back would loop. `/ace` and `/ace stats` count what was recorded, and
+`npm run replay:dead-letters` puts the records back on the streams they came from (each line carries its
+`stream` and `field`).
 
 [`schema/ace-config.schema.json`](schema/ace-config.schema.json) describes the file, so editors validate and
 autocomplete it after adding a `$schema` line:
@@ -464,7 +466,7 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
 - A reclaimed entry that fails `reclaimAttempts` times is recorded in the dead-letter file and then acknowledged, so
-  it stops blocking the group. There is no replay command yet: reading the file is a human (or script) decision.
+  it stops blocking the group. Putting it back is a human decision: `npm run replay:dead-letters [--dry-run] [file]`.
 - Spool files are written, never read back: retention is by `maxFiles` / `retentionMs`, and opening the file is the
   agent's job (the summary names it).
 - Reconnection is bounded: a failed read retries with `retryDelayMs` doubling up to `maxRetryDelayMs` and reports the
@@ -497,6 +499,7 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 npm test           # unit + integration tests (faux model, fake Redis client, no network)
 npm run verify:live   # the same runtime against a real broker (needs redis-server; no model needed)
 npm run verify:omp    # the extension inside a real oh-my-pi session (needs omp + a model; one small turn)
+npm run replay:dead-letters   # put dead-lettered events back on their streams (--dry-run to look first)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the tests, `check`, the build and `verify:live` against a Redis service on every

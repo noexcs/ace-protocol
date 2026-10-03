@@ -26,4 +26,13 @@ export interface AgentEngine {
 
 	/** Resolve when the engine has no active or queued work left. */
 	waitForIdle(): Promise<void>;
+
+	/**
+	 * Register a listener for runs that ended in failure (optional capability).
+	 *
+	 * Turn failures surface after {@link inject} resolved — as an assistant message with a failure
+	 * stop reason, not as a rejected promise — so the runtime subscribes here to count them
+	 * (design doc §30: a turn error must stay visible).
+	 */
+	onRunError?(listener: (error: unknown) => void): void;
 }

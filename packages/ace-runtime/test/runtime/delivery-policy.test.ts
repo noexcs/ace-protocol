@@ -97,6 +97,14 @@ describe("delivery policy: deduplication", () => {
 		expect(engine.injections.map((injection) => injection.message.id)).toEqual(["evt_001"]);
 	});
 
+	it("counts a failed turn at runtime scope", () => {
+		const { engine, metrics } = setup();
+
+		engine.reportRunFailure(new Error("provider down"));
+
+		expect(metrics.snapshot().runtime).toEqual({ runFailed: 1 });
+	});
+
 	it("forgets the oldest identity once the window is full", async () => {
 		const { engine, runtime, endpoint } = setup({ dedupCapacity: 1 });
 

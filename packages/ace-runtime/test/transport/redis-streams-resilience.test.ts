@@ -149,7 +149,14 @@ describe("RedisStreamsTransport resilience", () => {
 		await client.waitForAcks(1);
 
 		expect(recorded).toEqual([
-			{ brokerId: "9-0", payload: validEntry, attempts: 1, reason: "after 1 delivery attempts" },
+			{
+				brokerId: "9-0",
+				stream: "ace:in",
+				field: "message",
+				payload: validEntry,
+				attempts: 1,
+				reason: "after 1 delivery attempts",
+			},
 		]);
 		expect(client.acked).toEqual(["9-0"]);
 		await stop(transport, client);

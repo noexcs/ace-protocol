@@ -122,6 +122,9 @@ export class AceRuntime {
 		this.restorePendingEvents();
 
 		this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger, this.metrics);
+		// Failures arrive after the fact and without saying which event was in flight, so they are
+		// counted at runtime scope rather than charged to a subscription.
+		this.engine.onRunError?.((error) => this.recordRunFailure(error));
 	}
 
 	/** Connect every subscription's transport (RFC §33). */
@@ -230,6 +233,12 @@ export class AceRuntime {
 		}
 		this.logger.info?.(`[ACE] activating id=${id} sender=${sender} subscribe=${event.subscriptionName}`);
 		await this.engine.inject(event.message, "next_turn");
+	}
+
+	/** A turn this runtime started ended in failure; counted for `/ace stats` and logged. */
+	recordRunFailure(error: unknown): void {
+		this.metrics.increment("runtime", "runFailed");
+		this.logger.warn?.(`[ACE] agent run failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
 	/** Open spool windows, for `/ace stats`. */

@@ -19,6 +19,8 @@ afterEach(() => {
 
 const entry: DroppedEntry = {
 	brokerId: "1791053000000-0",
+	stream: "ace:in.a",
+	field: "message",
 	payload: '{"aceVersion":"0.1","id":"evt_1"}',
 	attempts: 3,
 	reason: "after 3 delivery attempts",
@@ -44,6 +46,8 @@ describe("DeadLetterSink", () => {
 			at: 1_000,
 			subscription: "inbox",
 			brokerId: entry.brokerId,
+			stream: "ace:in.a",
+			field: "message",
 			attempts: 3,
 			reason: "after 3 delivery attempts",
 			payload: '{"aceVersion":"0.1","id":"evt_1"}',
