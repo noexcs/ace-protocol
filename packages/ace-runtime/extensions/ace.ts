@@ -137,17 +137,13 @@ function codingAgentName(pi: unknown): string {
 	return marker === undefined ? "pi" : "oh-my-pi";
 }
 
-/** Runtime logs: last action on the status line, problems as notifications. */
+/**
+ * Runtime logs go to stderr: the session UI's status slot carries the topology (set once), not a ticker of
+ * the last event, and stderr is what print/RPC runs and the `/ace` status already cover.
+ */
 function createLogger(ctx: ExtensionContext): AceLogger {
-	const logToStderr = process.env.ACE_LOG === "1";
 	return {
-		info: (line) => {
-			if (ctx.hasUI) {
-				ctx.ui.setStatus("ace", line.replace(/^\[ACE\] /, "ace: "));
-				return;
-			}
-			if (logToStderr) console.error(line);
-		},
+		info: (line) => console.error(line),
 		warn: (line) => report(ctx, line, "warning"),
 		error: (line) => report(ctx, line, "error"),
 	};
@@ -171,6 +167,37 @@ export function describeDiscovered(entry: RegistryEntry): string {
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 function describeEndpoint(endpoint: EndpointConfig): string {
 	return `"${endpoint.name}"${endpoint.description ? ` (${endpoint.description})` : ""} → ${addressOf(endpoint)}`;
+}
+
+/**
+ * Shorten the one long segment an address can carry (a member's session uuid) so a status line fits.
+ *
+ * `ace:lan:events:oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2` → `ace:lan:events:oh-my-pi:…fda2b2`, the
+ * same tail the session label uses.
+ */
+function shortAddress(address: string): string {
+	const lastColon = address.lastIndexOf(":");
+	const tail = address.slice(lastColon + 1);
+	return tail.length > 12 ? `${address.slice(0, lastColon + 1)}…${tail.slice(-6)}` : address;
+}
+
+/**
+ * The session's topology as one status line: what it reads (`subscription←stream`, including the inbox the
+ * directory registered for this session) and where it can write (`channel→stream`).
+ */
+export function formatChannelSummary(
+	subscriptions: readonly EndpointConfig[],
+	publications: readonly EndpointConfig[],
+): string {
+	const inbound = subscriptions.map(
+		(endpoint) => `${endpoint.name}←${shortAddress(endpointAddress(endpoint) ?? "-")}`,
+	);
+	const outbound = publications.map(
+		(endpoint) => `${endpoint.name}→${shortAddress(endpointAddress(endpoint) ?? "-")}`,
+	);
+	return ["ace:", inbound.join(" · "), outbound.length === 0 ? "" : `| out ${outbound.join(" · ")}`]
+		.filter((part) => part.length > 0)
+		.join(" ");
 }
 
 /**
@@ -624,6 +651,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			console.error(
 				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}${directory}`,
 			);
+			// The status slot carries the topology, set once: `subscriptions` includes the inbox the
+			// directory just registered for this session, which is exactly what a reader wants to see.
+			if (ctx.hasUI) ctx.ui.setStatus("ace", formatChannelSummary(subscriptions, resolved.publish));
 			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
 			if (resolved.subscribe.some((entry) => entry.spool)) {
 				console.error(`[ace] spooling bursts to ${spoolDir}`);

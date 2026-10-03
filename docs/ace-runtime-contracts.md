@@ -243,8 +243,8 @@ Events in `<ace_event>` blocks come from other agent sessions through ACE, never
 | `/ace pending` | 列出保留的 manual 事件（`sender (session 尾6)/id: body 截断`） |
 | `/ace activate <sender> <id>` | 取出一条 manual 事件并以 `next_turn` 注入；不存在则报错 |
 | `/ace stats` | manual 条数、死信条数与目录、spool 窗口、逐通道计数器 |
-| 状态行 | 最后一次运行时动作（`ace: …`），UI 模式经 `ctx.ui.setStatus` |
-| 日志 | `ACE_LOG=1` 时无 UI 模式也输出运行时行；**日志不含 body** |
+| 状态栏 | 拓扑一行：`in <订阅名>←<stream>`（长 session uuid 缩成 `…` + 后 6 位，含注册后出现的 `session-inbox`）+ `out <通道名>→<stream>`；启动时设置一次，活动日志不再覆盖 |
+| 日志 | 运行时行（listen/received/injecting/spool/…）始终写 stderr；**日志不含 body** |
 
 ---
 

@@ -144,7 +144,7 @@ class OmpSession {
 		});
 		this.child = spawn("omp", ["--mode", "rpc", "--no-ui", "--no-extensions", "-e", extensionPath, "-e", probePath], {
 			cwd,
-			env: { ...process.env, ACE_LOG: "1" },
+			env: { ...process.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const lines = createInterface({ input: this.child.stdout as NodeJS.ReadableStream });
@@ -182,7 +182,7 @@ class OmpSession {
 		return this.waitFor(() => this.frames.some((frame) => frame.type === type), timeoutMs);
 	}
 
-	/** Wait for a line the extension logged (ACE_LOG=1 writes runtime lines to stderr). */
+	/** Wait for a line the extension logged (runtime lines go to stderr, which this harness captures). */
 	async waitForLog(fragment: string, timeoutMs: number): Promise<boolean> {
 		return this.waitFor(() => this.logs.some((line) => line.includes(fragment)), timeoutMs);
 	}

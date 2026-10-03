@@ -38,7 +38,7 @@ holds a `.ace.json` starts ACE.
 
 ```bash
 # 1. released tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.3/ace-runtime-0.1.3.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -67,10 +67,10 @@ or skip the plugin system and link the entry into the host's extension directory
 to, so keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.3/ace-runtime-0.1.3.tgz
-mkdir -p ~/ace-runtime-0.1.3 ~/.omp/agent/extensions
-tar xzf ace-runtime-0.1.3.tgz -C ~/ace-runtime-0.1.3 --strip-components=1
-cd ~/ace-runtime-0.1.3 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
+mkdir -p ~/ace-runtime-0.1.4 ~/.omp/agent/extensions
+tar xzf ace-runtime-0.1.4.tgz -C ~/ace-runtime-0.1.4 --strip-components=1
+cd ~/ace-runtime-0.1.4 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -93,7 +93,7 @@ sudo apt update && sudo apt install -y redis-server && sudo service redis-server
 redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.3/ace-runtime-0.1.3.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.4/ace-runtime-0.1.4.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
   "subscribe": [ { "name": "inbox", "transport": "redis-streams",
@@ -279,8 +279,8 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 | `config.stream` … | redis-streams subscribe: `stream`, `group`, `url`, `consumer`, `field`, `count`, `blockMs`, `reclaimIdleMs`, `reclaimAttempts`, `retryDelayMs`, `maxRetryDelayMs`; publish: `stream`, `url`, `field` |
 
 `.ace.json` is the only source of MQ configuration — there is no environment fallback for addresses, streams, or
-groups. `ACE_CONFIG` selects a different config file path, `ACE_LOG=1` also logs runtime lines in modes without a
-UI.
+groups. `ACE_CONFIG` selects a different config file path; runtime lines always go to stderr, and the UI status
+slot holds the channel topology.
 
 Secrets stay out of the file: `${VAR}` in any string is resolved from the environment when the file is read
 (`"url": "redis://:${REDIS_PASSWORD}@broker:6379"`), `$$` writes a literal `${`, and an unset variable fails the
@@ -315,7 +315,7 @@ and reports the write error once. No summary event is injected: the agent alread
 autocomplete it after adding a `$schema` line (a local path inside the installed package works equally):
 
 ```json
-{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.3/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
+{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.4/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
 ```
 
 The schema covers structure, types, per-kind required keys, and "publish needs a sender". Two rules are semantic and

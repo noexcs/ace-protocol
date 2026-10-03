@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import aceExtension, { buildPublishToolText, describeDiscovered } from "../../extensions/ace.ts";
+import aceExtension, { buildPublishToolText, describeDiscovered, formatChannelSummary } from "../../extensions/ace.ts";
 import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { RegistryEntry, ResolvedAceConfig } from "../../src/index.ts";
 import { formatSessionLabel } from "../../src/utils.ts";
@@ -168,6 +168,35 @@ describe("ace_agents rows", () => {
 
 		expect(row).toContain(description);
 		expect(row).not.toContain("…");
+	});
+});
+
+describe("status line", () => {
+	it("summarises the topology and shortens a member's uuid", () => {
+		const summary = formatChannelSummary(
+			[
+				{ name: "from-wsl", transport: "redis-streams", config: { stream: "ace:lan:in.mac" }, options: {} },
+				{
+					name: "session-inbox",
+					transport: "redis-streams",
+					config: { stream: "ace:lan:events:oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2" },
+					options: {},
+				},
+			],
+			[{ name: "to-wsl", transport: "redis-streams", config: { stream: "ace:lan:in.wsl" }, options: {} }],
+		);
+
+		expect(summary).toBe(
+			"ace: from-wsl←ace:lan:in.mac · session-inbox←ace:lan:events:oh-my-pi:…fda2b2 | out to-wsl→ace:lan:in.wsl",
+		);
+	});
+
+	it("leaves out the outbound half for a session that cannot publish", () => {
+		const subscriptions = [
+			{ name: "inbox", transport: "redis-streams", config: { stream: "ace:in.a" }, options: {} },
+		];
+
+		expect(formatChannelSummary(subscriptions, [])).toBe("ace: inbox←ace:in.a");
 	});
 });
 
