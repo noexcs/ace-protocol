@@ -360,7 +360,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			name: "ace_agents",
 			label: "ACE Agents",
 			description:
-				"List the agent sessions reachable right now. Each row is a member you can pass to ace_publish as `target`.",
+				"List the other agent sessions reachable right now — this session is not listed. Each row is a member you can pass to ace_publish as `target`.",
 			promptGuidelines: ["Call ace_agents before ace_publish when the peer is not one of the configured channels."],
 			parameters: AGENTS_PARAMETERS,
 			async execute(_toolCallId, params) {

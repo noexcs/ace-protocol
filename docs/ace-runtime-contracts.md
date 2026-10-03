@@ -195,7 +195,7 @@ Failed: "codex": no live session matches "codex" (live: oh-my-pi:01a1…)
 | `agent` | string | — | 按 coding agent 前缀过滤，如 `oh-my-pi` / `pi` |
 | `limit` | number | 20（上限 50） | 返回行数 |
 
-每行：`<member> — <description 截断 120 字> (renews in Ns)`；**排除自己**；无在线会话时返回固定文案。
+每行：`<member> — <description 原样输出，不截断> (renews in Ns)`；**排除自己**（自己那行不会出现，这不是未注册）；无在线会话时返回固定文案。
 
 ### 4.3 注入到会话的文本（宿主相关，进入模型上下文）
 
