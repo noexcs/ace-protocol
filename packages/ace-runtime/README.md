@@ -31,50 +31,43 @@ metadata to ACE fields, and nothing here teaches Pi about ACE: Pi only sees cont
 
 ## Install
 
-The package ships the extension, its sources (`extensions/ace.ts` imports `../src/index.ts`, so it runs
-under Bun as-is), the schemas and the built `dist/`.
+The package is an oh-my-pi plugin: `package.json` declares `"omp": {"extensions": ["./extensions/ace.ts"]}`,
+so the host loads the extension by itself — no `--extension` flag, no build, no path to remember (the entry
+is TypeScript that imports `../src`, and it runs under Bun as-is). Every session whose working directory
+holds a `.ace.json` starts ACE.
 
 ```bash
-# 1. from a GitHub release — no copying, no registry. The repository is public, so `gh` needs no
-#    login for read access; the release carries the tarball `npm pack` produced. Check the tag against
-#    the revision you need: v0.1.0 predates the current `main`, and a tarball install serves `dist`
-#    (the package's `main`), which only a rebuild refreshes.
-gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
-mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
+# 1. released tarball — one command: no clone, no registry, no auth
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
 
-# 2. from npm — one command and no auth, the smoothest once it is published
-npm i ace-runtime                          # or the scoped name it is published under
+# 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
+git clone --depth 1 https://github.com/noexcs/ace-protocol
+cd ace-protocol/packages/ace-runtime && npm install --ignore-scripts
+omp install "$PWD"                        # same as: omp plugin link "$PWD"
 
-# 3. public repository: install the release asset directly, no gh needed
-npm i https://github.com/noexcs/ace-protocol/releases/download/v0.1.0/ace-runtime-0.1.0.tgz
-
-# 4. from a checkout, for development, or when the machine cannot reach the registry
-git clone --depth 1 https://github.com/noexcs/ace-protocol && cd ace-protocol/packages/ace-runtime
-npm install --ignore-scripts
+# 3. from npm, once it is published
+omp install ace-runtime
 ```
 
-`npm pack` in this directory rebuilds `dist` (its `prepack`) and produces the tarball the release carries;
-the file is byte-identical to the one verified against a live session. Note that npm refuses `git`-type
-sources on machines configured with `allow-git=none` — another reason to prefer 1 or 2.
-
-Then point the host at the installed extension (`node_modules/ace-runtime/extensions/ace.ts`), with a
-`.ace.json` in the session's working directory.
-
-#### Updating an existing install
-
-The extension entry (`exports["./extension"]` → `extensions/ace.ts`) is TypeScript that imports `../src`,
-so a host loading that file runs the checkout as-is — no build, no republish. Point the host at the updated
-checkout and restart the session; a running session keeps the code it started with.
+Then it behaves like any other plugin:
 
 ```bash
-cd <checkout> && git pull                                  # or clone it first
-cd packages/ace-runtime && npm install --ignore-scripts     # first time only
-omp --extension $PWD/extensions/ace.ts                      # restart, .ace.json in the session cwd
+omp plugin list                 # installed? enabled? which manifest?
+omp plugin disable ace-runtime  # stop loading it
+omp plugin uninstall ace-runtime
+omp plugin doctor               # when a plugin misbehaves
 ```
 
-Installing the *package* (`npm i ace-runtime`) is different: its `main` serves `dist`, so it picks up
-changes only when the package is rebuilt (`npm run build`, or `npm pack` through its `prepack`) or
-republished. A release tag also lags `main`; check it against the revision you need.
+Restart the session after installing or updating: a running session keeps the code it started with. If a
+session also passes `--extension`/`-e` for the same file, the extension refuses the second runtime — two
+runtimes on one consumer group would silently split every channel's events — and logs one line saying so.
+
+**Updating**: reinstall from the newer tarball URL, or `git pull` in a linked checkout (the link is live),
+then restart. A release tag lags `main`, so check the tag against the revision you want.
+
+The tarball also serves programmatic consumers: `dist` through `main`/`exports["."]` for `import
+"ace-runtime"`, and `./extension` for a host that wants the entry path without plugin discovery. `npm pack`
+rebuilds `dist` (its `prepack`) and produces the tarball a release carries.
 
 ### On a fresh WSL box
 
@@ -82,16 +75,14 @@ republished. A release tag also lags `main`; check it against the revision you n
 sudo apt update && sudo apt install -y redis-server && sudo service redis-server start
 redis-cli ping                              # PONG
 
-# read-only access needs no login (the repository is public); a release tag lags `main`, so for the
-# current behaviour prefer the checkout install at the end of this section
-gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
-mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
+# read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
   "subscribe": [ { "name": "inbox", "transport": "redis-streams",
     "config": { "stream": "ace:in.wsl", "group": "wsl", "url": "redis://127.0.0.1:6379" } } ] }
 JSON
-omp --extension node_modules/ace-runtime/extensions/ace.ts   # or: pi --extension …
+omp                                          # the installed plugin loads the extension itself
 
 # in another terminal, once the session printed "listening"
 redis-cli XADD ace:in.wsl '*' message \
@@ -127,8 +118,8 @@ sed -i '' 's/^bind .*/bind 0.0.0.0 ::1/; s/^protected-mode .*/protected-mode no/
 brew services restart redis
 redis-cli -h <lan-ip> ping                               # PONG = the network path works
 
-# on each machine, from its own directory
-omp --extension <path>/extensions/ace.ts                 # or pi --extension …
+# on each machine, from its own directory (install once: see "Install")
+omp                                                      # the plugin loads the extension; cwd holds .ace.json
 
 # then, from either side, once the other side printed "listening"
 redis-cli -h <lan-ip> XADD ace:lan:in.wsl '*' message \
@@ -236,8 +227,9 @@ cat > .ace.json <<'JSON'
 }
 JSON
 
-# 2. start Pi with the extension
-pi --extension /path/to/ace-runtime/extensions/ace.ts
+# 2. start the host: oh-my-pi loads the installed plugin by itself, upstream Pi needs the entry path
+omp                                                       # oh-my-pi, with the plugin installed
+pi --extension /path/to/ace-runtime/extensions/ace.ts      # upstream Pi, from a checkout
 
 # 3. publish from anywhere; the event lands in the running conversation
 redis-cli XADD ace:events '*' message \
@@ -303,10 +295,10 @@ and reports the write error once. No summary event is injected: the agent alread
 `stream` and `field`).
 
 [`schema/ace-config.schema.json`](schema/ace-config.schema.json) describes the file, so editors validate and
-autocomplete it after adding a `$schema` line:
+autocomplete it after adding a `$schema` line (a local path inside the installed package works equally):
 
 ```json
-{ "$schema": "./node_modules/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
+{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.1/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
 ```
 
 The schema covers structure, types, per-kind required keys, and "publish needs a sender". Two rules are semantic and
