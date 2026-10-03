@@ -35,8 +35,10 @@ The package ships the extension, its sources (`extensions/ace.ts` imports `../sr
 under Bun as-is), the schemas and the built `dist/`.
 
 ```bash
-# 1. from a GitHub release — no copying, no registry. This repository is private, so `gh` must be
-#    logged in there; the release carries the tarball `npm pack` produced.
+# 1. from a GitHub release — no copying, no registry. The repository is public, so `gh` needs no
+#    login for read access; the release carries the tarball `npm pack` produced. Check the tag against
+#    the revision you need: v0.1.0 predates the current `main`, and a tarball install serves `dist`
+#    (the package's `main`), which only a rebuild refreshes.
 gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
 mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
 
@@ -58,13 +60,30 @@ sources on machines configured with `allow-git=none` — another reason to prefe
 Then point the host at the installed extension (`node_modules/ace-runtime/extensions/ace.ts`), with a
 `.ace.json` in the session's working directory.
 
+#### Updating an existing install
+
+The extension entry (`exports["./extension"]` → `extensions/ace.ts`) is TypeScript that imports `../src`,
+so a host loading that file runs the checkout as-is — no build, no republish. Point the host at the updated
+checkout and restart the session; a running session keeps the code it started with.
+
+```bash
+cd <checkout> && git pull                                  # or clone it first
+cd packages/ace-runtime && npm install --ignore-scripts     # first time only
+omp --extension $PWD/extensions/ace.ts                      # restart, .ace.json in the session cwd
+```
+
+Installing the *package* (`npm i ace-runtime`) is different: its `main` serves `dist`, so it picks up
+changes only when the package is rebuilt (`npm run build`, or `npm pack` through its `prepack`) or
+republished. A release tag also lags `main`; check it against the revision you need.
+
 ### On a fresh WSL box
 
 ```bash
 sudo apt update && sudo apt install -y redis-server && sudo service redis-server start
 redis-cli ping                              # PONG
 
-# `gh` needs to be logged in on that machine (the repository is private)
+# read-only access needs no login (the repository is public); a release tag lags `main`, so for the
+# current behaviour prefer the checkout install at the end of this section
 gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
 mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
 cat > .ace.json <<'JSON'
