@@ -5,7 +5,9 @@ events — CI results, alerts, other agents — an *active* input to a running a
 has to poll for.
 
 Protocol semantics come from the [`ACE-RFC-Draft-0.1.md`](../../docs/ACE-RFC-Draft-0.1.md) draft; engineering
-decisions from [`ace-v0.1.md`](../../docs/ace-v0.1.md).
+decisions from [`ace-v0.1.md`](../../docs/ace-v0.1.md); implementation-level contracts — configuration keys,
+Redis keys and fields, tool parameters, delivery semantics, flows and invariants — from
+[`ace-runtime-contracts.md`](../../docs/ace-runtime-contracts.md).
 
 ```text
 External World

@@ -5,6 +5,9 @@
 > 目标是基于 **Pi Agent Runtime / pi-coding-agent** 实现一个最小可运行的 ACE Runtime，使外部事件能够进入 Agent Context，并按照 ACE 定义的 activation 语义驱动 Agent。
 >
 > 本文不是 ACE RFC 的替代品。协议语义以 `ACE-RFC-Draft-0.1.md` 为准；本文负责说明第一版工程如何落地。
+>
+> 本文写于实现之前。**实现级契约（配置键集、Redis 键与字段、工具参数、投递语义、流程与不变量）以
+> [`ace-runtime-contracts.md`](ace-runtime-contracts.md) 为准**；末节「实现现状」记录本文之后新增的机制。
 
 ---
 
@@ -2032,6 +2035,31 @@ distributed runtime
 ```
 
 不要反过来。
+
+---
+
+# 41.1 实现现状（2026-10-04）
+
+阶梯的逐级状态，以及本文发布之后实现中新增的机制。细节见
+[`ace-runtime-contracts.md`](ace-runtime-contracts.md)。
+
+| 阶梯 | 状态 | 说明 |
+|---|---|---|
+| immediate interruption | ✅ | 运行中 `steer` 抢占，idle 起 turn；打断时机由宿主的 `interruptMode` 决定 |
+| persistent delivery | 🟡 部分 | 成功才 ack、PEL 重投、死信落盘、突发落盘；**未做**：backlog 重放（消费组从队尾起）、持久化去重 |
+| multi-agent | ✅ | 两个会话互发已验证；发布时盖章 `sessionId`（RFC §5.4） |
+| agent discovery | ✅ 基础版 | `registry` + `ace_agents` + 按 member 发布（本文未涵盖；RFC §22 第 1 项） |
+| dynamic routing | 🟡 部分 | 按 member / 唯一前缀寻址已做；能力广告与多副本挑选未做 |
+| distributed runtime | ❌ | 多 broker、多集群未涉及 |
+
+本文未写、实现中新增的机制：
+
+1. **确认点后移**：注入后要等事件文本真的出现在会话里才 ack（oh-my-pi 上 idle 的 `steer`/`followUp` 只入队、不会自排空），超时不 ack、留 PEL 重投。
+2. **突发落盘 + 摘要**：超过阈值的窗口写 JSONL，只注入一条摘要事件。
+3. **死信文件**：超过 `reclaimAttempts` 先写 `dead-letter.<ts>.jsonl`（fsync）再 ack；写失败则不 ack。
+4. **Agent 目录**：`ZSet`（在线）+ `Hash`（档案）+ 每会话独占 `Stream`（收件箱），心跳续期，读路径清扫崩溃残留。
+5. **子代理门控**：oh-my-pi 会把扩展重绑到它 spawn 的每个会话，因此只在 `ctx.agent.kind === "main"` 时注册与订阅。
+6. **验证资产**：`npm run verify:live`（真 broker，9 场景）、`npm run verify:omp`（真 oh-my-pi 会话，2 场景）、CI 跑 test/check/build/verify:live。
 
 ---
 

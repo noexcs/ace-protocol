@@ -15,6 +15,7 @@ verify the design end to end.
 |---|---|
 | [`docs/ACE-RFC-Draft-0.1.md`](docs/ACE-RFC-Draft-0.1.md) | The protocol: message envelope, activation semantics, conformance |
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | The engineering guide for the first implementation |
+| [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, Redis key layout, tool parameters, delivery semantics, flows, invariants |
 | [`packages/ace-runtime/`](packages/ace-runtime) | The runtime: protocol, transports, agent engines, Pi extension |
 | [`pi/`](pi) | Upstream Pi checkout (gitignored) used for integration testing against its sources |
 
@@ -25,10 +26,16 @@ drives a turn (or is queued/deferred per `activation`), and two Pi agents can ta
 a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary and the split plan.
 
-Verified today: 310 tests, `npm run verify:live` (seven scenarios against a real Redis Streams broker:
-delivery, poison messages, reclaim after a failed delivery, dedup, sender allowlists, manual activation,
-burst spooling), `npm run verify:omp` (the extension inside a real `omp --mode rpc` session: the event reaches
-the conversation, the turn settles, the entry is acknowledged), and two live Pi sessions exchanging events.
+Verified today: 340 tests, `npm run verify:live` (nine scenarios against a real Redis Streams broker: delivery,
+poison messages, reclaim after a failed delivery, dedup, sender allowlists, manual activation, burst spooling,
+the agent directory lifecycle and its crash sweep), `npm run verify:omp` (the extension inside a real
+`omp --mode rpc` session: an event reaches the conversation, the turn settles, the entry is acknowledged), and
+two live Pi sessions exchanging events.
+
+A session can also publish itself to an **agent directory** on Redis and be found by its peers
+(`registry` in `.ace.json`; RFC §22 item 1): `ace_agents` lists the sessions that are online, and `ace_publish`
+takes a member as `target` — or a list of targets — to send one event to several peers at once. See
+[the contracts](docs/ace-runtime-contracts.md).
 
 ## Quick start
 
