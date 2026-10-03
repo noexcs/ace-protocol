@@ -4,11 +4,13 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import aceExtension, {
+	aceCompletions,
 	buildPublishToolText,
 	describeDiscovered,
 	formatChannelListing,
 	formatChannelReport,
 } from "../../extensions/ace.ts";
+import { channelMenuItems } from "../../extensions/ace-manager.ts";
 import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { RegistryEntry, ResolvedAceConfig } from "../../src/index.ts";
 import { formatSessionLabel } from "../../src/utils.ts";
@@ -300,11 +302,83 @@ describe("channel listing", () => {
 	});
 });
 
+describe("argument completions", () => {
+	it("offers the subcommands with their hints while the argument is empty", () => {
+		expect(aceCompletions("")).toEqual([
+			{ value: "list ", label: "list", description: "channels this session reads and can publish to" },
+			{ value: "pending ", label: "pending", description: "manual events retained for activation" },
+			{
+				value: "activate ",
+				label: "activate",
+				description: "inject one retained event: /ace activate <sender> <id>",
+			},
+			{ value: "stats ", label: "stats", description: "per-channel counters, spool windows, dead letters" },
+		]);
+		expect(aceCompletions("st")?.map((item) => item.label)).toEqual(["stats"]);
+	});
+
+	it("completes the retained events for activate, and nothing else", () => {
+		const pending = [{ sender: "ci", id: "evt_1", body: "Build failed" }];
+
+		expect(aceCompletions("activate ", pending)).toEqual([
+			{ value: "activate ci evt_1", label: "ci/evt_1", description: "Build failed" },
+		]);
+		expect(aceCompletions("activate nope", pending)).toBeNull();
+		expect(aceCompletions("list ", pending)).toBeNull();
+	});
+
+	it("is registered on the ace command", () => {
+		const { api, commands } = fakeExtensionApi();
+		aceExtension(api);
+
+		expect(typeof commands.find((entry) => entry.name === "ace")?.definition.getArgumentCompletions).toBe("function");
+	});
+});
+
+describe("manager rows", () => {
+	it("names each channel's direction, address and state", () => {
+		const items = channelMenuItems({
+			subscriptions: [
+				{
+					name: "from-wsl",
+					transport: "redis-streams",
+					description: "the WSL agent",
+					activation: "next_turn",
+					config: { stream: "ace:lan:in.mac" },
+					options: {},
+				},
+				{
+					name: "session-inbox",
+					transport: "redis-streams",
+					config: { stream: "ace:lan:events:x" },
+					options: {},
+				},
+			],
+			publications: [
+				{ name: "to-wsl", transport: "redis-streams", config: { stream: "ace:lan:in.wsl" }, options: {} },
+			],
+			derivedName: "session-inbox",
+			disabled: ["stale"],
+		});
+
+		expect(items.map((item) => `${item.label} → ${item.description}`)).toEqual([
+			'● from-wsl → redis-streams ace:lan:in.mac · [in] · [next_turn] · "the WSL agent"',
+			"● session-inbox → redis-streams ace:lan:events:x · [in] · (registered for this session)",
+			"● to-wsl → redis-streams ace:lan:in.wsl · [out]",
+			"⦸ stale → disabled in .ace.json",
+		]);
+	});
+});
+
 /** The slice of `ExtensionAPI` the extension touches; nothing else is reached in these tests. */
 function fakeExtensionApi() {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const tools: string[] = [];
-	const commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
+	const commands: Array<{
+		name: string;
+		handler: (args: string, ctx: unknown) => Promise<void>;
+		definition: { getArgumentCompletions?: unknown };
+	}> = [];
 	return {
 		handlers,
 		tools,
@@ -316,8 +390,10 @@ function fakeExtensionApi() {
 				return () => {};
 			},
 			registerTool: (definition: { name: string }) => void tools.push(definition.name),
-			registerCommand: (name: string, definition: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
-				void commands.push({ name, handler: definition.handler }),
+			registerCommand: (
+				name: string,
+				definition: { handler: (args: string, ctx: unknown) => Promise<void>; getArgumentCompletions?: unknown },
+			) => void commands.push({ name, handler: definition.handler, definition }),
 			sendUserMessage: () => {},
 		} as unknown as ExtensionAPI,
 	};

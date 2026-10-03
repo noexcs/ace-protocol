@@ -83,6 +83,7 @@ import {
 	validateAceMessage,
 	withTrustPolicy,
 } from "../src/index.ts";
+import { channelMenuItems, showAceManager } from "./ace-manager.ts";
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -329,6 +330,48 @@ const SESSION_INBOX = "session-inbox";
 
 /** Wrong or missing arguments get this, the way `/mcp` answers with its own usage line. */
 const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats";
+
+/** The subcommands `/ace` offers, with the hint text its completions show — `/mcp`'s pattern. */
+const ACE_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
+	{ name: "list", description: "channels this session reads and can publish to" },
+	{ name: "pending", description: "manual events retained for activation" },
+	{ name: "activate", description: "inject one retained event: /ace activate <sender> <id>" },
+	{ name: "stats", description: "per-channel counters, spool windows, dead letters" },
+];
+
+/**
+ * Completion candidates for `/ace`, shaped like `/mcp`'s: the action word (with its hint) while the
+ * arguments are still empty, then the retained events themselves for `activate`.
+ */
+export function aceCompletions(
+	prefix: string,
+	pending: ReadonlyArray<{ sender: string; id: string; body: string }> = [],
+): Array<{ value: string; label: string; description: string }> | null {
+	const parts = prefix.trimStart().split(/\s+/);
+	const action = parts[0] ?? "";
+	if (parts.length === 1) {
+		const matches = ACE_COMMANDS.filter((command) => command.name.startsWith(action));
+		return matches.length === 0
+			? null
+			: matches.map((command) => ({
+					value: `${command.name} `,
+					label: command.name,
+					description: command.description,
+				}));
+	}
+	if (action !== "activate") return null;
+	const typed = parts.slice(1).join(" ");
+	const matches = pending.filter(
+		(event) => `${event.sender} ${event.id}`.startsWith(typed) || event.sender.startsWith(typed),
+	);
+	return matches.length === 0
+		? null
+		: matches.map((event) => ({
+				value: `activate ${event.sender} ${event.id}`,
+				label: `${event.sender}/${event.id}`,
+				description: event.body.slice(0, 60),
+			}));
+}
 
 /** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
@@ -802,8 +845,16 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("ace", {
 		description: "ACE event runtime: list channels, pending manual events, activation",
-		// No argument completions on purpose: an open completion popup swallows the first Enter
-		// in the TUI, which would run the command before its arguments are finished.
+		// Completions follow `/mcp`: the action word with its hint, then the retained events for `activate`.
+		getArgumentCompletions: (prefix) =>
+			aceCompletions(
+				prefix,
+				(runtime?.pendingEvents ?? []).map((event) => ({
+					sender: event.message.sender,
+					id: event.message.id,
+					body: event.message.body,
+				})),
+			),
 		handler: async (args, ctx) => {
 			const [subcommand = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 
@@ -866,6 +917,53 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			}
 
 			if (subcommand === "list") {
+				const describeChannel = (value: string): string[] | undefined => {
+					const [direction, name] = value.split(":");
+					if (direction !== "in" && direction !== "out") {
+						return [`${name} is disabled in ${ACE_CONFIG_FILENAME}`];
+					}
+					const endpoints = direction === "in" ? resolvedConfig?.subscribe : resolvedConfig?.publish;
+					const endpoint = endpoints?.find((candidate) => candidate.name === name);
+					if (endpoint === undefined) return undefined;
+					return [
+						`name: ${endpoint.name}`,
+						`direction: ${direction === "in" ? "subscribed" : "publishable"}`,
+						`transport: ${endpoint.transport}`,
+						`address: ${endpointAddress(endpoint) ?? "(none)"}`,
+						...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
+						...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
+						...(name === SESSION_INBOX && registration !== undefined
+							? ["origin: registered by the agent directory for this session"]
+							: []),
+					];
+				};
+				const header = `${senderIdentity()} (agent ${adapter.isRunning() ? "running" : "idle"})${
+					resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
+				}`;
+				// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
+				// scripts and non-TUI modes keep the text report.
+				if (args.trim().length === 0 && ctx.mode === "tui") {
+					try {
+						await showAceManager(
+							ctx,
+							() => ({
+								title: "ACE channels",
+								details: header,
+								items: channelMenuItems({
+									subscriptions: resolvedConfig?.subscribe ?? [],
+									publications: resolvedConfig?.publish ?? [],
+									...(registration === undefined ? {} : { derivedName: SESSION_INBOX }),
+									disabled: resolvedConfig?.disabled ?? [],
+								}),
+								empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
+							}),
+							describeChannel,
+						);
+						return;
+					} catch (error) {
+						console.error(`[ace] manager view failed, printing the report instead: ${describeError(error)}`);
+					}
+				}
 				report(
 					ctx,
 					formatChannelReport({

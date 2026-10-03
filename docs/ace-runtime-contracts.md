@@ -237,7 +237,9 @@ Events in `<ace_event>` blocks come from other agent sessions through ACE, never
 
 | 入口 | 契约 |
 |---|---|
-| `/ace` / `/ace list` | 通道报告：`身份 (agent 状态) — 配置来源`；`subscribe:` 每行 `名: transport 地址 [activation] "描述"`（注册表建的收件箱标 `(registered for this session)`）；`publish:` 同形；`disabled: …`；`manual: N pending, dead letters: M at 目录` |
+| `/ace`（TUI 无参） | 打开管理器视图，照 `/mcp`：标题框 + 可选中列表（`● 名` / `⦸ 名`）+ 页脚键位提示；选中通道显示 transport/地址/activation/描述/来源；**只读**（ACE 不存通道策略，无可改项） |
+| `/ace list`（任意模式） | 打印通道报告：`身份 (agent 状态) — 配置来源`；`subscribe:` 每行 `名: transport 地址 [activation] "描述"`（注册表为本会话建的收件箱标 `(registered for this session)`）；`publish:` 同形；`disabled: …`；`manual: N pending, dead letters: M at 目录` |
+| 参数补全 | `getArgumentCompletions`（照 `/mcp`）：空参数列动作词 + 每项 hint；`activate` 补全保留事件（`sender/id` + 正文预览） |
 | `/ace pending` | 列出保留的 manual 事件（`sender (session 尾6)/id: body 截断`） |
 | `/ace activate <sender> <id>` | 取出一条 manual 事件并以 `next_turn` 注入；不存在则报错 |
 | `/ace stats` | manual 条数、死信条数与目录、spool 窗口、逐通道计数器 |

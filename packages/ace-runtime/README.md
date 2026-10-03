@@ -38,7 +38,7 @@ holds a `.ace.json` starts ACE.
 
 ```bash
 # 1. released tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.6/ace-runtime-0.1.6.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.7/ace-runtime-0.1.7.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -67,10 +67,10 @@ or skip the plugin system and link the entry into the host's extension directory
 to, so keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.6/ace-runtime-0.1.6.tgz
-mkdir -p ~/ace-runtime-0.1.6 ~/.omp/agent/extensions
-tar xzf ace-runtime-0.1.6.tgz -C ~/ace-runtime-0.1.6 --strip-components=1
-cd ~/ace-runtime-0.1.6 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.7/ace-runtime-0.1.7.tgz
+mkdir -p ~/ace-runtime-0.1.7 ~/.omp/agent/extensions
+tar xzf ace-runtime-0.1.7.tgz -C ~/ace-runtime-0.1.7 --strip-components=1
+cd ~/ace-runtime-0.1.7 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -93,7 +93,7 @@ sudo apt update && sudo apt install -y redis-server && sudo service redis-server
 redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.6/ace-runtime-0.1.6.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.7/ace-runtime-0.1.7.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
   "subscribe": [ { "name": "inbox", "transport": "redis-streams",
@@ -314,7 +314,7 @@ and reports the write error once. No summary event is injected: the agent alread
 autocomplete it after adding a `$schema` line (a local path inside the installed package works equally):
 
 ```json
-{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.6/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
+{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.7/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
 ```
 
 The schema covers structure, types, per-kind required keys, and "publish needs a sender". Two rules are semantic and
@@ -408,12 +408,14 @@ exactly like any `sender`).
 
 | Command | Effect |
 |---|---|
-| `/ace` | origin of the configuration, agent state, number of retained `manual` events |
-| `/ace stats` | pending `manual` count, sender, and every burst window that is currently buffering |
+| `/ace` | in a TUI, opens the channel manager — framed list, arrows to move, enter for a channel's details, esc to close; everywhere else prints what `/ace list` prints |
+| `/ace list` | the channel report: identity, agent state, config source, every subscribe/publish channel with its address, activation and description, disabled channels, and the manual/dead-letter counters |
+| `/ace stats` | per-channel counters, spool windows, dead letters, pending `manual` count |
 | `/ace pending` | list retained `manual` events (`sender/id: body`) |
 | `/ace activate <sender> <id>` | inject a retained event as `next_turn` |
 
-The status line shows the runtime's last action (`ace: injecting id=… sender=… agent=running`).
+Arguments complete the way `/mcp`'s do: the action words come with a hint, and `activate` suggests the
+retained events themselves. ACE writes nothing to the UI status slot.
 
 ## Transports
 

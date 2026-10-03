@@ -37,11 +37,12 @@ describe("host boundary", () => {
 	});
 
 	// The extension adapter needs no Pi types at all: it declares the injection surface it uses, so
-	// only the SDK adapter and the extension itself are host-coupled.
-	it("confines Pi imports to the SDK adapter and the extension", () => {
+	// only the SDK adapter, the extension and its manager view are host-coupled — the view draws with
+	// the host's TUI primitives, the way the built-in `/mcp` extension keeps its own `ui.ts` beside it.
+	it("confines Pi imports to the SDK adapter, the extension and its manager view", () => {
 		const withPi = [...typescriptFiles("src"), ...typescriptFiles("extensions")].filter(importsPi).sort();
 
-		expect(withPi).toEqual(["extensions/ace.ts", "src/agent/pi-adapter.ts"]);
+		expect(withPi).toEqual(["extensions/ace-manager.ts", "extensions/ace.ts", "src/agent/pi-adapter.ts"]);
 	});
 
 	it("resolves the package root correctly", () => {
