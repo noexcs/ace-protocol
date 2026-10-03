@@ -3,10 +3,10 @@ import { renderAceEvent } from "./pi-adapter.ts";
 
 /** Something that can decide when an injected event has reached the conversation. */
 export interface DeliveryObserver {
-	/** Resolves once the host surfaced `message` in the conversation. */
-	observe(message: AceMessage): Promise<void>;
+	/** Resolves once the host surfaced `message` in the conversation, i.e. this rendered text. */
+	observe(message: AceMessage, rendered?: string): Promise<void>;
 	/** Drop a pending observation that will never be satisfied (injection gave up). */
-	release?(message: AceMessage): void;
+	release?(message: AceMessage, rendered?: string): void;
 }
 
 /**
@@ -29,8 +29,8 @@ export class AceDeliveryObserver implements DeliveryObserver {
 		this.renderEvent = options.renderEvent ?? renderAceEvent;
 	}
 
-	observe(message: AceMessage): Promise<void> {
-		const text = this.renderEvent(message);
+	observe(message: AceMessage, rendered?: string): Promise<void> {
+		const text = rendered ?? this.renderEvent(message);
 		return new Promise((resolve) => {
 			const waiters = this.waiters.get(text) ?? [];
 			waiters.push(resolve);
@@ -38,8 +38,8 @@ export class AceDeliveryObserver implements DeliveryObserver {
 		});
 	}
 
-	release(message: AceMessage): void {
-		const text = this.renderEvent(message);
+	release(message: AceMessage, rendered?: string): void {
+		const text = rendered ?? this.renderEvent(message);
 		const waiters = this.waiters.get(text);
 		if (!waiters) return;
 		this.waiters.delete(text);

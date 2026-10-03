@@ -42,6 +42,7 @@ export interface PiExtensionAdapterOptions {
 	 */
 	isIdle?: () => boolean;
 	/** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
+	/** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
 	renderEvent?: (message: AceMessage) => string;
 	/** Host delivery behavior; defaults to the upstream-Pi shape. */
 	host?: HostDelivery;
@@ -105,14 +106,17 @@ export class PiExtensionAdapter implements AgentEngine {
 
 	async inject(message: AceMessage, mode: InjectionMode): Promise<void> {
 		const deliverAs = this.deliveryFor(mode);
+		// Render first, then observe with the very text we send: the header can depend on the directory,
+		// so re-rendering later would not necessarily produce the same string.
+		const text = this.renderEvent(message);
 		// Start observing before sending: a host may deliver synchronously.
-		const observed = this.observeDelivery?.observe(message);
+		const observed = this.observeDelivery?.observe(message, text);
 		try {
-			this.pi.sendUserMessage(this.renderEvent(message), deliverAs === undefined ? undefined : { deliverAs });
+			this.pi.sendUserMessage(text, deliverAs === undefined ? undefined : { deliverAs });
 		} catch (error) {
 			// Drop the observation we will never satisfy; its promise must not stay unhandled.
 			void observed?.catch(() => {});
-			this.observeDelivery?.release?.(message);
+			this.observeDelivery?.release?.(message, text);
 			throw error;
 		}
 		if (observed) await this.awaitDelivery(message, observed);

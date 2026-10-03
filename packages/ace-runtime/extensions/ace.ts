@@ -64,9 +64,11 @@ import {
 	createRedisStreamsAddClient,
 	createTransports,
 	DeadLetterSink,
+	describeSender,
 	detectHostDelivery,
 	type EndpointConfig,
 	formatSessionLabel,
+	hostFacts,
 	PiExtensionAdapter,
 	publishEndpointOf,
 	type RedisStreamsAddClient,
@@ -372,11 +374,21 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					throw new Error(`no sender configured; add "sender" to ${ACE_CONFIG_FILENAME}`);
 				}
 				// The id is the runtime's: the caller reads it back from the result instead of choosing it.
+				// The sender reads like a directory member (`<sender>:<sessionId>`) and carries a
+				// self-description, so a receiver can show who and where it is without any lookup: the
+				// sender does not need to be registered anywhere in order to send.
 				const message = validateAceMessage({
 					aceVersion: "0.1",
 					id: `evt_${randomUUID()}`,
-					sender,
+					sender: sessionId === undefined ? sender : `${sender}:${sessionId}`,
 					...(sessionId === undefined ? {} : { sessionId }),
+					senderDescription: describeSender(
+						hostFacts({
+							codingAgent: codingAgentName(pi),
+							sessionId: sessionId ?? "(no session)",
+							cwd: sessionContext?.cwd ?? process.cwd(),
+						}),
+					),
 					activation: params.activation ?? "next_turn",
 					body: params.body,
 				});

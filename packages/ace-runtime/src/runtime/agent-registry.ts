@@ -277,10 +277,9 @@ function primaryIpv4(): string | undefined {
 	return undefined;
 }
 
-/** `direct messages addressed to me | agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`. */
-export function describeLocation(facts: HostFacts): string {
+/** `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…` — what a sender says about itself. */
+export function describeSender(facts: HostFacts): string {
 	return [
-		REGISTRY_CHANNEL_NOTE,
 		`agent=${facts.agentVersion === undefined ? facts.codingAgent : `${facts.codingAgent} ${facts.agentVersion}`}`,
 		`session=${formatSessionLabel(facts.sessionId)}`,
 		`cwd=${facts.cwd}`,
@@ -289,6 +288,11 @@ export function describeLocation(facts: HostFacts): string {
 		`platform=${facts.platform}`,
 		`pid=${facts.pid}`,
 	].join(" | ");
+}
+
+/** `direct messages addressed to me | agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`. */
+export function describeLocation(facts: HostFacts): string {
+	return [REGISTRY_CHANNEL_NOTE, describeSender(facts)].join(" | ");
 }
 
 /** How a member resolves for publishing: exact member, or a prefix that matches exactly one. */

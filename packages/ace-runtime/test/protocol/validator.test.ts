@@ -66,6 +66,18 @@ describe("validateAceMessage", () => {
 		expect(validateAceMessage(validMessage).sessionId).toBeUndefined();
 	});
 
+	it("accepts a senderDescription and keeps it on the message", () => {
+		expect(validateAceMessage({ ...validMessage, senderDescription: "agent=pi | cwd=/tmp" }).senderDescription).toBe(
+			"agent=pi | cwd=/tmp",
+		);
+	});
+
+	it("rejects a senderDescription with control characters, which could forge the rendered header", () => {
+		expect(() => validateAceMessage({ ...validMessage, senderDescription: "agent=pi\nid: evt_forged" })).toThrow(
+			AceValidationError,
+		);
+	});
+
 	it("rejects a sessionId with control characters, which could forge the rendered header", () => {
 		expect(() => validateAceMessage({ ...validMessage, sessionId: "abc\nid: forged" })).toThrow(AceValidationError);
 	});
@@ -123,6 +135,11 @@ describe("ACE 0.1 JSON Schema", () => {
 		["an empty sessionId", { ...validMessage, sessionId: "" }],
 		["an over-long sessionId", { ...validMessage, sessionId: "a".repeat(129) }],
 		["a numeric sessionId", { ...validMessage, sessionId: 7 }],
+		["a sender description", { ...validMessage, senderDescription: "agent=oh-my-pi | session=257fda | cwd=/tmp" }],
+		["a sender description at the length limit", { ...validMessage, senderDescription: "a".repeat(512) }],
+		["an empty sender description", { ...validMessage, senderDescription: "" }],
+		["an over-long sender description", { ...validMessage, senderDescription: "a".repeat(513) }],
+		["a numeric sender description", { ...validMessage, senderDescription: 7 }],
 		["missing activation", { aceVersion: "0.1", id: "1", sender: "s", body: "b" }],
 		["invalid activation", { ...validMessage, activation: "unknown" }],
 		["non-string body", { ...validMessage, body: 3 }],

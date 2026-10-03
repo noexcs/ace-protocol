@@ -46,8 +46,8 @@ const check = (scenario: string, expectation: string, actual: unknown, ok: boole
 interface Scenario {
 	name: string;
 	event: AceMessage;
-	/** Frame types (or user-message texts) the session must emit. */
-	expect: { frame?: string; userMessage?: string };
+	/** Frame types, and fragments the injected user message must contain. */
+	expect: { frame?: string; userMessage?: string[] };
 	/** Whether a turn is expected at all — `manual` events are stored, not injected. */
 	turn: boolean;
 }
@@ -58,13 +58,23 @@ const scenarios: Scenario[] = [
 		event: {
 			aceVersion: "0.1",
 			id: "evt_next_turn",
-			sender: "ci",
+			// The sender and its description are what our own publisher stamps: member-shaped sender,
+			// plus the sender's own account of where it runs.
+			sender: "ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
 			sessionId: "01a102b6-9dac-75b6-80ca-21cbbf58e914",
+			senderDescription: "agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 			activation: "next_turn",
 			body: "Reply with exactly: ACE-OMP-OK",
 		},
-		/** The header renders the sender like a directory member: `<sender>:<session label>`. */
-		expect: { frame: "message_start", userMessage: "sender: ci:58e914" },
+		expect: {
+			frame: "message_start",
+			userMessage: [
+				"[ACE Event]",
+				"sender: ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
+				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
+				"id: evt_next_turn",
+			],
+		},
 		turn: true,
 	},
 	{
@@ -254,8 +264,8 @@ for (const scenario of scenarios) {
 		const settled = scenario.turn ? await session.waitForSettled(120_000) : false;
 		await new Promise((resolve) => setTimeout(resolve, scenario.turn ? 0 : 2_000));
 
-		const injected = session.userMessages.some(
-			(text) => text.includes("[ACE Event]") && text.includes(scenario.expect.userMessage ?? "\u0000"),
+		const injected = session.userMessages.some((text) =>
+			(scenario.expect.userMessage ?? []).every((fragment) => text.includes(fragment)),
 		);
 		const turns = session.frames.filter((frame) => frame.type === "turn_start").length;
 		const outstanding = await pending(stream, group);

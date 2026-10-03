@@ -429,14 +429,16 @@ the session settles. Events therefore reach the model exactly once, in order.
 
 ```text
 [ACE Event]
-sender: agent-a:e7f1a9
-id: evt_123
+sender: agent-a:01a102b8-f016-75ab-87eb-63551c257fda
+sender description: agent=oh-my-pi | session=257fda | cwd=/Users/… | host=… | ip=… | platform=darwin-arm64 | pid=…
 
 Build failed for project foo.
 ```
 
-The sender reads like a directory member (`<sender>:<session label>`) so an injected event and a row of
-`ace_agents` can be matched by eye; the label is display-only, the protocol field keeps the full id.
+`ace_publish` stamps `sender` as `<configured sender>:<sessionId>` and adds `senderDescription` — what it
+says about where it runs — so a receiver shows who and where it is without looking anything up: a sender
+never has to be registered anywhere to send. Both lines are the sender's own account and never an
+authorization; `allowedSenders` matches that member-shaped value, so existing patterns need `agent-a:*`.
 
 The header is an adapter choice, **not** part of ACE: the protocol only requires `body` to be visible to later
 reasoning. The fixed prefix also keeps an ACE body from being mistaken for a Pi slash command or prompt template.

@@ -25,6 +25,8 @@ const utf8 = new TextDecoder();
 
 /** Longest accepted `sessionId`; the value is opaque but gets rendered into agent context. */
 const MAX_SESSION_ID_LENGTH = 128;
+/** Longest accepted sender description: enough for the host facts, short enough to keep headers readable. */
+const MAX_SENDER_DESCRIPTION_LENGTH = 512;
 
 /** Control characters would let a session id forge lines in the rendered event header. */
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -41,7 +43,7 @@ export function validateAceMessage(value: unknown): AceMessage {
 	}
 
 	const issues: AceValidationIssue[] = [];
-	const { aceVersion, id, sender, sessionId, activation, body } = value;
+	const { aceVersion, id, sender, sessionId, senderDescription, activation, body } = value;
 
 	if (aceVersion !== ACE_VERSION) {
 		issues.push({
@@ -71,6 +73,21 @@ export function validateAceMessage(value: unknown): AceMessage {
 			message: `must be one of immediate|next_turn|manual|default, received ${describeValue(activation)}`,
 		});
 	}
+	if (senderDescription !== undefined) {
+		if (
+			typeof senderDescription !== "string" ||
+			senderDescription.length === 0 ||
+			senderDescription.length > MAX_SENDER_DESCRIPTION_LENGTH
+		) {
+			issues.push({
+				path: "senderDescription",
+				message: `must be a string of 1..${MAX_SENDER_DESCRIPTION_LENGTH} characters or absent, received ${describeValue(senderDescription)}`,
+			});
+		} else if (CONTROL_CHARACTERS.test(senderDescription)) {
+			issues.push({ path: "senderDescription", message: "must not contain control characters" });
+		}
+	}
+
 	if (typeof body !== "string") {
 		issues.push({ path: "body", message: `must be a string, received ${describeValue(body)}` });
 	}
@@ -83,6 +100,7 @@ export function validateAceMessage(value: unknown): AceMessage {
 		id: id as string,
 		sender: sender as string,
 		...(sessionId === undefined ? {} : { sessionId: sessionId as string }),
+		...(senderDescription === undefined ? {} : { senderDescription: senderDescription as string }),
 		activation: activation as Activation,
 		body: body as string,
 	};

@@ -43,6 +43,13 @@ export interface AceMessage {
 	sender: string;
 	/** Sender's session/instance identifier (RFC §5.4); optional, opaque, deployment-defined. */
 	sessionId?: string;
+	/**
+	 * What the sender says about itself: where it runs (agent, session, cwd, host, ip, platform, pid).
+	 *
+	 * Sender-supplied and display-only: an event can be produced by anything on the channel, so this
+	 * is a courtesy for the reader and never an authorization (RFC §18, §22 item 3).
+	 */
+	senderDescription?: string;
 	activation: Activation;
 	body: string;
 	[key: string]: unknown;
