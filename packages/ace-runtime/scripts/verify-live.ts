@@ -536,6 +536,53 @@ await (async () => {
 	}
 })();
 
+// Leaving the directory must not wake a reader whose group just died: stop the reader first.
+await (async () => {
+	const prefix = `ace:verify:${run}:shutdown`;
+	const failures: string[] = [];
+	let registeredStream = "";
+	try {
+		const registry = new AgentRegistry({
+			store: createRedisAgentRegistry({ url, prefix, onError: (error) => failures.push(String(error)) }),
+			prefix,
+		});
+		const registration = await registry.register({
+			codingAgent: "verify",
+			sessionId: `${run}-shutdown`,
+			cwd: "/tmp",
+			url,
+		});
+		registeredStream = registration.stream;
+		const transport = new RedisStreamsTransport(
+			{
+				name: "session-inbox",
+				transport: "redis-streams",
+				config: { stream: registration.stream, group: registration.group, url, blockMs: 50 },
+				options: {},
+			},
+			{ onError: (error) => failures.push(String(error)) },
+		);
+		await transport.start(async () => {});
+		await settle(400); // let the reader block on the group
+		await transport.stop();
+		await registry.unregister();
+		await settle(400);
+
+		check(
+			"shutdown order",
+			"stopping the reader before dropping its stream leaves no error behind",
+			`errors=${failures.length}${failures[0] === undefined ? "" : ` → ${failures[0]}`}`,
+			failures.length === 0,
+		);
+		await registry.close();
+	} catch (error) {
+		check("shutdown order", "scenario completes", error instanceof Error ? error.message : String(error), false);
+	} finally {
+		if (registeredStream !== "") await admin.del(registeredStream);
+		await admin.del(`${prefix}:entry`);
+	}
+})();
+
 // Report
 const ok = results.every((result) => result.ok);
 const width = Math.max(...results.map((result) => result.scenario.length));

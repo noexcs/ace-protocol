@@ -160,7 +160,6 @@ export class AceRuntime {
 		}
 		if (this.spool) await this.spool.flush();
 		await this.engine.waitForIdle();
-		this.logger.info?.("[ACE] runtime stopped");
 	}
 
 	/**

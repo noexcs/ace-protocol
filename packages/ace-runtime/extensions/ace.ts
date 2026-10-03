@@ -266,6 +266,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let memberPublishers: Map<string, RedisStreamsAddClient> | undefined;
 	let registryErrorReported: string | undefined;
 	let claimedRuntime = false;
+	let shuttingDown = false;
 
 	/** Directory problems are reported once per distinct message; they never fail a session. */
 	function reportRegistryError(error: unknown): void {
@@ -596,6 +597,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				metrics,
 				onDropped: (subscription, entry) => deadLetters?.record(subscription, entry),
 				onError: (error) => {
+					// Teardown drops this session's own stream; a reader that is still draining would report
+					// NOGROUP for a group we just removed on purpose.
+					if (shuttingDown) return;
 					// A broker that dies mid-session would otherwise repeat the same error.
 					if (transportErrorReported) return;
 					transportErrorReported = true;
@@ -642,6 +646,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return;
+		// Order matters: `unregister` drops this session's own stream (and its group), so the reader has to
+		// be gone first — otherwise it wakes up to a deleted group and reports NOGROUP on the way out.
+		shuttingDown = true;
 		if (claimedRuntime) {
 			// A session switch inside one process starts a fresh session with a fresh runtime.
 			(globalThis as unknown as Record<symbol, boolean | undefined>)[RUNTIME_CLAIMED_MARKER] = false;
@@ -660,13 +667,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		registry = undefined;
 		registration = undefined;
 		memberPublishers = undefined;
+		await active?.stop();
 		if (activeRegistry !== undefined && activeRegistration !== undefined) await activeRegistry.unregister();
 		await activeRegistry?.close();
 		if (activeMemberPublishers) {
 			for (const publisher of activeMemberPublishers.values()) await publisher.close();
 		}
-		await active?.stop();
 		for (const publisher of activePublishers) await publisher.close();
+		shuttingDown = false;
 	});
 
 	pi.registerCommand("ace", {
