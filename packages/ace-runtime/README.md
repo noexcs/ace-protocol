@@ -58,12 +58,29 @@ omp plugin uninstall ace-runtime
 omp plugin doctor               # when a plugin misbehaves
 ```
 
+#### When the host has no `bun`
+
+`omp install` runs Bun for package work (`~/.omp/plugins/bun.lock`), so on a machine without it the command
+fails before any download: `Error: Executable not found in $PATH: "bun"`. Either install Bun (`npm i -g bun`)
+or skip the plugin system and link the entry into the host's extension directory. This needs only `curl`,
+`tar` and `npm`, and the extension resolves `../src` and its dependencies through the directory it is linked
+to, so keep that directory around:
+
+```bash
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
+mkdir -p ~/ace-runtime-0.1.1 ~/.omp/agent/extensions
+tar xzf ace-runtime-0.1.1.tgz -C ~/ace-runtime-0.1.1 --strip-components=1
+cd ~/ace-runtime-0.1.1 && npm install --ignore-scripts
+ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
+```
+
 Restart the session after installing or updating: a running session keeps the code it started with. If a
 session also passes `--extension`/`-e` for the same file, the extension refuses the second runtime — two
 runtimes on one consumer group would silently split every channel's events — and logs one line saying so.
 
-**Updating**: reinstall from the newer tarball URL, or `git pull` in a linked checkout (the link is live),
-then restart. A release tag lags `main`, so check the tag against the revision you want.
+**Updating**: reinstall from the newer tarball URL, or `git pull` in a linked checkout (the link is live), or
+re-unpack into the directory the `~/.omp/agent/extensions/` symlink points at — then restart. A release tag
+lags `main`, so check the tag against the revision you want.
 
 The tarball also serves programmatic consumers: `dist` through `main`/`exports["."]` for `import
 "ace-runtime"`, and `./extension` for a host that wants the entry path without plugin discovery. `npm pack`
