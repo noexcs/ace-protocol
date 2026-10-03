@@ -1,0 +1,28 @@
+{
+  "$schema": "./packages/ace-runtime/schema/ace-config.schema.json",
+  "sender": "agent-a",
+  "defaultActivation": "next_turn",
+  "subscribe": [
+    {
+      "name": "inbox",
+      "transport": "redis-streams",
+      "description": "direct messages addressed to me",
+      "config": {
+        "stream": "ace:in.a",
+        "group": "agent-a",
+        "url": "redis://127.0.0.1:6379"
+      }
+    }
+  ],
+  "publish": [
+    {
+      "name": "to-b",
+      "transport": "redis-streams",
+      "description": "agent-b",
+      "config": {
+        "stream": "ace:in.b",
+        "url": "redis://127.0.0.1:6379"
+      }
+    }
+  ]
+}

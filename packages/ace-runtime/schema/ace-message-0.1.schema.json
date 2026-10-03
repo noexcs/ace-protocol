@@ -1,0 +1,45 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "ACE Message 0.1",
+	"type": "object",
+	"required": [
+		"aceVersion",
+		"id",
+		"sender",
+		"activation",
+		"body"
+	],
+	"properties": {
+		"aceVersion": {
+			"type": "string",
+			"const": "0.1"
+		},
+		"id": {
+			"type": "string",
+			"minLength": 1
+		},
+		"sender": {
+			"type": "string",
+			"minLength": 1
+		},
+		"sessionId": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 128,
+			"description": "Sender's session/instance identifier (RFC \u00a75.4): opaque, unstable across sessions, never an authorization credential."
+		},
+		"activation": {
+			"type": "string",
+			"enum": [
+				"immediate",
+				"next_turn",
+				"manual",
+				"default"
+			]
+		},
+		"body": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": true
+}

@@ -1,0 +1,251 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/noexcs/pi/packages/ace-runtime/schema/ace-config.schema.json",
+	"title": "ACE runtime configuration (.ace.json)",
+	"description": "Which channels this agent subscribes to and publishes on (RFC \u00a710). Every MQ setting lives here; ACE messages never carry it (RFC \u00a74).",
+	"type": "object",
+	"required": [
+		"subscribe"
+	],
+	"properties": {
+		"sender": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9._@:-]{1,128}$",
+			"description": "Sender identifier this session publishes under (RFC \u00a75.3); required once publish channels exist."
+		},
+		"defaultActivation": {
+			"type": "string",
+			"enum": [
+				"immediate",
+				"next_turn",
+				"manual"
+			],
+			"description": "Fallback activation when neither the subscription nor the message decides (RFC \u00a78)."
+		},
+		"subscribe": {
+			"type": "array",
+			"minItems": 1,
+			"description": "Channels this agent receives ACE events from.",
+			"items": {
+				"$ref": "#/$defs/subscribe"
+			}
+		},
+		"publish": {
+			"type": "array",
+			"minItems": 1,
+			"description": "Channels the ace_publish tool may send ACE events to (RFC \u00a719).",
+			"items": {
+				"$ref": "#/$defs/publish"
+			}
+		}
+	},
+	"allOf": [
+		{
+			"if": {
+				"required": [
+					"publish"
+				]
+			},
+			"then": {
+				"required": [
+					"sender"
+				]
+			}
+		}
+	],
+	"additionalProperties": false,
+	"$defs": {
+		"channel": {
+			"type": "object",
+			"required": [
+				"name",
+				"transport"
+			],
+			"properties": {
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Channel name: the key its transport is registered under, and the tool's target."
+				},
+				"transport": {
+					"type": "string",
+					"enum": [
+						"redis-streams"
+					],
+					"description": "Transport kind; the settings below live in `config`."
+				},
+				"description": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Who or what sits on the other end; shown to the model in the ace_publish tool description."
+				},
+				"enabled": {
+					"type": "boolean",
+					"description": "Set false to keep the channel configured but not started."
+				},
+				"config": {
+					"type": "object",
+					"description": "Transport-specific settings, validated against the kind.",
+					"additionalProperties": true
+				},
+				"options": {
+					"type": "object",
+					"description": "Raw options passed through to the transport's client library; not validated.",
+					"additionalProperties": true
+				},
+				"activation": {
+					"type": "string",
+					"enum": [
+						"immediate",
+						"next_turn",
+						"manual",
+						"default"
+					],
+					"description": "Subscribe only: receiver override for this channel (RFC \u00a78); default delegates to the message."
+				}
+			},
+			"additionalProperties": false
+		},
+		"redisStreams": {
+			"type": "object",
+			"properties": {
+				"stream": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Stream to read or append to."
+				},
+				"group": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Consumer group (subscribe only; created at the tail)."
+				},
+				"url": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Broker URL, default redis://127.0.0.1:6379."
+				},
+				"consumer": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Consumer name (subscribe only), default ace-<pid>."
+				},
+				"field": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Entry field carrying the ACE JSON, default message."
+				},
+				"count": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Entries per read (subscribe only), default 16."
+				},
+				"blockMs": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Block window (subscribe only), default 1000."
+				}
+			},
+			"additionalProperties": false,
+			"required": [
+				"stream"
+			]
+		},
+		"redisStreamsSubscribe": {
+			"type": "object",
+			"properties": {
+				"stream": {
+					"type": "string",
+					"minLength": 1
+				},
+				"group": {
+					"type": "string",
+					"minLength": 1
+				},
+				"url": {
+					"type": "string",
+					"minLength": 1
+				},
+				"consumer": {
+					"type": "string",
+					"minLength": 1
+				},
+				"field": {
+					"type": "string",
+					"minLength": 1
+				},
+				"count": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"blockMs": {
+					"type": "integer",
+					"minimum": 1
+				}
+			},
+			"additionalProperties": false,
+			"required": [
+				"stream",
+				"group"
+			]
+		},
+		"subscribe": {
+			"allOf": [
+				{
+					"$ref": "#/$defs/channel"
+				},
+				{
+					"if": {
+						"properties": {
+							"transport": {
+								"const": "redis-streams"
+							}
+						},
+						"required": [
+							"transport"
+						]
+					},
+					"then": {
+						"properties": {
+							"config": {
+								"$ref": "#/$defs/redisStreamsSubscribe"
+							}
+						}
+					}
+				}
+			]
+		},
+		"publish": {
+			"allOf": [
+				{
+					"$ref": "#/$defs/channel"
+				},
+				{
+					"not": {
+						"required": [
+							"activation"
+						]
+					}
+				},
+				{
+					"if": {
+						"properties": {
+							"transport": {
+								"const": "redis-streams"
+							}
+						},
+						"required": [
+							"transport"
+						]
+					},
+					"then": {
+						"properties": {
+							"config": {
+								"$ref": "#/$defs/redisStreams"
+							}
+						}
+					}
+				}
+			]
+		}
+	}
+}
