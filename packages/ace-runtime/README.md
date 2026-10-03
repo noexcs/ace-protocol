@@ -135,6 +135,7 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 | `subscribe[].spool` | Spill bursts to a file beyond these thresholds: `{ afterEvents, windowMs }`, both ≥ 1 |
 | `spool` | Where burst files go (`{ dir, retentionMs?, maxFiles? }`); defaults to `<cwd>/.ace/spool` when a subscription sets thresholds |
 | `manual` | Retention for `manual` events (`{ max?, ttlMs? }`, defaults 100 events / 24h) |
+| `registry` | Agent directory this session publishes itself to (`{ url, prefix? }`); absent means no registration (RFC §22 item 1) |
 | `*.config` | Transport settings, validated against the kind; unknown keys are errors |
 | `*.options` | Raw options handed to the transport's client library; never validated |
 | `config.stream` … | redis-streams subscribe: `stream`, `group`, `url`, `consumer`, `field`, `count`, `blockMs`, `reclaimIdleMs`, `reclaimAttempts`, `retryDelayMs`, `maxRetryDelayMs`; publish: `stream`, `url`, `field` |
@@ -211,6 +212,32 @@ agent A                                    agent B
 (`default` \| `next_turn` \| `immediate` \| `manual`), optional `target` (an output name, needed only when several
 are configured — the address itself never travels in the message, RFC §4.1), and an optional `id` for correlation.
 The tool result reports the published id, sender, and target.
+
+### Agent directory (opt-in)
+
+With `registry` configured, every session publishes itself so peers can find it and send to it:
+
+```text
+<prefix>                  ZSet   score = expiresAt, member = "<coding-agent>:<sessionId>"
+<prefix>:entry            Hash   field = member,     value = the session's channel entry
+<prefix>:events:<member>  Stream the session's own inbox, created at registration
+```
+
+- the stored entry is that session's inbox (name, `transport`, `config.stream/group/url`) plus a
+  description naming where it runs: `agent=oh-my-pi 18.5.0 | session=<label> | cwd=… | host=… | ip=… |
+  platform=… | pid=…`;
+- the runtime subscribes to the derived stream itself (it shows up as `session-inbox` in `/ace`),
+  because an advertised address nobody reads is worse than no directory at all;
+- presence is the ZSet score: a heartbeat refreshes a 90s TTL every 30s, so a session that dies stops
+  being discoverable instead of lying forever. A clean `session_shutdown` also drops the entry and
+  the stream, and whichever session reads the directory next sweeps the leftovers of the ones that
+  died without one (measured: `SIGTERM` does not run `session_shutdown`, so the read path is what
+  keeps the directory clean);
+- `ace_agents` lists what is live right now; `ace_publish` accepts a member — or a prefix matching
+  **exactly one** session — as `target`, and a list of targets to publish one event to several peers
+  at once. An ambiguous prefix fails and names the candidates instead of guessing;
+- only the stream travels from the directory: events always go to the broker configured in
+  `registry.url`, so a registration cannot redirect this session's events elsewhere.
 
 ### Subagent sessions
 
@@ -428,6 +455,10 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 - No backlog: a subscription's consumer group is created at the stream's tail (`XGROUP CREATE … $`), so events
   published before the agent subscribed are skipped rather than replayed. Replay stays an infrastructure
   capability (RFC §17); the runtime consumes from now on.
+- The agent directory is not part of ACE 0.1 (RFC §22 item 1) and carries no authentication: an entry
+  states its own identity, and a peer's registration only decides where *that peer* is reached — this
+  session still publishes to the broker it was configured with. The entry names the coding agent and the
+  session, not the ACE `sender`, so mapping a member to a sender means reading its description.
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
 - A reclaimed entry that fails `reclaimAttempts` times is recorded in the dead-letter file and then acknowledged, so

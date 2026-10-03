@@ -54,18 +54,26 @@ import {
 	ACE_CONFIG_FILENAME,
 	AceDeliveryObserver,
 	type AceLogger,
+	type AceMessage,
 	AceMetrics,
 	type AcePublisher,
 	AceRuntime,
+	AgentRegistry,
 	createPublishers,
+	createRedisAgentRegistry,
+	createRedisStreamsAddClient,
 	createTransports,
 	DeadLetterSink,
 	detectHostDelivery,
 	type EndpointConfig,
 	formatSessionLabel,
 	PiExtensionAdapter,
+	type RedisStreamsAddClient,
+	type Registration,
+	type RegistryEntry,
 	type ResolvedAceConfig,
 	resolveAceConfig,
+	resolveTarget,
 	validateAceMessage,
 } from "../src/index.ts";
 
@@ -99,6 +107,14 @@ function isSubagentContext(ctx: ExtensionContext): boolean {
 	return agent.kind === "sub";
 }
 
+/** Which coding agent this extension runs in; `ACE_AGENT_NAME` overrides the probe. */
+function codingAgentName(pi: unknown): string {
+	const override = process.env.ACE_AGENT_NAME?.trim();
+	if (override !== undefined && override.length > 0) return override;
+	const marker = pi !== null && typeof pi === "object" && "pi" in pi ? pi.pi : undefined;
+	return marker === undefined ? "pi" : "oh-my-pi";
+}
+
 /** Runtime logs: last action on the status line, problems as notifications. */
 function createLogger(ctx: ExtensionContext): AceLogger {
 	const logToStderr = process.env.ACE_LOG === "1";
@@ -125,6 +141,12 @@ function addressOf(endpoint: EndpointConfig): string {
 	return `${endpoint.transport} ${address === undefined ? "(no address)" : String(address)}`;
 }
 
+/** One directory row: the member to address, what it says about itself, and how fresh it is. */
+function describeDiscovered(entry: RegistryEntry): string {
+	const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
+	return `${entry.member} — ${truncate(entry.channel.description, 120)} (renews in ${renewsIn}s)`;
+}
+
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 function describeEndpoint(endpoint: EndpointConfig): string {
 	return `"${endpoint.name}"${endpoint.description ? ` (${endpoint.description})` : ""} → ${addressOf(endpoint)}`;
@@ -143,7 +165,8 @@ export function buildPublishToolText(
 		"external event and acts on it on its own; the body is opaque to ACE, so write plain text the peer can act on.";
 	const guidelines = [
 		"Use ace_publish to notify another agent or service; keep the body self-contained.",
-		"Choose the target by the peer it names; when you need several, publish once per target.",
+		"Choose the target by the peer it names; pass a list to publish the same event to several at once.",
+		"Call ace_agents for the sessions that are online, then pass a member as target.",
 		"There is no reply protocol: if you expect an answer, say so and name the channel to answer on.",
 	];
 	if (!config) {
@@ -165,9 +188,18 @@ export function buildPublishToolText(
 		"",
 		"Delivery: an event you publish reaches every agent subscribed to that channel; agents that also consume " +
 			"their own publication channel see their own events.",
+		"",
+		"Other targets are resolved in the agent directory (`ace_agents`): the member of a live session, or a " +
+			"prefix that matches exactly one. A list publishes the same event to each target.",
 	];
 	return { description: lines.join("\n"), promptGuidelines: guidelines };
 }
+
+/** Parameters of the directory listing tool. */
+const AGENTS_PARAMETERS = Type.Object({
+	agent: Type.Optional(Type.String({ description: 'Filter by coding agent, e.g. "oh-my-pi" or "pi"' })),
+	limit: Type.Optional(Type.Number({ description: "Maximum rows to return (default 20, cap 50)" })),
+});
 
 /** Tool parameters; kept at module scope so the definition keeps its static types. */
 const PUBLISH_PARAMETERS = Type.Object({
@@ -177,7 +209,12 @@ const PUBLISH_PARAMETERS = Type.Object({
 			description: "How urgently the peer should process it; omit unless you know the peer's setup",
 		}),
 	),
-	target: Type.Optional(Type.String({ description: "Publish channel name; required only when several exist" })),
+	target: Type.Optional(
+		Type.Union([Type.String(), Type.Array(Type.String())], {
+			description:
+				"Configured channel name, agent-directory member (or a prefix matching exactly one session), or a list of either",
+		}),
+	),
 	id: Type.Optional(Type.String({ description: "Message id for correlation; generated when omitted" })),
 });
 
@@ -212,6 +249,19 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let sessionId: string | undefined;
 	let transportErrorReported = false;
 	let deadLetters: DeadLetterSink | undefined;
+	let registry: AgentRegistry | undefined;
+	let registration: Registration | undefined;
+	let dynamicPublisher: RedisStreamsAddClient | undefined;
+	let registryErrorReported: string | undefined;
+
+	/** Directory problems are reported once per distinct message; they never fail a session. */
+	function reportRegistryError(error: unknown): void {
+		const text = describeError(error);
+		if (registryErrorReported === text) return;
+		registryErrorReported = text;
+		if (sessionContext) report(sessionContext, `[ace] agent directory: ${text}`, "warning");
+		else console.error(`[ace] agent directory: ${text}`);
+	}
 
 	// Where the host's delivery cannot be trusted to reach the agent (oh-my-pi queues into an idle
 	// session without starting a turn), wait for the event to appear in the conversation. Upstream Pi's
@@ -230,6 +280,82 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.
+	/** Where a publish call goes: a configured channel, or a session the directory knows. */
+	type PublishTarget =
+		| { kind: "channel"; name: string; publisher: AcePublisher }
+		| { kind: "member"; member: string; stream: string };
+
+	/**
+	 * Configured channel names win; anything else is a directory member: an exact member, or a prefix
+	 * that matches exactly one live session. Guessing between two sessions would send an event to the
+	 * wrong agent, so an ambiguous target fails and names the candidates instead.
+	 */
+	async function resolvePublishTarget(name: string): Promise<PublishTarget> {
+		const configured = publishers[name];
+		if (configured) return { kind: "channel", name, publisher: configured };
+		if (!registry) {
+			throw new Error(
+				`unknown target "${name}" (configured: ${Object.keys(publishers).join(", ") || "none"}; no agent directory configured)`,
+			);
+		}
+		const resolution = resolveTarget(await registry.list(), name);
+		if (!resolution.ok) {
+			const candidates = resolution.candidates.slice(0, 10);
+			throw new Error(
+				resolution.reason === "ambiguous"
+					? `target "${name}" matches ${resolution.candidates.length} sessions; pass the full member: ${candidates.join(", ")}`
+					: `no live session matches "${name}"${candidates.length === 0 ? "" : ` (live: ${candidates.join(", ")})`}`,
+			);
+		}
+		return { kind: "member", member: resolution.entry.member, stream: resolution.entry.channel.config.stream };
+	}
+
+	/**
+	 * Send to a discovered session.
+	 *
+	 * Only the stream comes from the directory: the broker stays the one this session is configured
+	 * with, so a registration cannot redirect our events to a broker of its choosing.
+	 */
+	async function publishToMember(stream: string, message: AceMessage): Promise<void> {
+		const url = resolvedConfig?.registry?.url;
+		if (url === undefined) throw new Error(`no agent directory configured; add "registry" to ${ACE_CONFIG_FILENAME}`);
+		dynamicPublisher ??= createRedisStreamsAddClient(url, reportRegistryError);
+		await dynamicPublisher.add(stream, "message", JSON.stringify(message));
+	}
+
+	/** The sessions other than this one that are live right now. */
+	function agentsTool(): ToolDefinition<typeof AGENTS_PARAMETERS> {
+		return {
+			name: "ace_agents",
+			label: "ACE Agents",
+			description:
+				"List the agent sessions reachable right now. Each row is a member you can pass to ace_publish as `target`.",
+			promptGuidelines: ["Call ace_agents before ace_publish when the peer is not one of the configured channels."],
+			parameters: AGENTS_PARAMETERS,
+			async execute(_toolCallId, params) {
+				if (!registry) {
+					throw new Error(`no agent directory configured; add "registry" to ${ACE_CONFIG_FILENAME}`);
+				}
+				const agentPrefix = params.agent === undefined ? undefined : `${params.agent}:`;
+				const live = (await registry.list())
+					.filter((entry) => entry.member !== registration?.member)
+					.filter((entry) => agentPrefix === undefined || entry.member.startsWith(agentPrefix))
+					.sort((a, b) => b.expiresAt - a.expiresAt);
+				const limit = Math.min(Math.max(Math.trunc(params.limit ?? 20), 1), 50);
+				const rows = live.slice(0, limit).map((entry) => describeDiscovered(entry));
+				return {
+					content: [
+						{
+							type: "text",
+							text: rows.length === 0 ? "No other agent sessions are registered right now." : rows.join("\n"),
+						},
+					],
+					details: { count: rows.length },
+				};
+			},
+		};
+	}
+
 	function publishTool(config?: ResolvedAceConfig): ToolDefinition<typeof PUBLISH_PARAMETERS> {
 		return {
 			name: "ace_publish",
@@ -238,7 +364,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {
-				const { name, publisher } = selectPublisher(publishers, params.target);
 				const sender = resolvedConfig?.sender;
 				if (sender === undefined) {
 					throw new Error(`no sender configured; add "sender" to ${ACE_CONFIG_FILENAME}`);
@@ -252,13 +377,52 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					body: params.body,
 				});
 
-				await publisher.publish(message);
+				const requested =
+					params.target === undefined ? [] : typeof params.target === "string" ? [params.target] : params.target;
+				// One entry per delivery: no target keeps the old "the single configured channel" behavior.
+				const targets: Array<string | undefined> = requested.length === 0 ? [undefined] : [...new Set(requested)];
+				const delivered: string[] = [];
+				const failures: string[] = [];
+				const sentStreams = new Set<string>();
 
+				for (const name of targets) {
+					try {
+						if (name === undefined) {
+							const selected = selectPublisher(publishers, undefined);
+							await selected.publisher.publish(message);
+							delivered.push(`channel "${selected.name}"`);
+							continue;
+						}
+						const target = await resolvePublishTarget(name);
+						if (target.kind === "channel") {
+							await target.publisher.publish(message);
+							delivered.push(`channel "${target.name}"`);
+							continue;
+						}
+						// The same session twice in one call is one delivery.
+						if (sentStreams.has(target.stream)) {
+							delivered.push(`member "${target.member}" (already sent)`);
+							continue;
+						}
+						sentStreams.add(target.stream);
+						await publishToMember(target.stream, message);
+						delivered.push(`member "${target.member}"`);
+					} catch (error) {
+						failures.push(`"${name ?? "(configured)"}": ${describeError(error)}`);
+					}
+				}
+
+				if (delivered.length === 0) {
+					throw new Error(`nothing published: ${failures.join("; ")}`);
+				}
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Published ${message.id} from ${sender} to channel "${name}" (activation: ${message.activation}).`,
+							text: [
+								`Published ${message.id} from ${sender} to ${delivered.length} target(s): ${delivered.join(", ")} (activation: ${message.activation}).`,
+								...(failures.length > 0 ? [`Failed: ${failures.join("; ")}`] : []),
+							].join("\n"),
 						},
 					],
 					details: {
@@ -266,7 +430,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						sender: message.sender,
 						sessionId: message.sessionId,
 						activation: message.activation,
-						target: name,
+						delivered,
+						failed: failures,
 						bodyLength: message.body.length,
 					},
 				};
@@ -275,13 +440,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerTool(publishTool());
+	pi.registerTool(agentsTool());
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return; // one runtime, in the interactive session
 		sessionContext = ctx;
 		if (runtime) return;
 
-		sessionId = ctx.sessionManager.getSessionId();
+		const currentSessionId = ctx.sessionManager.getSessionId();
+		sessionId = currentSessionId;
 
 		let resolved: ResolvedAceConfig;
 		try {
@@ -298,6 +465,45 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		const spoolDir =
 			resolved.spool?.dir ??
 			(resolved.subscribe.some((entry) => entry.spool) ? join(ctx.cwd, ".ace", "spool") : undefined);
+		// The advertised stream is this session's inbox: subscribe to it, or the address a peer
+		// discovered through the directory would have nobody reading it.
+		let subscriptions = resolved.subscribe;
+		if (resolved.registry) {
+			try {
+				registry = new AgentRegistry({
+					store: createRedisAgentRegistry({
+						url: resolved.registry.url,
+						...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
+						onError: reportRegistryError,
+					}),
+					...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
+					logger,
+					onError: reportRegistryError,
+				});
+				registration = await registry.register({
+					codingAgent: codingAgentName(pi),
+					sessionId: currentSessionId,
+					cwd: ctx.cwd,
+					url: resolved.registry.url,
+				});
+				subscriptions = [
+					...resolved.subscribe,
+					{
+						name: "session-inbox",
+						transport: "redis-streams",
+						description: "this session's inbox (agent directory)",
+						config: { stream: registration.stream, group: registration.group, url: resolved.registry.url },
+						options: {},
+					},
+				];
+			} catch (error) {
+				registration = undefined;
+				await registry?.close();
+				registry = undefined;
+				report(ctx, `[ace] not registered: ${describeError(error)}`, "warning");
+			}
+		}
+
 		const metrics = new AceMetrics();
 		// Dead letters go next to the burst files: same directory, same retention policy, different
 		// prefix. Nothing is written until an entry is actually given up on.
@@ -311,7 +517,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		runtime = new AceRuntime({
 			engine: adapter,
 			metrics,
-			subscribe: resolved.subscribe,
+			subscribe: subscriptions,
 			...(spoolDir
 				? {
 						spool: {
@@ -322,7 +528,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					}
 				: {}),
 			manual: resolved.manual,
-			transports: createTransports(resolved.subscribe, {
+			transports: createTransports(subscriptions, {
 				metrics,
 				onDropped: (subscription, entry) => deadLetters?.record(subscription, entry),
 				onError: (error) => {
@@ -344,9 +550,10 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			const publishing =
 				resolved.publish.length > 0 ? `; publish ${resolved.publish.map(describeEndpoint).join(", ")}` : "";
 			const disabled = resolved.disabled.length > 0 ? ` [disabled: ${resolved.disabled.join(", ")}]` : "";
+			const directory = registration === undefined ? "" : `; registered as ${registration.member}`;
 			report(
 				ctx,
-				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}`,
+				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}${directory}`,
 			);
 			for (const warning of resolved.warnings) report(ctx, `[ace] warning: ${warning}`, "warning");
 			if (resolved.subscribe.some((entry) => entry.spool)) {
@@ -365,6 +572,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return;
+		const activeRegistry = registry;
+		const activeRegistration = registration;
+		const activePublisher = dynamicPublisher;
 		const active = runtime;
 		const activePublishers = Object.values(publishers);
 		runtime = undefined;
@@ -372,6 +582,12 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		resolvedConfig = undefined;
 		sessionContext = undefined;
 		deadLetters = undefined;
+		registry = undefined;
+		registration = undefined;
+		dynamicPublisher = undefined;
+		if (activeRegistry !== undefined && activeRegistration !== undefined) await activeRegistry.unregister();
+		await activeRegistry?.close();
+		await activePublisher?.close();
 		await active?.stop();
 		for (const publisher of activePublishers) await publisher.close();
 	});

@@ -1,10 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AceMessage } from "../protocol/ace-message.ts";
+import { formatSessionLabel } from "../utils.ts";
 import type { AgentEngine, InjectionMode } from "./agent-engine.ts";
-
-/** Characters kept when a session id is displayed (see {@link formatSessionLabel}). */
-const SESSION_LABEL_LENGTH = 6;
 
 export interface PiAdapterOptions {
 	/** Pi session that owns the agent context, turns, tools, and LLM calls. */
@@ -48,9 +46,6 @@ export function renderAceEvent(message: AceMessage): string {
  * characters on a timestamp, so two sessions started seconds apart share a long prefix. Truncation
  * happens here only — the protocol field keeps the full value, and the label is never an identifier.
  */
-export function formatSessionLabel(sessionId: string): string {
-	return sessionId.length <= SESSION_LABEL_LENGTH ? sessionId : sessionId.slice(-SESSION_LABEL_LENGTH);
-}
 
 /** One ACE event handed to Pi, tracked until Pi shows it to the model. */
 interface QueuedEvent {

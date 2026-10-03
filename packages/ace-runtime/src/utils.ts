@@ -12,3 +12,11 @@ export function describeValue(value: unknown): string {
 	if (Array.isArray(value)) return "array";
 	return typeof value;
 }
+
+/** Characters kept when a session id is displayed: the tail distinguishes concurrent sessions. */
+const SESSION_LABEL_LENGTH = 6;
+
+/** The short session label shown next to a sender; the leading part is a shared timestamp. */
+export function formatSessionLabel(sessionId: string): string {
+	return sessionId.length <= SESSION_LABEL_LENGTH ? sessionId : sessionId.slice(-SESSION_LABEL_LENGTH);
+}

@@ -219,6 +219,16 @@ describe("interpolateEnv", () => {
 		expect(interpolateEnv(`cost: $${ref("PRICE")}`, { PRICE: "5" }, ".ace.json")).toBe(`cost: ${ref("PRICE")}`);
 	});
 
+	it("carries the agent directory through resolution", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, {
+			subscribe: [inbox],
+			registry: { url: "redis://broker:6379", prefix: "team:agents" },
+		});
+
+		expect(resolveAceConfig({ cwd }).registry).toEqual({ url: "redis://broker:6379", prefix: "team:agents" });
+	});
+
 	it("is applied when loading the file", () => {
 		const cwd = temporaryDirectory();
 		writeConfig(cwd, { subscribe: [{ ...inbox, config: { stream: ref("ACE_TEST_STREAM"), group: "g" } }] });

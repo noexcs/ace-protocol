@@ -4,8 +4,9 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import aceExtension, { buildPublishToolText } from "../../extensions/ace.ts";
-import { formatSessionLabel, renderAceEvent } from "../../src/agent/pi-adapter.ts";
+import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { ResolvedAceConfig } from "../../src/runtime/ace-config.ts";
+import { formatSessionLabel } from "../../src/utils.ts";
 
 const config: ResolvedAceConfig = {
 	source: "/tmp/project/.ace.json",

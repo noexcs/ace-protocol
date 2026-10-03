@@ -57,6 +57,8 @@ export interface AceConfigFile {
 	manual?: { max?: number; ttlMs?: number };
 	/** Where burst files go; the thresholds themselves live on each subscription. */
 	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
+	/** Agent directory this session publishes itself to (RFC §22 item 1). Absent: no registration. */
+	registry?: { url: string; prefix?: string };
 }
 
 export interface LoadedAceConfig {
@@ -82,6 +84,8 @@ export interface ResolvedAceConfig {
 	manual: { max?: number; ttlMs?: number };
 	/** Burst spool directory and retention, when configured. */
 	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
+	/** Agent directory to register in, when configured. */
+	registry?: { url: string; prefix?: string };
 	source: string;
 }
 
@@ -129,6 +133,26 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		}
 	}
 
+	if (value.registry !== undefined) {
+		if (!isPlainObject(value.registry)) {
+			throw new AceConfigError(`${source}: registry must be an object, received ${describeValue(value.registry)}`);
+		}
+		rejectUnknownKeys(value.registry, ["url", "prefix"], `${source}: registry`);
+		if (typeof value.registry.url !== "string" || value.registry.url.length === 0) {
+			throw new AceConfigError(
+				`${source}: registry.url must be a non-empty string, received ${describeValue(value.registry.url)}`,
+			);
+		}
+		if (
+			value.registry.prefix !== undefined &&
+			(typeof value.registry.prefix !== "string" || value.registry.prefix.length === 0)
+		) {
+			throw new AceConfigError(
+				`${source}: registry.prefix must be a non-empty string, received ${describeValue(value.registry.prefix)}`,
+			);
+		}
+	}
+
 	if (value.manual !== undefined) {
 		if (!isPlainObject(value.manual)) {
 			throw new AceConfigError(`${source}: manual must be an object, received ${describeValue(value.manual)}`);
@@ -158,6 +182,7 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		...(value.spool === undefined
 			? {}
 			: { spool: value.spool as { dir: string; retentionMs?: number; maxFiles?: number } }),
+		...(value.registry === undefined ? {} : { registry: value.registry as { url: string; prefix?: string } }),
 	};
 }
 
@@ -299,6 +324,7 @@ export function resolveAceConfig(options: {
 		warnings: channelWarnings(config),
 		manual: config.manual ?? {},
 		...(config.spool === undefined ? {} : { spool: config.spool }),
+		...(config.registry === undefined ? {} : { registry: config.registry }),
 		source,
 	};
 }

@@ -86,6 +86,16 @@ describe("ACE runtime configuration JSON Schema", () => {
 			"a publish channel with consumer-group settings",
 			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, config: { stream: "ace:in.b", group: "g" } }] },
 		],
+		["an agent directory", { subscribe: [inbox], registry: { url: "redis://127.0.0.1:6379" } }],
+		[
+			"an agent directory with its own namespace",
+			{ subscribe: [inbox], registry: { url: "redis://127.0.0.1:6379", prefix: "team-a:agents" } },
+		],
+
+		["an agent directory without a url", { subscribe: [inbox], registry: { prefix: "team-a" } }],
+		["an agent directory with an empty url", { subscribe: [inbox], registry: { url: "" } }],
+		["an agent directory with an empty prefix", { subscribe: [inbox], registry: { url: "redis://x", prefix: "" } }],
+		["an agent directory with an unknown key", { subscribe: [inbox], registry: { url: "redis://x", nope: 1 } }],
 		["a non-integer count", { subscribe: [{ ...inbox, config: { ...inbox.config, count: "8" } }] }],
 		["a zero count", { subscribe: [{ ...inbox, config: { ...inbox.config, count: 0 } }] }],
 		["an empty description", { subscribe: [{ ...inbox, description: "" }] }],

@@ -23,10 +23,13 @@ import {
 	AceMetrics,
 	AceRuntime,
 	type AgentEngine,
+	AgentRegistry,
+	createRedisAgentRegistry,
 	type EndpointConfig,
 	type InjectionMode,
 	RedisStreamsPublisher,
 	RedisStreamsTransport,
+	registryMember,
 } from "../src/index.ts";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -69,6 +72,29 @@ const admin = createClient({ url });
 await admin.connect();
 
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Read the stored channel entry; the script only asserts on these four fields. */
+function readChannel(raw: unknown): { name?: string; description?: string; stream?: string; group?: string } {
+	if (typeof raw !== "string") return {};
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return {};
+	}
+	if (typeof parsed !== "object" || parsed === null) return {};
+	const channel: { name?: string; description?: string; stream?: string; group?: string } = {};
+	if ("name" in parsed && typeof parsed.name === "string") channel.name = parsed.name;
+	if ("description" in parsed && typeof parsed.description === "string") channel.description = parsed.description;
+	if ("config" in parsed) {
+		const config: unknown = parsed.config;
+		if (typeof config === "object" && config !== null) {
+			if ("stream" in config && typeof config.stream === "string") channel.stream = config.stream;
+			if ("group" in config && typeof config.group === "string") channel.group = config.group;
+		}
+	}
+	return channel;
+}
 
 /** Wait until `predicate` holds, so a slow broker cannot make the run flaky. */
 async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000): Promise<boolean> {
@@ -278,6 +304,87 @@ await scenario(
 	},
 	{ spool: { afterEvents: 2, windowMs: 1_000 } },
 );
+
+// 8. The agent directory: a session registers itself, stays fresh, and leaves nothing behind.
+await (async () => {
+	const prefix = `ace:verify:agents:${run}`;
+	const sessionId = `session-${run}`;
+	const member = registryMember("verify-agent", sessionId);
+	const registry = new AgentRegistry({
+		store: createRedisAgentRegistry({ url, prefix }),
+		prefix,
+		ttlMs: 1_500,
+		refreshMs: 300,
+	});
+	try {
+		const registered = await registry.register({ codingAgent: "verify-agent", sessionId, cwd: "/tmp/verify", url });
+		const visible = await waitFor(async () => (await registry.list()).some((entry) => entry.member === member));
+		const stored = readChannel(await admin.hGet(`${prefix}:entry`, member));
+		const firstScore = Number(await admin.zScore(prefix, member));
+		await settle(800); // two heartbeats
+		const renewedScore = Number(await admin.zScore(prefix, member));
+
+		await registry.unregister();
+		const gone = (await registry.list()).every((entry) => entry.member !== member);
+		const streamGone = (await admin.exists(registered.stream)) === 0;
+		const entryGone = (await admin.hLen(`${prefix}:entry`)) === 0;
+
+		check(
+			"agent directory",
+			"registers, renews each heartbeat, and leaves nothing behind",
+			`visible=${visible} name=${stored.name === member} stream=${stored.stream === registered.stream} group=${stored.group === registered.group} location=${stored.description?.includes("cwd=/tmp/verify")} renewed=${renewedScore > firstScore} gone=${gone && streamGone && entryGone}`,
+			visible &&
+				stored.name === member &&
+				stored.stream === registered.stream &&
+				stored.group === registered.group &&
+				stored.description?.includes("cwd=/tmp/verify") === true &&
+				renewedScore > firstScore &&
+				gone &&
+				streamGone &&
+				entryGone,
+		);
+	} catch (error) {
+		check("agent directory", "scenario completes", error instanceof Error ? error.message : String(error), false);
+	} finally {
+		await registry.close();
+		await admin.del(prefix);
+		await admin.del(`${prefix}:entry`);
+	}
+})();
+
+// 9. A session that dies without unregistering: the next reader sweeps its leftovers.
+await (async () => {
+	const prefix = `ace:verify:agents-gc:${run}`;
+	const sessionId = `session-gc-${run}`;
+	const member = registryMember("verify-agent", sessionId);
+	const registry = new AgentRegistry({
+		store: createRedisAgentRegistry({ url, prefix }),
+		prefix,
+		ttlMs: 400,
+		refreshMs: 0, // no heartbeat: the registration expires and nothing cleans up after itself
+	});
+	try {
+		const registered = await registry.register({ codingAgent: "verify-agent", sessionId, cwd: "/tmp/gc", url });
+		await settle(600); // past the expiry
+		const live = await registry.list(); // the read is what sweeps
+		const swept =
+			live.every((entry) => entry.member !== member) &&
+			(await admin.hLen(`${prefix}:entry`)) === 0 &&
+			(await admin.exists(registered.stream)) === 0;
+		check(
+			"agent directory gc",
+			"expired registrations lose their entry, hash field and stream",
+			`swept=${swept} hashFields=${await admin.hLen(`${prefix}:entry`)} streamExists=${await admin.exists(registered.stream)}`,
+			swept,
+		);
+	} catch (error) {
+		check("agent directory gc", "scenario completes", error instanceof Error ? error.message : String(error), false);
+	} finally {
+		await registry.close();
+		await admin.del(prefix);
+		await admin.del(`${prefix}:entry`);
+	}
+})();
 
 // Report
 const ok = results.every((result) => result.ok);
