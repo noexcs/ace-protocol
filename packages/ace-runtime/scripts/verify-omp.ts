@@ -72,7 +72,7 @@ const scenarios: Scenario[] = [
 			userMessage: [
 				"<ace_event>",
 				"sender: ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
-				"channel: inbox →",
+				"channel: ace:verify:omp:",
 				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 				"id: evt_next_turn",
 			],
@@ -275,14 +275,18 @@ for (const scenario of scenarios) {
 
 		if (scenario.turn) {
 			// The trust rule belongs to the system prompt, not to the event: assert on the payload the
-			// provider was handed, and that the per-event ask sentence the notice used to carry is gone.
+			// provider was handed, and that neither sentence the event used to carry comes back.
 			const probed = await session.waitForLog("ACE_PROBE_SYSTEM_PROMPT policy=true", 15_000);
-			const legacyNotice = session.logs.some((line) => line.includes("ACE_PROBE_SYSTEM_PROMPT legacyNotice=true"));
+			const removedSentences = session.logs.filter(
+				(line) =>
+					line.includes("ACE_PROBE_SYSTEM_PROMPT") &&
+					(line.includes("askSentence=true") || line.includes("notice=true")),
+			);
 			check(
 				scenario.name,
-				"the provider request carries ACE's system-prompt policy, without the per-event ask sentence",
-				`policy=${probed ? "true" : "false"} legacyNotice=${legacyNotice}`,
-				Boolean(probed) && !legacyNotice,
+				"the provider request carries ACE's system-prompt policy and neither removed sentence",
+				`policy=${probed ? "true" : "false"} removedSentences=${removedSentences.length}`,
+				Boolean(probed) && removedSentences.length === 0,
 			);
 			check(
 				scenario.name,

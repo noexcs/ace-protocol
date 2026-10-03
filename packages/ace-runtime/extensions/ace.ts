@@ -162,10 +162,10 @@ function addressOf(endpoint: EndpointConfig): string {
 	return `${endpoint.transport} ${endpointAddress(endpoint) ?? "(no address)"}`;
 }
 
-/** One directory row: the member to address, what it says about itself, and how fresh it is. */
-function describeDiscovered(entry: RegistryEntry): string {
+/** One directory row: the member to address, what it says about itself (never shortened), and how fresh it is. */
+export function describeDiscovered(entry: RegistryEntry): string {
 	const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
-	return `${entry.member} — ${truncate(entry.channel.description, 120)} (renews in ${renewsIn}s)`;
+	return `${entry.member} — ${entry.channel.description} (renews in ${renewsIn}s)`;
 }
 
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
@@ -615,13 +615,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				resolved.publish.length > 0 ? `; publish ${resolved.publish.map(describeEndpoint).join(", ")}` : "";
 			const disabled = resolved.disabled.length > 0 ? ` [disabled: ${resolved.disabled.join(", ")}]` : "";
 			const directory = registration === undefined ? "" : `; registered as ${registration.member}`;
-			report(
-				ctx,
+			// Startup chatter stays on stderr: the session UI should not repeat the same three lines every
+			// time ACE starts, and stderr is what print/RPC runs and the `/ace` status already cover.
+			console.error(
 				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}${directory}`,
 			);
-			for (const warning of resolved.warnings) report(ctx, `[ace] warning: ${warning}`, "warning");
+			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
 			if (resolved.subscribe.some((entry) => entry.spool)) {
-				report(ctx, `[ace] spooling bursts to ${spoolDir}`, "info");
+				console.error(`[ace] spooling bursts to ${spoolDir}`);
 			}
 		} catch (error) {
 			// Nothing is running, so the next session in this process may try again.
