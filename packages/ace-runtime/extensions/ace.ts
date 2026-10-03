@@ -38,8 +38,10 @@
  *
  * Publishing: once the configuration is known, `ace_publish` is re-registered with a description that
  * names this agent (with its session label), every channel it can reach, and where events land. The
- * address stays in configuration, never in the message (RFC §4.1); every published event carries the
- * session's id (RFC §5.4) so peers can tell sessions apart.
+ * address stays in configuration, never in the message (RFC §4.1). Every published event carries the
+ * session's id (RFC §5.4) and a member-shaped `sender` (`<sender>:<sessionId>`), so a peer can show who
+ * sent it and which session it came from — and a self-description (`senderDescription`) so that peer can
+ * also show where this session runs without looking anything up.
  *
  * `ACE_CONFIG` points at a different configuration file; every MQ setting stays in that file.
  * `ACE_LOG=1` also logs runtime lines in modes without a UI.
@@ -195,7 +197,8 @@ export function buildPublishToolText(
 	const lines = [
 		intro,
 		"",
-		`You are "${config.sender ?? "(unknown sender)"}"${session} (stamped on the events you publish).`,
+		`You are "${config.sender ?? "(unknown sender)"}"${session}: events you publish are stamped ` +
+			`sender="<your sender>:<sessionId>" plus a short description of where you run.`,
 		"",
 		"Targets (pass the name as `target`; required, a list publishes to several):",
 		...(config.publish.length > 0 ? config.publish.map(describeEndpoint) : ["(none configured)"]),

@@ -163,7 +163,7 @@
 				"allowedSenders": {
 					"type": "array",
 					"minItems": 1,
-					"description": "Subscribe only: glob patterns of accepted senders (e.g. ci.*); omit to accept any.",
+					"description": "Subscribe only: glob patterns of accepted senders (e.g. ci:*, agent-*); omit to accept any.",
 					"items": {
 						"type": "string",
 						"minLength": 1

@@ -83,8 +83,11 @@ describe("ace_publish tool text", () => {
 		expect(description).toContain('"bus" (the pipeline) → kafka ace.events');
 	});
 
-	it("omits the session when the session id is unknown", () => {
-		expect(buildPublishToolText(config).description).toContain('You are "agent-a" (stamped');
+	it("says how events are stamped, with and without a session", () => {
+		expect(buildPublishToolText(config).description).toContain('You are "agent-a": events you publish are stamped');
+		expect(buildPublishToolText(config, "01a102b8-f016-75ab-87eb-63551c257fda").description).toContain(
+			'You are "agent-a", session 257fda:',
+		);
 	});
 });
 

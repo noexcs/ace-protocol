@@ -32,8 +32,10 @@ export interface EndpointConfig {
 	/** Whether the runtime starts this channel at all; defaults to `true`. */
 	enabled?: boolean;
 	/**
-	 * Subscriptions only: glob patterns of senders this channel accepts (e.g. `ci.*`, `agent-?`).
+	 * Subscriptions only: glob patterns of senders this channel accepts (e.g. `ci*`, `agent-*`).
 	 * Absent means "any sender" — the broker's permissions are then the only gate (RFC §18).
+	 * A sender that stamps itself as a member (`<name>:<sessionId>`, see `ace_publish`) is matched
+	 * against that whole string, so `agent-a` alone no longer matches `agent-a:<sessionId>`.
 	 */
 	allowedSenders?: string[];
 	/** Subscriptions only: spill bursts to a file and inject one summary instead of every event. */

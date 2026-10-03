@@ -2060,8 +2060,9 @@ distributed runtime
 4. **Agent 目录**：`ZSet`（在线）+ `Hash`（档案）+ 每会话独占 `Stream`（收件箱），心跳续期，读路径清扫崩溃残留。
 5. **子代理门控**：oh-my-pi 会把扩展重绑到它 spawn 的每个会话，因此只在 `ctx.agent.kind === "main"` 时注册与订阅。
 6. **死信重放命令**：`npm run replay:dead-letters`（按记录里的 `stream`/`field` 原样写回，接收方再校验一次）。
-7. **回合失败计数**：引擎以可选能力 `onRunError(listener)` 上报，运行时记在 `runtime` 作用域（`stopReason=error`/`aborted`）。
-8. **验证资产**：`npm run verify:live`（真 broker，10 场景）、`npm run verify:omp`（真 oh-my-pi 会话，2 场景）、CI 跑 test/check/build/verify:live。
+7. **发送方自述**：发布时构造 member 形状的 `sender`（`<sender>:<sessionId>`）与 `senderDescription`（agent/session/cwd/host/ip/platform/pid），随消息走；接收端原样显示，**不查目录**（发送不需要先注册）。
+8. **回合失败计数**：引擎以可选能力 `onRunError(listener)` 上报，运行时记在 `runtime` 作用域（`stopReason=error`/`aborted`）。
+9. **验证资产**：`npm run verify:live`（真 broker，11 场景）、`npm run verify:omp`（真 oh-my-pi 会话，2 场景）、CI 跑 test/check/build/verify:live。
 
 ---
 

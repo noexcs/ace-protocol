@@ -154,7 +154,7 @@ load instead of silently becoming an empty string.
 
 Three per-subscription policies keep a busy channel from flooding a conversation:
 
-- **Allowlist** — `allowedSenders: ["ci.*", "agent-?"]`: only matching senders are injected, everything else is
+- **Allowlist** — `allowedSenders: ["ci:*", "agent-*"]`: only matching senders are injected, everything else is
   dropped and acknowledged before it reaches the agent.
 - **Burst spooling** — `spool: { afterEvents, windowMs }`: the first `afterEvents` events of a window are injected
   normally, the rest are appended to a JSONL file under `spool.dir`, and the agent gets **one** summary event naming
@@ -212,10 +212,12 @@ agent A                                    agent B
        │  ◄────────────── ace:to-a ◄──── ace_publish (B replies)
 ```
 
-`ace_publish` takes `body` (the event text the peer's agent reads), optional `activation`
-(`default` \| `next_turn` \| `immediate` \| `manual`), optional `target` (an output name, needed only when several
-are configured — the address itself never travels in the message, RFC §4.1), and an optional `id` for correlation.
-The tool result reports the published id, sender, and target.
+`ace_publish` takes `body` (the event text the peer's agent reads) and `target` — a configured name, a
+directory member (or a prefix matching exactly one live session), or a list of either, to publish one
+event to several peers at once. `activation` defaults to `next_turn`; pass `default` to let the receiver
+decide. There is no `id` parameter: the runtime generates one, shares it across every target of the call
+and reports it back, together with who it went to. The address itself never travels in the message
+(RFC §4.1), and the sender does not have to be registered anywhere to send.
 
 ### Agent directory (opt-in)
 
@@ -255,11 +257,13 @@ process). `/ace` in a subagent session says so instead of reporting a configurat
 
 Every message this runtime publishes carries `sessionId` (RFC §5.4) — the Pi session id, which stays the same when a
 session is resumed and changes when a new one starts. That is how a peer notices that the other side's context has
-changed. Only the tail is shown (`sender: agent-a:e7f1a9`) because the leading characters of a uuidv7 are a
-timestamp that concurrent sessions share.
+changed. The publisher also folds it into its own `sender` (`agent-a:<sessionId>`), so a receiver reads who and
+which session it was from in one field.
 
-The label is display-only: the protocol field keeps the full value, and neither the field nor the label is
-authorization (a peer can claim any `sessionId`, exactly like any `sender`). `/ace` prints the current label.
+Short labels (the tail six characters, e.g. `agent-a:e7f1a9`) appear in `/ace` output and in the tool text, because
+the leading characters of a uuidv7 are a timestamp that concurrent sessions share. A label is display-only and must
+never be used as an identifier: neither the field nor the label is authorization (a peer can claim any `sessionId`,
+exactly like any `sender`).
 
 ### `/ace` commands
 

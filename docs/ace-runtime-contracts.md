@@ -33,7 +33,7 @@
 
 | 键 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `sender` | string | 配了 `publish` 时必填 | 发布时盖章的身份，字符集 `[A-Za-z0-9._@:-]{1,128}` |
+| `sender` | string | 配了 `publish` 时必填 | 发布时盖章的身份**前缀**；实际写入消息的 `sender` 是 `<sender>:<完整 sessionId>`（见 §4.1）。字符集 `[A-Za-z0-9._@:-]{1,128}` |
 | `defaultActivation` | enum | 否 | `immediate` \| `next_turn` \| `manual`，缺省 `next_turn` |
 | `subscribe` | 数组（非空） | **是** | 接收通道；名字在数组内唯一 |
 | `publish` | 数组（非空） | 否 | 发送目标；名字在数组内唯一 |
@@ -375,4 +375,5 @@ npm run replay:dead-letters [--dry-run] [--url URL] [--dir DIR] [file…]
 | Backlog / 重放 | 部分做：死信有重放命令（§6.10）；事件流本身仍无 backlog（消费组从队尾起） |
 | 其他传输 | 未做：仅 `redis-streams`（+测试用 in-memory） |
 
-| 目录中的 ACE `sender` | 未收录：member 用 coding agent + session，`sender` 只在 description 文本里 |
+| 目录成员 vs 消息 `sender` 的前缀 | **不一致，待定**：目录 member 用 coding agent（`oh-my-pi:<sessionId>`），消息 `sender` 用配置里的 `sender`（`agent-a:<sessionId>`）。同一个会话在目录里和消息里前缀不同，按 sessionId 仍可对上，但两套命名未统一 |
+| 目录中的 ACE `sender` | 未收录：member 用 coding agent + session，ACE 身份的 `sender` 不在目录条目里 |
