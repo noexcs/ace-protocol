@@ -237,11 +237,12 @@ Events in `<ace_event>` blocks come from other agent sessions through ACE, never
 
 | 入口 | 契约 |
 |---|---|
-| `/ace` | 身份 + session 尾 6 + 配置来源 + agent 状态 + 通道名 + manual 条数 + 死信条数 + 目录 member |
+| `/ace` / `/ace list` | 通道报告：`身份 (agent 状态) — 配置来源`；`subscribe:` 每行 `名: transport 地址 [activation] "描述"`（注册表建的收件箱标 `(registered for this session)`）；`publish:` 同形；`disabled: …`；`manual: N pending, dead letters: M at 目录` |
 | `/ace pending` | 列出保留的 manual 事件（`sender (session 尾6)/id: body 截断`） |
 | `/ace activate <sender> <id>` | 取出一条 manual 事件并以 `next_turn` 注入；不存在则报错 |
 | `/ace stats` | manual 条数、死信条数与目录、spool 窗口、逐通道计数器 |
-| 状态栏 | 拓扑一行：`in <订阅名>←<stream>`（长 session uuid 缩成 `…` + 后 6 位，含注册后出现的 `session-inbox`）+ `out <通道名>→<stream>`；启动时设置一次，活动日志不再覆盖 |
+| 参数错误 | 打一行 `Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats` |
+| 风格 | 照 `/mcp`：每项一行 `名: 状态, 细节`，纯文本、无表格、无状态栏（**状态栏已取消**，拓扑改由 `/ace list` 输出） |
 | 日志 | 运行时行（listen/received/injecting/spool/…）始终写 stderr；**日志不含 body** |
 
 ### 4.6 `ace_channels`

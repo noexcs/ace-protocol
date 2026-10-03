@@ -7,7 +7,7 @@ import aceExtension, {
 	buildPublishToolText,
 	describeDiscovered,
 	formatChannelListing,
-	formatChannelSummary,
+	formatChannelReport,
 } from "../../extensions/ace.ts";
 import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { RegistryEntry, ResolvedAceConfig } from "../../src/index.ts";
@@ -176,11 +176,21 @@ describe("ace_agents rows", () => {
 	});
 });
 
-describe("status line", () => {
-	it("summarises the topology and shortens a member's uuid", () => {
-		const summary = formatChannelSummary(
-			[
-				{ name: "from-wsl", transport: "redis-streams", config: { stream: "ace:lan:in.mac" }, options: {} },
+describe("channel report", () => {
+	it("lists both directions with their addresses and the counters", () => {
+		const report = formatChannelReport({
+			identity: "oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2",
+			agentState: "idle",
+			source: "/tmp/project/.ace.json",
+			subscriptions: [
+				{
+					name: "from-wsl",
+					transport: "redis-streams",
+					description: "the WSL agent",
+					activation: "next_turn",
+					config: { stream: "ace:lan:in.mac" },
+					options: {},
+				},
 				{
 					name: "session-inbox",
 					transport: "redis-streams",
@@ -188,20 +198,57 @@ describe("status line", () => {
 					options: {},
 				},
 			],
-			[{ name: "to-wsl", transport: "redis-streams", config: { stream: "ace:lan:in.wsl" }, options: {} }],
-		);
+			publications: [
+				{
+					name: "to-wsl",
+					transport: "redis-streams",
+					description: "WSL agent inbox",
+					config: { stream: "ace:lan:in.wsl" },
+					options: {},
+				},
+			],
+			derivedName: "session-inbox",
+			disabled: ["stale"],
+			pendingManual: 2,
+			deadLetters: { count: 1, directory: "/tmp/project/.ace" },
+		});
 
-		expect(summary).toBe(
-			"ace: from-wsl←ace:lan:in.mac · session-inbox←ace:lan:events:oh-my-pi:…fda2b2 | out to-wsl→ace:lan:in.wsl",
+		expect(report).toBe(
+			[
+				"oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2 (agent idle) — /tmp/project/.ace.json",
+				"subscribe:",
+				'  from-wsl: redis-streams ace:lan:in.mac [next_turn] "the WSL agent"',
+				"  session-inbox: redis-streams ace:lan:events:oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2 (registered for this session)",
+				"publish:",
+				'  to-wsl: redis-streams ace:lan:in.wsl "WSL agent inbox"',
+				"disabled: stale",
+				"manual: 2 pending, dead letters: 1 at /tmp/project/.ace",
+			].join("\n"),
 		);
 	});
 
-	it("leaves out the outbound half for a session that cannot publish", () => {
-		const subscriptions = [
-			{ name: "inbox", transport: "redis-streams", config: { stream: "ace:in.a" }, options: {} },
-		];
+	it("says (none) for the halves a session does not have", () => {
+		const bare = formatChannelReport({
+			identity: "agent-a",
+			agentState: "running",
+			subscriptions: [],
+			publications: [],
+			disabled: [],
+			pendingManual: 0,
+			deadLetters: { count: 0 },
+		});
 
-		expect(formatChannelSummary(subscriptions, [])).toBe("ace: inbox←ace:in.a");
+		expect(bare).toBe(
+			[
+				"agent-a (agent running)",
+				"subscribe:",
+				"  (none)",
+				"publish:",
+				"  (none)",
+				"disabled: (none)",
+				"manual: 0 pending, dead letters: 0",
+			].join("\n"),
+		);
 	});
 });
 

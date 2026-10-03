@@ -138,8 +138,8 @@ function codingAgentName(pi: unknown): string {
 }
 
 /**
- * Runtime logs go to stderr: the session UI's status slot carries the topology (set once), not a ticker of
- * the last event, and stderr is what print/RPC runs and the `/ace` status already cover.
+ * Runtime logs go to stderr: the human face is `/ace list` (ACE writes nothing to the UI status slot), and
+ * stderr is what print/RPC runs and the verify scripts already read.
  */
 function createLogger(ctx: ExtensionContext): AceLogger {
 	return {
@@ -167,18 +167,6 @@ export function describeDiscovered(entry: RegistryEntry): string {
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 function describeEndpoint(endpoint: EndpointConfig): string {
 	return `"${endpoint.name}"${endpoint.description ? ` (${endpoint.description})` : ""} → ${addressOf(endpoint)}`;
-}
-
-/**
- * Shorten the one long segment an address can carry (a member's session uuid) so a status line fits.
- *
- * `ace:lan:events:oh-my-pi:01a103a6-c638-70c8-a87a-63113dfda2b2` → `ace:lan:events:oh-my-pi:…fda2b2`, the
- * same tail the session label uses.
- */
-function shortAddress(address: string): string {
-	const lastColon = address.lastIndexOf(":");
-	const tail = address.slice(lastColon + 1);
-	return tail.length > 12 ? `${address.slice(0, lastColon + 1)}…${tail.slice(-6)}` : address;
 }
 
 /**
@@ -211,23 +199,49 @@ export function formatChannelListing(
 	].join("\n");
 }
 
+/** Everything `/ace list` prints; the human face, so addresses are included (the tool's listing leaves them out). */
+export interface ChannelReport {
+	identity: string;
+	agentState: string;
+	source?: string;
+	subscriptions: readonly EndpointConfig[];
+	publications: readonly EndpointConfig[];
+	/** Name of the inbox the agent directory registered for this session, when there is one. */
+	derivedName?: string;
+	disabled: readonly string[];
+	pendingManual: number;
+	deadLetters: { count: number; directory?: string };
+}
+
 /**
- * The session's topology as one status line: what it reads (`subscription←stream`, including the inbox the
- * directory registered for this session) and where it can write (`channel→stream`).
+ * The `/ace list` report: one line per channel with its address, in the house style `/mcp` uses
+ * (`name: state, detail`), plus the session header and the counters an operator asks about after a while.
  */
-export function formatChannelSummary(
-	subscriptions: readonly EndpointConfig[],
-	publications: readonly EndpointConfig[],
-): string {
-	const inbound = subscriptions.map(
-		(endpoint) => `${endpoint.name}←${shortAddress(endpointAddress(endpoint) ?? "-")}`,
-	);
-	const outbound = publications.map(
-		(endpoint) => `${endpoint.name}→${shortAddress(endpointAddress(endpoint) ?? "-")}`,
-	);
-	return ["ace:", inbound.join(" · "), outbound.length === 0 ? "" : `| out ${outbound.join(" · ")}`]
-		.filter((part) => part.length > 0)
-		.join(" ");
+export function formatChannelReport(report: ChannelReport): string {
+	const channel = (endpoint: EndpointConfig): string => {
+		const address = endpointAddress(endpoint);
+		const extras = [
+			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
+			endpoint.name === report.derivedName ? "(registered for this session)" : undefined,
+			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
+		].filter((part) => part !== undefined);
+		const where = `${endpoint.transport}${address === undefined ? "" : ` ${address}`}`;
+		return `  ${endpoint.name}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
+	};
+	const lines = (endpoints: readonly EndpointConfig[]): string[] =>
+		endpoints.length === 0 ? ["  (none)"] : endpoints.map(channel);
+	const letters = `dead letters: ${report.deadLetters.count}${
+		report.deadLetters.directory === undefined ? "" : ` at ${report.deadLetters.directory}`
+	}`;
+	return [
+		`${report.identity} (agent ${report.agentState})${report.source === undefined ? "" : ` — ${report.source}`}`,
+		"subscribe:",
+		...lines(report.subscriptions),
+		"publish:",
+		...lines(report.publications),
+		`disabled: ${report.disabled.length === 0 ? "(none)" : report.disabled.join(", ")}`,
+		`manual: ${report.pendingManual} pending, ${letters}`,
+	].join("\n");
 }
 
 /**
@@ -312,6 +326,9 @@ const AGENTS_PARAMETERS = Type.Object({
 
 /** Subscription name of the inbox the agent directory registers for this session. */
 const SESSION_INBOX = "session-inbox";
+
+/** Wrong or missing arguments get this, the way `/mcp` answers with its own usage line. */
+const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats";
 
 /** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
@@ -733,9 +750,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			console.error(
 				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}${directory}`,
 			);
-			// The status slot carries the topology, set once: `subscriptions` includes the inbox the
-			// directory just registered for this session, which is exactly what a reader wants to see.
-			if (ctx.hasUI) ctx.ui.setStatus("ace", formatChannelSummary(subscriptions, resolved.publish));
 			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
 		} catch (error) {
 			// Nothing is running, so the next session in this process may try again.
@@ -787,11 +801,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("ace", {
-		description: "ACE event runtime: status, pending manual events, activation",
+		description: "ACE event runtime: list channels, pending manual events, activation",
 		// No argument completions on purpose: an open completion popup swallows the first Enter
 		// in the TUI, which would run the command before its arguments are finished.
 		handler: async (args, ctx) => {
-			const [subcommand, ...rest] = args.trim().split(/\s+/);
+			const [subcommand = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 
 			if (isSubagentContext(ctx)) {
 				report(ctx, "[ace] this is a subagent session; ACE runs in the main session", "warning");
@@ -851,15 +865,28 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const state = adapter.isRunning() ? "running" : "idle";
-			const subscribe = resolvedConfig?.subscribe.map((endpoint) => endpoint.name).join(", ") ?? "?";
-			const publish = resolvedConfig?.publish.map((endpoint) => endpoint.name).join(", ") ?? "none";
-			const identity = senderIdentity();
-			report(
-				ctx,
-				`[ace] ${identity}${sessionId ? ` session ${formatSessionLabel(sessionId)}` : ""} (${resolvedConfig?.source ?? "started"}), ` +
-					`agent ${state}, subscribe: ${subscribe}; publish: ${publish}; ${pending.length} pending manual event(s), ${deadLetters?.count ?? 0} dead letter(s)`,
-			);
+			if (subcommand === "list") {
+				report(
+					ctx,
+					formatChannelReport({
+						identity: senderIdentity(),
+						agentState: adapter.isRunning() ? "running" : "idle",
+						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
+						subscriptions: resolvedConfig?.subscribe ?? [],
+						publications: resolvedConfig?.publish ?? [],
+						...(registration === undefined ? {} : { derivedName: SESSION_INBOX }),
+						disabled: resolvedConfig?.disabled ?? [],
+						pendingManual: pending.length,
+						deadLetters: {
+							count: deadLetters?.count ?? 0,
+							...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
+						},
+					}),
+				);
+				return;
+			}
+
+			report(ctx, ACE_USAGE, "warning");
 		},
 	});
 }
