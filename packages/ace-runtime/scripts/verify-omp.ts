@@ -27,6 +27,7 @@ import type { AceMessage } from "../src/protocol/ace-message.ts";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
 const extensionPath = new URL("../extensions/ace.ts", import.meta.url).pathname;
+const probePath = new URL("./probe-system-prompt.ts", import.meta.url).pathname;
 const run = `${Date.now().toString(36)}`;
 const scratch = mkdtempSync(join(tmpdir(), "ace-omp-"));
 const group = "verify";
@@ -141,7 +142,7 @@ class OmpSession {
 		this.settled = new Promise((resolve) => {
 			this.resolveSettled = resolve;
 		});
-		this.child = spawn("omp", ["--mode", "rpc", "--no-ui", "--no-extensions", "-e", extensionPath], {
+		this.child = spawn("omp", ["--mode", "rpc", "--no-ui", "--no-extensions", "-e", extensionPath, "-e", probePath], {
 			cwd,
 			env: { ...process.env, ACE_LOG: "1" },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -273,6 +274,16 @@ for (const scenario of scenarios) {
 		const length = await admin.xLen(stream);
 
 		if (scenario.turn) {
+			// The trust rule belongs to the system prompt, not to the event: assert on the payload the
+			// provider was handed, and that the per-event ask sentence the notice used to carry is gone.
+			const probed = await session.waitForLog("ACE_PROBE_SYSTEM_PROMPT policy=true", 15_000);
+			const legacyNotice = session.logs.some((line) => line.includes("ACE_PROBE_SYSTEM_PROMPT legacyNotice=true"));
+			check(
+				scenario.name,
+				"the provider request carries ACE's system-prompt policy, without the per-event ask sentence",
+				`policy=${probed ? "true" : "false"} legacyNotice=${legacyNotice}`,
+				Boolean(probed) && !legacyNotice,
+			);
 			check(
 				scenario.name,
 				"event reaches the conversation, the turn settles and the entry is acknowledged",
