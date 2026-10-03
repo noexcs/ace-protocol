@@ -82,6 +82,50 @@ redis-cli XADD ace:in.wsl '*' message \
 Publish **after** the session says `listening`: a consumer group starts at the stream's tail, so an event
 published before the subscription exists is skipped.
 
+### Two agents, two machines (LAN)
+
+One machine can host the broker for both sessions: expose Redis on that machine and point every
+`.ace.json` at its LAN address. The two configs are mirror images:
+
+```jsonc
+// mac/.ace.json                             // wsl/.ace.json
+{ "defaultActivation": "next_turn",          { "defaultActivation": "next_turn",
+  "registry":  { "url": "redis://<lan-ip>:6379",   "registry":  { "url": "redis://<lan-ip>:6379",
+                 "prefix": "ace:lan" },                            "prefix": "ace:lan" },
+  "subscribe": [ { "name": "from-wsl",          "subscribe": [ { "name": "from-mac",
+      "transport": "redis-streams",                 "transport": "redis-streams",
+      "config": { "stream": "ace:lan:in.mac",       "config": { "stream": "ace:lan:in.wsl",
+                  "group": "mac",                               "group": "wsl",
+                  "url": "redis://<lan-ip>:6379" } } ],         "url": "redis://<lan-ip>:6379" } } ],
+  "publish":   [ { "name": "to-wsl", … } ] }    "publish":   [ { "name": "to-mac", … } ] }
+```
+
+```bash
+# on the machine that hosts Redis (macOS + Homebrew), make it reachable
+CONF=$(brew --prefix)/etc/redis.conf
+cp "$CONF" "$CONF.bak"                                   # keep a way back
+sed -i '' 's/^bind .*/bind 0.0.0.0 ::1/; s/^protected-mode .*/protected-mode no/' "$CONF"
+brew services restart redis
+redis-cli -h <lan-ip> ping                               # PONG = the network path works
+
+# on each machine, from its own directory
+omp --extension <path>/extensions/ace.ts                 # or pi --extension …
+
+# then, from either side, once the other side printed "listening"
+redis-cli -h <lan-ip> XADD ace:lan:in.wsl '*' message \
+  '{"aceVersion":"0.1","id":"e1","sender":"me:demo","senderDescription":"agent=pi | cwd=/home/u/ace","activation":"next_turn","body":"hello from WSL"}'
+```
+
+With `registry` configured on both sides, each session also auto-subscribes its own
+`<prefix>:events:<member>`, so `ace_agents` lists the peer and `ace_publish` can target its member —
+the entry names the address it is reachable at.
+
+> **Exposing Redis has teeth.** `protected-mode no` plus no password means anyone on the network can
+> read and write the whole database, and Redis can write files on the host. On a network you do not
+> own, add `requirepass <secret>` and use `redis://:<secret>@<lan-ip>:6379` (or
+> `redis://:${REDIS_PASSWORD}@…` with the variable exported), and restrict the port to your subnet.
+> To undo: restore the two lines from the backup and restart.
+
 ### Releasing
 
 ```bash
