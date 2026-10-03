@@ -38,7 +38,7 @@ holds a `.ace.json` starts ACE.
 
 ```bash
 # 1. released tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.2/ace-runtime-0.1.2.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -67,10 +67,10 @@ or skip the plugin system and link the entry into the host's extension directory
 to, so keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
-mkdir -p ~/ace-runtime-0.1.1 ~/.omp/agent/extensions
-tar xzf ace-runtime-0.1.1.tgz -C ~/ace-runtime-0.1.1 --strip-components=1
-cd ~/ace-runtime-0.1.1 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.2/ace-runtime-0.1.2.tgz
+mkdir -p ~/ace-runtime-0.1.2 ~/.omp/agent/extensions
+tar xzf ace-runtime-0.1.2.tgz -C ~/ace-runtime-0.1.2 --strip-components=1
+cd ~/ace-runtime-0.1.2 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -93,7 +93,7 @@ sudo apt update && sudo apt install -y redis-server && sudo service redis-server
 redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.1/ace-runtime-0.1.1.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.2/ace-runtime-0.1.2.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
   "subscribe": [ { "name": "inbox", "transport": "redis-streams",
@@ -315,7 +315,7 @@ and reports the write error once. No summary event is injected: the agent alread
 autocomplete it after adding a `$schema` line (a local path inside the installed package works equally):
 
 ```json
-{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.1/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
+{ "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.2/packages/ace-runtime/schema/ace-config.schema.json", "subscribe": [ … ] }
 ```
 
 The schema covers structure, types, per-kind required keys, and "publish needs a sender". Two rules are semantic and
