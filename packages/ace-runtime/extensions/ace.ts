@@ -81,6 +81,7 @@ import {
 	resolveAceConfig,
 	resolveTarget,
 	validateAceMessage,
+	withTrustPolicy,
 } from "../src/index.ts";
 
 function describeError(error: unknown): string {
@@ -475,6 +476,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event) => {
 		const reason = turnFailureReason(event);
 		if (reason !== undefined) adapter.reportRunFailure(new Error(`turn ended with stopReason=${reason}`));
+	});
+
+	// Trust in an event's source is a soft constraint, stated once in the system prompt instead of in
+	// every injected event: the user decides, their answer lives in the conversation, and the runtime
+	// neither records verdicts nor blocks senders.
+	pi.on("before_agent_start", (event, ctx) => {
+		if (isSubagentContext(ctx) || resolvedConfig === undefined) return;
+		return { systemPrompt: withTrustPolicy(event.systemPrompt) };
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

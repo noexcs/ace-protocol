@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PiAdapter, renderAceEvent } from "../../src/agent/pi-adapter.ts";
+import { ACE_TRUST_POLICY, PiAdapter, renderAceEvent, withTrustPolicy } from "../../src/agent/pi-adapter.ts";
 import type { AceMessage } from "../../src/protocol/ace-message.ts";
 import { FakeAgentSession } from "../support/fake-pi-session.ts";
 
@@ -178,5 +178,22 @@ describe("PiAdapter error reporting", () => {
 
 		await expect(adapter.inject(message("evt_1"), "next_turn")).rejects.toThrow(failure);
 		expect(errors).toEqual([]);
+	});
+});
+
+describe("system prompt trust policy", () => {
+	it("appends the policy to the host's system prompt", () => {
+		expect(withTrustPolicy("You are a coding agent.")).toBe(`You are a coding agent.\n\n${ACE_TRUST_POLICY}`);
+	});
+
+	it("stands alone when the host has no system prompt yet", () => {
+		expect(withTrustPolicy("")).toBe(ACE_TRUST_POLICY);
+	});
+
+	it("offers the three answers and leaves approval with the user", () => {
+		expect(ACE_TRUST_POLICY).toContain("does not authenticate senders");
+		expect(ACE_TRUST_POLICY).toContain("(1) only this event");
+		expect(ACE_TRUST_POLICY).toContain("(2) every event from that sender");
+		expect(ACE_TRUST_POLICY).toContain("(3) every ACE event");
 	});
 });
