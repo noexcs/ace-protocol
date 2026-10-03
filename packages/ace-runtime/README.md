@@ -32,20 +32,28 @@ metadata to ACE fields, and nothing here teaches Pi about ACE: Pi only sees cont
 ## Install
 
 The package ships the extension, its sources (`extensions/ace.ts` imports `../src/index.ts`, so it runs
-under Bun as-is), the schemas and the built `dist/`. Three ways to get it onto a machine:
+under Bun as-is), the schemas and the built `dist/`.
 
 ```bash
-# 1. from a tarball (no registry needed): npm pack here, copy the .tgz over, install it there
-npm pack                                  # → ace-runtime-0.1.0.tgz
-mkdir -p ~/ace && cd ~/ace && npm init -y && npm i /path/to/ace-runtime-0.1.0.tgz
+# 1. from a GitHub release — no copying, no registry. This repository is private, so `gh` must be
+#    logged in there; the release carries the tarball `npm pack` produced.
+gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
+mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
 
-# 2. from npm, once published
-npm i ace-runtime                          # or the scoped name you publish under
+# 2. from npm — one command and no auth, the smoothest once it is published
+npm i ace-runtime                          # or the scoped name it is published under
 
-# 3. from a checkout, for development
+# 3. public repository: install the release asset directly, no gh needed
+npm i https://github.com/noexcs/ace-protocol/releases/download/v0.1.0/ace-runtime-0.1.0.tgz
+
+# 4. from a checkout, for development, or when the machine cannot reach the registry
 git clone --depth 1 https://github.com/noexcs/ace-protocol && cd ace-protocol/packages/ace-runtime
 npm install --ignore-scripts
 ```
+
+`npm pack` in this directory rebuilds `dist` (its `prepack`) and produces the tarball the release carries;
+the file is byte-identical to the one verified against a live session. Note that npm refuses `git`-type
+sources on machines configured with `allow-git=none` — another reason to prefer 1 or 2.
 
 Then point the host at the installed extension (`node_modules/ace-runtime/extensions/ace.ts`), with a
 `.ace.json` in the session's working directory.
@@ -56,6 +64,8 @@ Then point the host at the installed extension (`node_modules/ace-runtime/extens
 sudo apt update && sudo apt install -y redis-server && sudo service redis-server start
 redis-cli ping                              # PONG
 
+# `gh` needs to be logged in on that machine (the repository is private)
+gh release download v0.1.0 -R noexcs/ace-protocol -p '*.tgz'
 mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
 cat > .ace.json <<'JSON'
 { "defaultActivation": "next_turn",
@@ -71,6 +81,18 @@ redis-cli XADD ace:in.wsl '*' message \
 
 Publish **after** the session says `listening`: a consumer group starts at the stream's tail, so an event
 published before the subscription exists is skipped.
+
+### Releasing
+
+```bash
+npm version minor --no-git-tag-version   # or patch
+npm run check && npm test
+npm pack                                  # → ace-runtime-<version>.tgz
+git commit -am "ace-runtime <version>" && git tag -a v<version> -m "ace-runtime <version>"
+git push && git push origin v<version>
+gh release create v<version> ace-runtime-<version>.tgz --title "ace-runtime <version>" --notes "…"
+npm publish                               # once npm auth is set up; --access public for a scoped name
+```
 
 ## Usage
 
