@@ -1,5 +1,5 @@
 import type { AceMessage } from "../protocol/ace-message.ts";
-import type { AgentEngine, InjectionMode } from "./agent-engine.ts";
+import type { AgentEngine, InjectionContext, InjectionMode } from "./agent-engine.ts";
 import type { DeliveryObserver } from "./event-delivery-observer.ts";
 import { renderAceEvent } from "./pi-adapter.ts";
 
@@ -43,7 +43,7 @@ export interface PiExtensionAdapterOptions {
 	isIdle?: () => boolean;
 	/** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
 	/** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
-	renderEvent?: (message: AceMessage) => string;
+	renderEvent?: (message: AceMessage, context?: InjectionContext) => string;
 	/** Host delivery behavior; defaults to the upstream-Pi shape. */
 	host?: HostDelivery;
 	/**
@@ -86,7 +86,7 @@ const DEFAULT_DELIVERY_TIMEOUT_MS = 30_000;
 export class PiExtensionAdapter implements AgentEngine {
 	private readonly pi: ExtensionMessageApi;
 	private readonly isIdle: () => boolean;
-	private readonly renderEvent: (message: AceMessage) => string;
+	private readonly renderEvent: (message: AceMessage, context?: InjectionContext) => string;
 	private readonly host: Required<HostDelivery>;
 	private readonly observeDelivery?: DeliveryObserver;
 	private readonly deliveryTimeoutMs: number;
@@ -104,11 +104,11 @@ export class PiExtensionAdapter implements AgentEngine {
 			options.setTimer ?? ((callback, ms) => ({ cancel: clearTimeout.bind(undefined, setTimeout(callback, ms)) }));
 	}
 
-	async inject(message: AceMessage, mode: InjectionMode): Promise<void> {
+	async inject(message: AceMessage, mode: InjectionMode, context?: InjectionContext): Promise<void> {
 		const deliverAs = this.deliveryFor(mode);
 		// Render first, then observe with the very text we send: the header can depend on the directory,
 		// so re-rendering later would not necessarily produce the same string.
-		const text = this.renderEvent(message);
+		const text = this.renderEvent(message, context);
 		// Start observing before sending: a host may deliver synchronously.
 		const observed = this.observeDelivery?.observe(message, text);
 		try {

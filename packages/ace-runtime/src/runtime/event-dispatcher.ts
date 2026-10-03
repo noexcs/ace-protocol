@@ -38,6 +38,8 @@ export class EventDispatcher {
 		message: AceMessage,
 		subscriptionName: string,
 		activation: ConcreteActivation,
+		/** Address the event arrived on, for the header; the subscription name is already here. */
+		address?: string,
 	): Promise<DispatchResult> {
 		if (activation === "manual") {
 			this.pendingEvents.store(message, subscriptionName);
@@ -54,7 +56,10 @@ export class EventDispatcher {
 				running ? "running" : "idle"
 			}`,
 		);
-		await this.engine.inject(message, activation);
+		await this.engine.inject(message, activation, {
+			subscription: subscriptionName,
+			...(address === undefined ? {} : { address }),
+		});
 		this.metrics?.increment(subscriptionName, running ? "queued" : "injected");
 		return { activation, disposition: running ? "queued" : "injected" };
 	}

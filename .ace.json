@@ -1,26 +1,29 @@
 {
-  "$schema": "./packages/ace-runtime/schema/ace-config.schema.json",
   "defaultActivation": "next_turn",
+  "registry": {
+    "url": "redis://192.168.2.11:6379",
+    "prefix": "ace:lan"
+  },
   "subscribe": [
     {
-      "name": "inbox",
+      "name": "from-wsl",
       "transport": "redis-streams",
-      "description": "direct messages addressed to me",
+      "description": "the WSL agent",
       "config": {
-        "stream": "ace:in.a",
-        "group": "agent-a",
-        "url": "redis://127.0.0.1:6379"
+        "stream": "ace:lan:in.mac",
+        "group": "mac",
+        "url": "redis://192.168.2.11:6379"
       }
     }
   ],
   "publish": [
     {
-      "name": "to-b",
+      "name": "to-wsl",
       "transport": "redis-streams",
-      "description": "agent-b",
+      "description": "WSL agent inbox",
       "config": {
-        "stream": "ace:in.b",
-        "url": "redis://127.0.0.1:6379"
+        "stream": "ace:lan:in.wsl",
+        "url": "redis://192.168.2.11:6379"
       }
     }
   ]

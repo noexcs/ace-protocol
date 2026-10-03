@@ -69,8 +69,9 @@ const scenarios: Scenario[] = [
 		expect: {
 			frame: "message_start",
 			userMessage: [
-				"[ACE Event]",
+				"<ace_event>",
 				"sender: ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
+				"channel: inbox →",
 				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 				"id: evt_next_turn",
 			],

@@ -4,7 +4,13 @@ import type { AceMessage, ConcreteActivation } from "../protocol/ace-message.ts"
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.ts";
 import type { Transport } from "../transport/transport.ts";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.ts";
-import { AceConfigError, type EndpointConfig, senderAllowed, validateEndpointConfig } from "./endpoint-config.ts";
+import {
+	AceConfigError,
+	type EndpointConfig,
+	endpointAddress,
+	senderAllowed,
+	validateEndpointConfig,
+} from "./endpoint-config.ts";
 import { type DispatchResult, EventDispatcher } from "./event-dispatcher.ts";
 import { EventSpool, type EventSpoolOptions, type SpooledBatch } from "./event-spool.ts";
 import { AceMetrics } from "./metrics.ts";
@@ -202,7 +208,12 @@ export class AceRuntime {
 			}
 		}
 
-		const result = await this.dispatcher.dispatch(message, subscription.name, activation);
+		const result = await this.dispatcher.dispatch(
+			message,
+			subscription.name,
+			activation,
+			endpointAddress(subscription),
+		);
 		// Remember only now: a failed delivery must stay eligible for redelivery.
 		seen.remember(message.sender, message.id);
 		return { ...result, subscriptionName: subscription.name };
@@ -232,7 +243,11 @@ export class AceRuntime {
 			throw new Error(`No pending ACE event for sender="${sender}" id="${id}"`);
 		}
 		this.logger.info?.(`[ACE] activating id=${id} sender=${sender} subscribe=${event.subscriptionName}`);
-		await this.engine.inject(event.message, "next_turn");
+		const origin = this.subscribe.find((entry) => entry.name === event.subscriptionName);
+		await this.engine.inject(event.message, "next_turn", {
+			subscription: event.subscriptionName,
+			...(origin === undefined ? {} : { address: endpointAddress(origin) }),
+		});
 	}
 
 	/** A turn this runtime started ended in failure; counted for `/ace stats` and logged. */
@@ -282,7 +297,13 @@ export class AceRuntime {
 				.join("\n"),
 		};
 
-		await this.dispatcher.dispatch(summary, batch.subscription, "next_turn");
+		const origin = this.subscribe.find((entry) => entry.name === batch.subscription);
+		await this.dispatcher.dispatch(
+			summary,
+			batch.subscription,
+			"next_turn",
+			origin === undefined ? undefined : endpointAddress(origin),
+		);
 	}
 
 	private seenFor(subscriptionName: string): SeenMessageIds {

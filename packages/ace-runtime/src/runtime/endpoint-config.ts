@@ -53,6 +53,12 @@ export interface SpoolConfig {
 	windowMs: number;
 }
 
+/** The transport address of a channel, whatever that transport calls it. */
+export function endpointAddress(endpoint: EndpointConfig): string | undefined {
+	const address = endpoint.config.stream ?? endpoint.config.subject ?? endpoint.config.topic ?? endpoint.config.queue;
+	return typeof address === "string" ? address : undefined;
+}
+
 /** Thrown when runtime configuration is unusable (RFC-facing §10). */
 export class AceConfigError extends Error {
 	constructor(message: string) {

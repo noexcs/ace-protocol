@@ -4,6 +4,18 @@ import type { AceMessage } from "../protocol/ace-message.ts";
 export type InjectionMode = "immediate" | "next_turn";
 
 /**
+ * Where an injected event came from, so the header can say which of this session's channels received
+ * it. Not part of the ACE message: the sender names a target in *its* configuration, the receiver sees
+ * a subscription in *its own*.
+ */
+export interface InjectionContext {
+	/** Subscription name in this session's `.ace.json` (e.g. `from-wsl`). */
+	subscription: string;
+	/** Address it arrived on (e.g. `ace:lan:in.mac`), when the transport kind exposes one. */
+	address?: string;
+}
+
+/**
  * The agent engine ACE drives.
  *
  * ACE core depends only on this interface; `PiAdapter` is one implementation
@@ -19,7 +31,7 @@ export interface AgentEngine {
 	 * Resolves once the event has been handed to the engine — not once the turn
 	 * finished, so events arriving during a run can still preempt.
 	 */
-	inject(message: AceMessage, mode: InjectionMode): Promise<void>;
+	inject(message: AceMessage, mode: InjectionMode, context?: InjectionContext): Promise<void>;
 
 	/** Whether a turn is currently being processed. */
 	isRunning(): boolean;
