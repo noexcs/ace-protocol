@@ -195,7 +195,7 @@ export function buildPublishToolText(
 		"",
 		`You are "${config.sender ?? "(unknown sender)"}"${session} (stamped on the events you publish).`,
 		"",
-		"Targets (pass the name as `target`):",
+		"Targets (pass the name as `target`; required, a list publishes to several):",
 		...(config.publish.length > 0 ? config.publish.map(describeEndpoint) : ["(none configured)"]),
 		"",
 		"Subscribed channels (events peers send you):",
@@ -206,56 +206,34 @@ export function buildPublishToolText(
 			"their own publication channel see their own events.",
 		"",
 		"Other targets are resolved in the agent directory (`ace_agents`): the member of a live session, or a " +
-			"prefix that matches exactly one. A list publishes the same event to each target.",
+			"prefix that matches exactly one.",
+		"",
+		"Activation defaults to `next_turn`; pass `default` to let the receiver decide. The event id is " +
+			"generated for you and returned in the result.",
 	];
 	return { description: lines.join("\n"), promptGuidelines: guidelines };
 }
+
+/** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
+const PUBLISH_PARAMETERS = Type.Object({
+	body: Type.String({ description: "Event body; the peer's agent reads this" }),
+	activation: Type.Optional(
+		StringEnum(["default", "next_turn", "immediate", "manual"] as const, {
+			description:
+				'How urgently the peer should process it (default: next_turn); pass "default" to let the receiver decide',
+		}),
+	),
+	target: Type.Union([Type.String(), Type.Array(Type.String())], {
+		description:
+			"Where to publish: a configured channel name, an agent-directory member (or a prefix matching exactly one session), or a list of either",
+	}),
+});
 
 /** Parameters of the directory listing tool. */
 const AGENTS_PARAMETERS = Type.Object({
 	agent: Type.Optional(Type.String({ description: 'Filter by coding agent, e.g. "oh-my-pi" or "pi"' })),
 	limit: Type.Optional(Type.Number({ description: "Maximum rows to return (default 20, cap 50)" })),
 });
-
-/** Tool parameters; kept at module scope so the definition keeps its static types. */
-const PUBLISH_PARAMETERS = Type.Object({
-	body: Type.String({ description: "Event body; the peer's agent reads this" }),
-	activation: Type.Optional(
-		StringEnum(["default", "next_turn", "immediate", "manual"] as const, {
-			description: "How urgently the peer should process it; omit unless you know the peer's setup",
-		}),
-	),
-	target: Type.Optional(
-		Type.Union([Type.String(), Type.Array(Type.String())], {
-			description:
-				"Configured channel name, agent-directory member (or a prefix matching exactly one session), or a list of either",
-		}),
-	),
-	id: Type.Optional(Type.String({ description: "Message id for correlation; generated when omitted" })),
-});
-
-/**
- * Resolve which configured publication a publish call targets.
- *
- * `target` names an entry of `publish`; it is optional when exactly one is configured.
- */
-function selectPublisher(
-	publishers: Readonly<Record<string, AcePublisher>>,
-	target: string | undefined,
-): { name: string; publisher: AcePublisher } {
-	const names = Object.keys(publishers);
-	if (names.length === 0) {
-		throw new Error(`no publish channels configured; add a "publish" entry to ${ACE_CONFIG_FILENAME}`);
-	}
-	if (target === undefined) {
-		if (names.length > 1) throw new Error(`several publish channels configured (${names.join(", ")}); pass target`);
-		const name = names[0] as string;
-		return { name, publisher: publishers[name] as AcePublisher };
-	}
-	const publisher = publishers[target];
-	if (!publisher) throw new Error(`unknown target "${target}" (configured: ${names.join(", ")})`);
-	return { name: target, publisher };
-}
 
 export default function aceExtension(pi: ExtensionAPI): void {
 	let sessionContext: ExtensionContext | undefined;
@@ -393,31 +371,23 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				if (sender === undefined) {
 					throw new Error(`no sender configured; add "sender" to ${ACE_CONFIG_FILENAME}`);
 				}
+				// The id is the runtime's: the caller reads it back from the result instead of choosing it.
 				const message = validateAceMessage({
 					aceVersion: "0.1",
-					id: params.id ?? `evt_${randomUUID()}`,
+					id: `evt_${randomUUID()}`,
 					sender,
 					...(sessionId === undefined ? {} : { sessionId }),
-					activation: params.activation ?? "default",
+					activation: params.activation ?? "next_turn",
 					body: params.body,
 				});
 
-				const requested =
-					params.target === undefined ? [] : typeof params.target === "string" ? [params.target] : params.target;
-				// One entry per delivery: no target keeps the old "the single configured channel" behavior.
-				const targets: Array<string | undefined> = requested.length === 0 ? [undefined] : [...new Set(requested)];
+				const targets = [...new Set(typeof params.target === "string" ? [params.target] : params.target)];
 				const delivered: string[] = [];
 				const failures: string[] = [];
 				const sentStreams = new Set<string>();
 
 				for (const name of targets) {
 					try {
-						if (name === undefined) {
-							const selected = selectPublisher(publishers, undefined);
-							await selected.publisher.publish(message);
-							delivered.push(`channel "${selected.name}"`);
-							continue;
-						}
 						const target = await resolvePublishTarget(name);
 						if (target.kind === "channel") {
 							await target.publisher.publish(message);
@@ -434,7 +404,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						await publishToMember(target.entry, message);
 						delivered.push(`member "${target.member}"`);
 					} catch (error) {
-						failures.push(`"${name ?? "(configured)"}": ${describeError(error)}`);
+						failures.push(`"${name}": ${describeError(error)}`);
 					}
 				}
 
@@ -446,7 +416,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						{
 							type: "text",
 							text: [
-								`Published ${message.id} from ${sender} to ${delivered.length} target(s): ${delivered.join(", ")} (activation: ${message.activation}).`,
+								`Published id=${message.id} from ${sender} to ${delivered.length} target(s): ${delivered.join(", ")} (activation: ${message.activation}).`,
 								...(failures.length > 0 ? [`Failed: ${failures.join("; ")}`] : []),
 							].join("\n"),
 						},

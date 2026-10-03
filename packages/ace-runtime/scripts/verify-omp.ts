@@ -59,10 +59,12 @@ const scenarios: Scenario[] = [
 			aceVersion: "0.1",
 			id: "evt_next_turn",
 			sender: "ci",
+			sessionId: "01a102b6-9dac-75b6-80ca-21cbbf58e914",
 			activation: "next_turn",
 			body: "Reply with exactly: ACE-OMP-OK",
 		},
-		expect: { frame: "message_start", userMessage: "evt_next_turn" },
+		/** The header renders the sender like a directory member: `<sender>:<session label>`. */
+		expect: { frame: "message_start", userMessage: "sender: ci:58e914" },
 		turn: true,
 	},
 	{
@@ -252,7 +254,9 @@ for (const scenario of scenarios) {
 		const settled = scenario.turn ? await session.waitForSettled(120_000) : false;
 		await new Promise((resolve) => setTimeout(resolve, scenario.turn ? 0 : 2_000));
 
-		const injected = session.userMessages.some((text) => text.includes("[ACE Event]"));
+		const injected = session.userMessages.some(
+			(text) => text.includes("[ACE Event]") && text.includes(scenario.expect.userMessage ?? "\u0000"),
+		);
 		const turns = session.frames.filter((frame) => frame.type === "turn_start").length;
 		const outstanding = await pending(stream, group);
 		const length = await admin.xLen(stream);

@@ -255,7 +255,7 @@ process). `/ace` in a subagent session says so instead of reporting a configurat
 
 Every message this runtime publishes carries `sessionId` (RFC §5.4) — the Pi session id, which stays the same when a
 session is resumed and changes when a new one starts. That is how a peer notices that the other side's context has
-changed. Only the tail is shown (`sender: agent-a (session e7f1a9)`) because the leading characters of a uuidv7 are a
+changed. Only the tail is shown (`sender: agent-a:e7f1a9`) because the leading characters of a uuidv7 are a
 timestamp that concurrent sessions share.
 
 The label is display-only: the protocol field keeps the full value, and neither the field nor the label is
@@ -429,11 +429,14 @@ the session settles. Events therefore reach the model exactly once, in order.
 
 ```text
 [ACE Event]
-sender: agent-a (session e7f1a9)
+sender: agent-a:e7f1a9
 id: evt_123
 
 Build failed for project foo.
 ```
+
+The sender reads like a directory member (`<sender>:<session label>`) so an injected event and a row of
+`ace_agents` can be matched by eye; the label is display-only, the protocol field keeps the full id.
 
 The header is an adapter choice, **not** part of ACE: the protocol only requires `body` to be visible to later
 reasoning. The fixed prefix also keeps an ACE body from being mistaken for a Pi slash command or prompt template.
