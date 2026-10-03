@@ -6,6 +6,9 @@ dist/
 pi/
 oh-my-pi/
 
+# packaged artifacts
+*.tgz
+
 # runtime state (spool files, logs)
 .ace/
 *.log

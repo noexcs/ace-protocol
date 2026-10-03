@@ -29,6 +29,49 @@ External World
 The four layers stay separate: **ACE protocol ≠ ACE runtime ≠ transport ≠ agent engine**. Nothing here maps MQ
 metadata to ACE fields, and nothing here teaches Pi about ACE: Pi only sees context text.
 
+## Install
+
+The package ships the extension, its sources (`extensions/ace.ts` imports `../src/index.ts`, so it runs
+under Bun as-is), the schemas and the built `dist/`. Three ways to get it onto a machine:
+
+```bash
+# 1. from a tarball (no registry needed): npm pack here, copy the .tgz over, install it there
+npm pack                                  # → ace-runtime-0.1.0.tgz
+mkdir -p ~/ace && cd ~/ace && npm init -y && npm i /path/to/ace-runtime-0.1.0.tgz
+
+# 2. from npm, once published
+npm i ace-runtime                          # or the scoped name you publish under
+
+# 3. from a checkout, for development
+git clone --depth 1 https://github.com/noexcs/ace-protocol && cd ace-protocol/packages/ace-runtime
+npm install --ignore-scripts
+```
+
+Then point the host at the installed extension (`node_modules/ace-runtime/extensions/ace.ts`), with a
+`.ace.json` in the session's working directory.
+
+### On a fresh WSL box
+
+```bash
+sudo apt update && sudo apt install -y redis-server && sudo service redis-server start
+redis-cli ping                              # PONG
+
+mkdir -p ~/ace && cd ~/ace && npm init -y && npm i ./ace-runtime-0.1.0.tgz
+cat > .ace.json <<'JSON'
+{ "defaultActivation": "next_turn",
+  "subscribe": [ { "name": "inbox", "transport": "redis-streams",
+    "config": { "stream": "ace:in.wsl", "group": "wsl", "url": "redis://127.0.0.1:6379" } } ] }
+JSON
+omp --extension node_modules/ace-runtime/extensions/ace.ts   # or: pi --extension …
+
+# in another terminal, once the session printed "listening"
+redis-cli XADD ace:in.wsl '*' message \
+  '{"aceVersion":"0.1","id":"e1","sender":"me:demo","activation":"next_turn","body":"hello from WSL"}'
+```
+
+Publish **after** the session says `listening`: a consumer group starts at the stream's tail, so an event
+published before the subscription exists is skipped.
+
 ## Usage
 
 ```typescript
