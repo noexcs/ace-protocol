@@ -32,6 +32,7 @@ import {
 	type EndpointConfig,
 	type InjectionMode,
 	parseDeadLetters,
+	publishEndpointOf,
 	RedisStreamsPublisher,
 	RedisStreamsTransport,
 	registryMember,
@@ -462,6 +463,76 @@ await (async () => {
 		await publisher.close();
 		rmSync(dir, { recursive: true, force: true });
 		await admin.del(stream);
+	}
+})();
+
+// 11. A directory entry advertises its own broker, stream and field, and that is where a publish goes.
+await (async () => {
+	const prefix = `ace:verify:endpoint:${run}`;
+	const sessionId = `session-endpoint-${run}`;
+	const member = registryMember("verify-agent", sessionId);
+	const registry = new AgentRegistry({
+		store: createRedisAgentRegistry({ url, prefix }),
+		prefix,
+		ttlMs: 5_000,
+		refreshMs: 0,
+	});
+	let stream = "";
+	try {
+		const registration = await registry.register({
+			codingAgent: "verify-agent",
+			sessionId,
+			cwd: "/tmp/endpoint",
+			url,
+		});
+		stream = registration.stream;
+		const entry = (await registry.list()).find((candidate) => candidate.member === member);
+		const endpoint = entry === undefined ? undefined : publishEndpointOf(entry);
+
+		const advertised =
+			endpoint?.transport === "redis-streams" &&
+			endpoint.url === url &&
+			endpoint.stream === registration.stream &&
+			endpoint.field === "message";
+
+		// Publish exactly the way the extension does: through the endpoint the entry advertises.
+		const client = createRedisStreamsAddClient(endpoint?.url ?? "", () => {});
+		try {
+			await client.add(endpoint?.stream ?? "", endpoint?.field ?? "message", JSON.stringify({ probe: true }));
+		} finally {
+			await client.close();
+		}
+		const landed = (await admin.xLen(registration.stream)) === 1;
+
+		// A broker the entry does not name is not silently substituted: that write fails.
+		const elsewhere = createRedisStreamsAddClient("redis://127.0.0.1:6399", () => {});
+		let refused = false;
+		try {
+			await elsewhere.add(registration.stream, "message", "{}");
+		} catch {
+			refused = true;
+		} finally {
+			await elsewhere.close();
+		}
+
+		check(
+			"directory publish endpoint",
+			"publishes to the broker and stream the entry advertises",
+			`advertised=${advertised} landed=${landed} otherBrokerRefused=${refused}`,
+			advertised && landed && refused,
+		);
+	} catch (error) {
+		check(
+			"directory publish endpoint",
+			"scenario completes",
+			error instanceof Error ? error.message : String(error),
+			false,
+		);
+	} finally {
+		await registry.close();
+		if (stream !== "") await admin.del(stream);
+		await admin.del(prefix);
+		await admin.del(`${prefix}:entry`);
 	}
 })();
 

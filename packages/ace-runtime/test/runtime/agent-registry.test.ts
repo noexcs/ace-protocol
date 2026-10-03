@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentRegistry,
 	type AgentRegistryStore,
+	publishEndpointOf,
 	REGISTRY_CHANNEL_NOTE,
 	type RegistryChannel,
 	type RegistryEntry,
@@ -274,5 +275,42 @@ describe("resolveTarget", () => {
 	it("does not treat a partial session id as a prefix of another agent", () => {
 		expect(resolveTarget(entries, "oh-my-pi:01a102b6").ok).toBe(true);
 		expect(resolveTarget(entries, "oh-my-pi:zzz")).toMatchObject({ ok: false, reason: "not-found" });
+	});
+});
+
+describe("publishEndpointOf", () => {
+	const entry: RegistryEntry = {
+		member: "pi:01a102b8-f016-75ab-87eb-63551c257fda",
+		expiresAt: 5,
+		channel: {
+			name: "pi:01a102b8-f016-75ab-87eb-63551c257fda",
+			transport: "redis-streams",
+			description: "…",
+			config: { stream: "ace:elsewhere:events", group: "ace:pi:…", url: "redis://other-broker:6379" },
+		},
+	};
+
+	it("publishes where the entry says, not where this runtime happens to talk", () => {
+		expect(publishEndpointOf(entry)).toEqual({
+			transport: "redis-streams",
+			url: "redis://other-broker:6379",
+			stream: "ace:elsewhere:events",
+			field: "message",
+		});
+	});
+
+	it("honours a field the entry carries", () => {
+		const withField: RegistryEntry = {
+			...entry,
+			channel: { ...entry.channel, config: { ...entry.channel.config, field: "ace" } },
+		};
+
+		expect(publishEndpointOf(withField).field).toBe("ace");
+	});
+
+	it("keeps the transport as advertised, so a caller can refuse one it cannot speak", () => {
+		const kafkaEntry: RegistryEntry = { ...entry, channel: { ...entry.channel, transport: "kafka" } };
+
+		expect(publishEndpointOf(kafkaEntry).transport).toBe("kafka");
 	});
 });

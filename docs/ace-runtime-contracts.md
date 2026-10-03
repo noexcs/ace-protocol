@@ -138,7 +138,7 @@
 | 崩溃 | 不依赖关闭钩子（实测 `SIGTERM` 不触发 `session_shutdown`）：过期后由**读取端清扫**（`ZREMRANGEBYSCORE` + 删 hash 字段 + 删遗留流） |
 | 自动订阅 | 运行时把 `<prefix>:events:<member>` 作为 `session-inbox` 通道加入订阅，否则公示的地址无人接收 |
 | 发现读取 | `ZRANGEBYSCORE <prefix> (<now> +inf` → `HMGET <prefix>:entry <members…>` |
-| 发布寻址 | 只用 `registry.url` 作为 broker，**忽略条目里的 `url`/`transport`**；只有 `config.stream` 被采用 |
+| 发布寻址 | **按条目自己的 `transport` / `config.url` / `config.stream` / `config.field` 发布**（`field` 缺省 `message`）：对端可能在另一个 broker 上，peer 就该按它公示的地址找它。`transport` 不是本运行时认识的种类 → 明确报错，不回退到自己的 broker |
 
 ### 3.4 死信文件
 
@@ -307,7 +307,7 @@ manual 事件 → pending store（内存 + 落盘）
 ```text
 ace_publish → 校验消息 → 逐目标解析（§4.1）
   配置通道 → 该通道的 publisher（XADD 到 config.stream）
-  目录 member → 用 registry.url 建客户端，XADD 到条目 config.stream
+  目录 member → 按条目的 transport/url 取（或建）该 broker 的客户端，XADD 到条目 config.stream（field 照条目）
   → 汇总 delivered/failed
 ```
 
@@ -357,7 +357,7 @@ npm run replay:dead-letters [--dry-run] [--url URL] [--dir DIR] [file…]
 | 项 | 现状 |
 |---|---|
 | Agent Identity / 信任 | 未做：`sender` 与目录条目都自证；目录条目可被冒充（但只能决定"自己被发到哪条流"，不能改变他人的 broker） |
-| Dynamic Target Selection | 部分做：按 member 寻址（本实现），`replyTo`/结果事件未定 |
+| Dynamic Target Selection | 部分做：按 member 寻址（本实现，地址取自条目公示的 broker/流），`replyTo`/结果事件未定 |
 | Correlation / Causation | 未做：`sentAt`、`sequence`、`correlationId` 均未定义 |
 | Backlog / 重放 | 部分做：死信有重放命令（§6.10）；事件流本身仍无 backlog（消费组从队尾起） |
 | 其他传输 | 未做：仅 `redis-streams`（+测试用 in-memory） |

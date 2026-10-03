@@ -15,9 +15,34 @@ export const REGISTRY_DEFAULTS = {
 export interface RegistryChannel {
 	/** The member itself: what a peer passes as `target`. */
 	name: string;
-	transport: "redis-streams";
+	transport: string;
 	description: string;
-	config: { stream: string; group: string; url: string };
+	/** `field` is optional: a peer publishing here uses the runtime default when it is absent. */
+	config: { stream: string; group: string; url: string; field?: string };
+}
+
+/** Where a directory entry says to publish: its own broker, stream and field. */
+export interface PublishEndpoint {
+	transport: string;
+	url: string;
+	stream: string;
+	field: string;
+}
+
+/**
+ * Read the publish endpoint out of a directory entry.
+ *
+ * The entry's own `transport`, `config.url`, `config.stream` and `config.field` are used as
+ * advertised: a session may live on another broker, and a peer is expected to reach it there. A
+ * caller that cannot speak `transport` must say so rather than fall back to its own broker.
+ */
+export function publishEndpointOf(entry: RegistryEntry, defaultField = "message"): PublishEndpoint {
+	return {
+		transport: entry.channel.transport,
+		url: entry.channel.config.url,
+		stream: entry.channel.config.stream,
+		field: entry.channel.config.field ?? defaultField,
+	};
 }
 
 /** One live registration, as discovery sees it. */

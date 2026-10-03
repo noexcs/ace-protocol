@@ -68,6 +68,7 @@ import {
 	type EndpointConfig,
 	formatSessionLabel,
 	PiExtensionAdapter,
+	publishEndpointOf,
 	type RedisStreamsAddClient,
 	type Registration,
 	type RegistryEntry,
@@ -266,7 +267,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let deadLetters: DeadLetterSink | undefined;
 	let registry: AgentRegistry | undefined;
 	let registration: Registration | undefined;
-	let dynamicPublisher: RedisStreamsAddClient | undefined;
+	let memberPublishers: Map<string, RedisStreamsAddClient> | undefined;
 	let registryErrorReported: string | undefined;
 
 	/** Directory problems are reported once per distinct message; they never fail a session. */
@@ -298,7 +299,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	/** Where a publish call goes: a configured channel, or a session the directory knows. */
 	type PublishTarget =
 		| { kind: "channel"; name: string; publisher: AcePublisher }
-		| { kind: "member"; member: string; stream: string };
+		| { kind: "member"; member: string; entry: RegistryEntry };
 
 	/**
 	 * Configured channel names win; anything else is a directory member: an exact member, or a prefix
@@ -322,20 +323,29 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					: `no live session matches "${name}"${candidates.length === 0 ? "" : ` (live: ${candidates.join(", ")})`}`,
 			);
 		}
-		return { kind: "member", member: resolution.entry.member, stream: resolution.entry.channel.config.stream };
+		return { kind: "member", member: resolution.entry.member, entry: resolution.entry };
 	}
 
 	/**
-	 * Send to a discovered session.
+	 * Send to a discovered session through the endpoint its entry advertises.
 	 *
-	 * Only the stream comes from the directory: the broker stays the one this session is configured
-	 * with, so a registration cannot redirect our events to a broker of its choosing.
+	 * The entry names its own transport, broker, stream and field; peers are expected to use them, so
+	 * a session on another broker is still reachable. One client per broker, opened on first use.
 	 */
-	async function publishToMember(stream: string, message: AceMessage): Promise<void> {
-		const url = resolvedConfig?.registry?.url;
-		if (url === undefined) throw new Error(`no agent directory configured; add "registry" to ${ACE_CONFIG_FILENAME}`);
-		dynamicPublisher ??= createRedisStreamsAddClient(url, reportRegistryError);
-		await dynamicPublisher.add(stream, "message", JSON.stringify(message));
+	async function publishToMember(entry: RegistryEntry, message: AceMessage): Promise<void> {
+		const endpoint = publishEndpointOf(entry);
+		if (endpoint.transport !== "redis-streams") {
+			throw new Error(
+				`member "${entry.member}" advertises transport "${endpoint.transport}", which this runtime cannot publish to`,
+			);
+		}
+		memberPublishers ??= new Map();
+		let publisher = memberPublishers.get(endpoint.url);
+		if (!publisher) {
+			publisher = createRedisStreamsAddClient(endpoint.url, reportRegistryError);
+			memberPublishers.set(endpoint.url, publisher);
+		}
+		await publisher.add(endpoint.stream, endpoint.field, JSON.stringify(message));
 	}
 
 	/** The sessions other than this one that are live right now. */
@@ -415,12 +425,13 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							continue;
 						}
 						// The same session twice in one call is one delivery.
-						if (sentStreams.has(target.stream)) {
+						const address = `${target.entry.channel.config.url}#${target.entry.channel.config.stream}`;
+						if (sentStreams.has(address)) {
 							delivered.push(`member "${target.member}" (already sent)`);
 							continue;
 						}
-						sentStreams.add(target.stream);
-						await publishToMember(target.stream, message);
+						sentStreams.add(address);
+						await publishToMember(target.entry, message);
 						delivered.push(`member "${target.member}"`);
 					} catch (error) {
 						failures.push(`"${name ?? "(configured)"}": ${describeError(error)}`);
@@ -597,7 +608,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		if (isSubagentContext(ctx)) return;
 		const activeRegistry = registry;
 		const activeRegistration = registration;
-		const activePublisher = dynamicPublisher;
+		const activeMemberPublishers = memberPublishers;
 		const active = runtime;
 		const activePublishers = Object.values(publishers);
 		runtime = undefined;
@@ -607,10 +618,12 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		deadLetters = undefined;
 		registry = undefined;
 		registration = undefined;
-		dynamicPublisher = undefined;
+		memberPublishers = undefined;
 		if (activeRegistry !== undefined && activeRegistration !== undefined) await activeRegistry.unregister();
 		await activeRegistry?.close();
-		await activePublisher?.close();
+		if (activeMemberPublishers) {
+			for (const publisher of activeMemberPublishers.values()) await publisher.close();
+		}
 		await active?.stop();
 		for (const publisher of activePublishers) await publisher.close();
 	});

@@ -240,8 +240,9 @@ With `registry` configured, every session publishes itself so peers can find it 
 - `ace_agents` lists what is live right now; `ace_publish` accepts a member — or a prefix matching
   **exactly one** session — as `target`, and a list of targets to publish one event to several peers
   at once. An ambiguous prefix fails and names the candidates instead of guessing;
-- only the stream travels from the directory: events always go to the broker configured in
-  `registry.url`, so a registration cannot redirect this session's events elsewhere.
+- a member target publishes to the endpoint the entry advertises — its own `transport`, `url`, `stream`
+  and `field` — so a session on another broker is still reachable. A transport this runtime cannot speak
+  fails loudly instead of silently falling back to its own broker.
 
 ### Subagent sessions
 
