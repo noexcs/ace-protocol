@@ -250,6 +250,9 @@ const AGENTS_PARAMETERS = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "Maximum rows to return (default 20, cap 50)" })),
 });
 
+/** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
+const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
+
 export default function aceExtension(pi: ExtensionAPI): void {
 	let sessionContext: ExtensionContext | undefined;
 	let runtime: AceRuntime | undefined;
@@ -262,6 +265,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let registration: Registration | undefined;
 	let memberPublishers: Map<string, RedisStreamsAddClient> | undefined;
 	let registryErrorReported: string | undefined;
+	let claimedRuntime = false;
 
 	/** Directory problems are reported once per distinct message; they never fail a session. */
 	function reportRegistryError(error: unknown): void {
@@ -502,6 +506,22 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
+		// Two instances of this extension can live in one process: plugin discovery plus an explicit
+		// `--extension` both resolve to this file (subagent rebinding stops above). A second runtime would
+		// join the same consumer group and silently split every channel's events between them, so only the
+		// first session in the process starts one.
+		const process_ = globalThis as unknown as Record<symbol, boolean | undefined>;
+		if (process_[RUNTIME_CLAIMED_MARKER] === true) {
+			report(
+				ctx,
+				"[ace] another ACE runtime already runs in this process; not starting a second one (extension discovery and --extension/-e both resolve to ace.ts — keep one)",
+				"warning",
+			);
+			return;
+		}
+		process_[RUNTIME_CLAIMED_MARKER] = true;
+		claimedRuntime = true;
+
 		const logger = createLogger(ctx);
 		publishers = createPublishers(resolved.publish, {
 			onError: (error) => report(ctx, `[ace] publish transport error: ${describeError(error)}`, "error"),
@@ -604,6 +624,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				report(ctx, `[ace] spooling bursts to ${spoolDir}`, "info");
 			}
 		} catch (error) {
+			// Nothing is running, so the next session in this process may try again.
+			if (claimedRuntime) {
+				process_[RUNTIME_CLAIMED_MARKER] = false;
+				claimedRuntime = false;
+			}
 			runtime = undefined;
 			resolvedConfig = undefined;
 			report(
@@ -616,6 +641,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return;
+		if (claimedRuntime) {
+			// A session switch inside one process starts a fresh session with a fresh runtime.
+			(globalThis as unknown as Record<symbol, boolean | undefined>)[RUNTIME_CLAIMED_MARKER] = false;
+			claimedRuntime = false;
+		}
 		const activeRegistry = registry;
 		const activeRegistration = registration;
 		const activeMemberPublishers = memberPublishers;
