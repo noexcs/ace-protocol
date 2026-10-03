@@ -1,12 +1,15 @@
 import type { AgentEngine } from "../agent/agent-engine.ts";
 import type { AceLogger } from "../logger.ts";
-import type { ConcreteActivation } from "../protocol/ace-message.ts";
+import type { AceMessage, ConcreteActivation } from "../protocol/ace-message.ts";
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.ts";
 import type { Transport } from "../transport/transport.ts";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.ts";
-import { AceConfigError, type EndpointConfig, validateEndpointConfig } from "./endpoint-config.ts";
+import { AceConfigError, type EndpointConfig, senderAllowed, validateEndpointConfig } from "./endpoint-config.ts";
 import { type DispatchResult, EventDispatcher } from "./event-dispatcher.ts";
-import { type PendingAceEvent, PendingEventStore } from "./pending-event-store.ts";
+import { EventSpool, type EventSpoolOptions, type SpooledBatch } from "./event-spool.ts";
+import { AceMetrics } from "./metrics.ts";
+import { PendingEventStore } from "./pending-event-store.ts";
+import { SeenMessageIds } from "./seen-message-ids.ts";
 
 export interface AceRuntimeOptions {
 	/** Agent engine that receives ACE events (RFC-facing §15). */
@@ -22,6 +25,15 @@ export interface AceRuntimeOptions {
 	/** Fallback activation; ACE 0.1 requires `next_turn` when unset (RFC §8). */
 	defaultActivation?: ConcreteActivation;
 	logger?: AceLogger;
+	metrics?: AceMetrics;
+	/** `(sender, id)` pairs remembered per subscription for deduplication (default 1024). */
+	dedupCapacity?: number;
+	/** Retention limits for `manual` events. */
+	manual?: { max?: number; ttlMs?: number };
+	/** Burst handling: where spool files go. Thresholds come from each subscription's config. */
+	spool?: Omit<EventSpoolOptions, "onBatch" | "onError" | "logger" | "rules">;
+	/** Injectable clock for retention windows and spool windows; defaults to `Date.now`. */
+	now?: () => number;
 }
 
 /** Result of handling one raw inbound message. */
@@ -34,16 +46,24 @@ export interface AceHandleResult extends DispatchResult {
  * design doc §20).
  *
  * The runtime owns no MQ metadata, no agent loop, and no transport internals; it
- * is the boundary between a transport and an agent engine.
+ * is the boundary between a transport and an agent engine. It does own the delivery policy the
+ * transport cannot provide: deduplication of redelivered events, sender allowlists, burst spilling,
+ * and the retention window for `manual` events.
  */
 export class AceRuntime {
+	readonly metrics: AceMetrics;
+
 	private readonly engine: AgentEngine;
 	private readonly subscribe: readonly EndpointConfig[];
 	private readonly transportByName: ReadonlyMap<string, Transport>;
 	private readonly defaultActivation: ConcreteActivation;
 	private readonly logger: AceLogger;
-	private readonly pendingEventStore = new PendingEventStore();
+	private readonly pendingEventStore: PendingEventStore;
 	private readonly dispatcher: EventDispatcher;
+	private readonly seenBySubscription = new Map<string, SeenMessageIds>();
+	private readonly dedupCapacity: number;
+	private readonly spool: EventSpool | undefined;
+	private readonly now: () => number;
 	private started = false;
 
 	constructor(options: AceRuntimeOptions) {
@@ -76,7 +96,32 @@ export class AceRuntime {
 		this.transportByName = transportByName;
 		this.defaultActivation = options.defaultActivation ?? DEFAULT_RUNTIME_ACTIVATION;
 		this.logger = options.logger ?? {};
-		this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger);
+		this.metrics = options.metrics ?? new AceMetrics();
+		this.dedupCapacity = options.dedupCapacity ?? 1024;
+		this.now = options.now ?? (() => Date.now());
+		this.spool = options.spool
+			? new EventSpool({
+					now: this.now,
+					...options.spool,
+					rules: (subscriptionName) => this.subscribe.find((entry) => entry.name === subscriptionName)?.spool,
+					onBatch: (batch) => this.summarizeBatch(batch),
+					logger: this.logger,
+					onError: (error) =>
+						this.logger.error?.(`[ACE] spool error: ${error instanceof Error ? error.message : String(error)}`),
+				})
+			: undefined;
+
+		this.pendingEventStore = new PendingEventStore({
+			now: this.now,
+			...(options.manual?.max === undefined ? {} : { max: options.manual.max }),
+			...(options.manual?.ttlMs === undefined ? {} : { ttlMs: options.manual.ttlMs }),
+			...(this.spool ? { persist: (event) => this.spool?.appendManual(event.subscriptionName, event.message) } : {}),
+			onEvict: (event, reason) =>
+				this.logger.warn?.(`[ACE] dropped pending manual event id=${event.message.id} (${reason})`),
+		});
+		this.restorePendingEvents();
+
+		this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger, this.metrics);
 	}
 
 	/** Connect every subscription's transport (RFC §33). */
@@ -97,30 +142,66 @@ export class AceRuntime {
 		);
 	}
 
-	/** Disconnect transports and wait for the agent engine to settle (RFC §33). */
+	/** Disconnect transports, flush open spool windows, and wait for the engine to settle (RFC §33). */
 	async stop(): Promise<void> {
 		if (!this.started) return;
 		this.started = false;
 		for (const subscription of this.subscribe) {
 			await this.transportFor(subscription).stop();
 		}
+		if (this.spool) await this.spool.flush();
 		await this.engine.waitForIdle();
 		this.logger.info?.("[ACE] runtime stopped");
 	}
 
 	/**
-	 * Full ACE path for one raw message.
+	 * Full ACE path for one raw message: validate → sender policy → dedup → activation → burst
+	 * policy → dispatch.
 	 *
-	 * Throws {@link AceValidationError} for non-conforming messages. The
-	 * transport-facing path ({@link start}) logs and drops those instead, and
-	 * lets other errors propagate so the transport can retry or dead-letter
-	 * (design doc §30).
+	 * Throws {@link AceValidationError} for non-conforming messages. The transport-facing path
+	 * ({@link start}) logs and drops those instead, and lets other errors propagate so the transport
+	 * can retry or dead-letter (design doc §30).
 	 */
 	async handleRawMessage(raw: unknown, subscription: EndpointConfig): Promise<AceHandleResult> {
-		const message = decodeAceMessage(raw);
+		this.metrics.increment(subscription.name, "received");
+
+		let message: AceMessage;
+		try {
+			message = decodeAceMessage(raw);
+		} catch (error) {
+			if (error instanceof AceValidationError) this.metrics.increment(subscription.name, "rejected");
+			throw error;
+		}
+
 		const activation = resolveActivation(message, subscription, this.defaultActivation);
+
+		if (!senderAllowed(subscription, message.sender)) {
+			this.metrics.increment(subscription.name, "senderRejected");
+			this.logger.warn?.(`[ACE] refused id=${message.id} sender=${message.sender} subscribe=${subscription.name}`);
+			return { activation, disposition: "dropped", subscriptionName: subscription.name };
+		}
+
+		const seen = this.seenFor(subscription.name);
+		if (seen.has(message.sender, message.id)) {
+			this.metrics.increment(subscription.name, "deduped");
+			this.logger.info?.(`[ACE] duplicate id=${message.id} sender=${message.sender} subscribe=${subscription.name}`);
+			return { activation, disposition: "deduped", subscriptionName: subscription.name };
+		}
+
 		this.logger.info?.(`[ACE] received id=${message.id} sender=${message.sender} subscribe=${subscription.name}`);
+
+		if (this.spool) {
+			const outcome = await this.spool.offer(subscription.name, message);
+			if (outcome.spooled) {
+				this.metrics.increment(subscription.name, "spooled");
+				seen.remember(message.sender, message.id);
+				return { activation, disposition: "spooled", subscriptionName: subscription.name };
+			}
+		}
+
 		const result = await this.dispatcher.dispatch(message, subscription.name, activation);
+		// Remember only now: a failed delivery must stay eligible for redelivery.
+		seen.remember(message.sender, message.id);
 		return { ...result, subscriptionName: subscription.name };
 	}
 
@@ -132,15 +213,15 @@ export class AceRuntime {
 	}
 
 	/** Events retained for `manual` activation (RFC §7.3, §12). */
-	get pendingEvents(): readonly PendingAceEvent[] {
+	get pendingEvents(): ReturnType<PendingEventStore["list"]> {
 		return this.pendingEventStore.list();
 	}
 
 	/**
 	 * Explicitly activate a retained `manual` event.
 	 *
-	 * ACE 0.1 leaves the trigger to the runtime or user (§7.3); this is that
-	 * runtime control hook. Identity is `(sender, id)` (RFC §5.2).
+	 * ACE 0.1 leaves the trigger to the runtime or user (§7.3); this is that runtime control hook.
+	 * Identity is `(sender, id)` (RFC §5.2).
 	 */
 	async activatePendingEvent(sender: string, id: string): Promise<void> {
 		const event = this.pendingEventStore.take(sender, id);
@@ -149,6 +230,58 @@ export class AceRuntime {
 		}
 		this.logger.info?.(`[ACE] activating id=${id} sender=${sender} subscribe=${event.subscriptionName}`);
 		await this.engine.inject(event.message, "next_turn");
+	}
+
+	/** Open spool windows, for `/ace stats`. */
+	openSpoolWindows(): ReturnType<EventSpool["openWindows"]> {
+		return this.spool?.openWindows() ?? [];
+	}
+
+	/** Restore `manual` events persisted by an earlier session. */
+	private restorePendingEvents(): void {
+		const spool = this.spool;
+		if (!spool) return;
+		for (const subscription of this.subscribe) {
+			const messages = spool.loadManual(subscription.name);
+			if (messages.length === 0) continue;
+			const restored = this.pendingEventStore.restore(subscription.name, messages);
+			this.logger.info?.(`[ACE] restored ${restored} pending manual event(s) subscribe=${subscription.name}`);
+		}
+	}
+
+	/** Inject one summary event for a spooled burst. */
+	private async summarizeBatch(batch: SpooledBatch): Promise<void> {
+		const first = batch.events[0];
+		const last = batch.events[batch.events.length - 1];
+		const senders = [...new Set(batch.events.map((message) => message.sender))].join(", ");
+		const preview = batch.events
+			.slice(0, 3)
+			.map((message) => `- ${message.id} from ${message.sender}: ${message.body.slice(0, 120).replace(/\s+/g, " ")}`)
+			.join("\n");
+		const summary: AceMessage = {
+			aceVersion: "0.1",
+			id: `evt_spool_${Date.now().toString(36)}_${batch.events.length}`,
+			sender: "ace-runtime",
+			activation: "next_turn",
+			body: [
+				`${batch.events.length} events were spooled to ${batch.path} because this channel received more than it should inject at once.`,
+				`Senders: ${senders}.${first && last ? ` Window: ${first.id} … ${last.id}.` : ""}`,
+				preview.length > 0 ? `\nFirst events:\n${preview}` : "",
+				`\nRead the file if the details matter; every line is one ACE message.`,
+			]
+				.filter((line) => line.length > 0)
+				.join("\n"),
+		};
+
+		await this.dispatcher.dispatch(summary, batch.subscription, "next_turn");
+	}
+
+	private seenFor(subscriptionName: string): SeenMessageIds {
+		const existing = this.seenBySubscription.get(subscriptionName);
+		if (existing) return existing;
+		const created = new SeenMessageIds(this.dedupCapacity);
+		this.seenBySubscription.set(subscriptionName, created);
+		return created;
 	}
 
 	private transportFor(subscription: EndpointConfig): Transport {

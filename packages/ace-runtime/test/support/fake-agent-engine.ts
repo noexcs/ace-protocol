@@ -10,8 +10,14 @@ export interface InjectionRecord {
 export class FakeAgentEngine implements AgentEngine {
 	readonly injections: InjectionRecord[] = [];
 	running = false;
+	/** Upcoming `inject` calls that fail instead of recording, for redelivery tests. */
+	failures = 0;
 
 	async inject(message: AceMessage, mode: InjectionMode): Promise<void> {
+		if (this.failures > 0) {
+			this.failures -= 1;
+			throw new Error("fake engine unavailable");
+		}
 		this.injections.push({ message, mode });
 	}
 

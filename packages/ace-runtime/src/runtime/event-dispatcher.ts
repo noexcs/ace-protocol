@@ -1,19 +1,21 @@
 import type { AgentEngine } from "../agent/agent-engine.ts";
 import type { AceLogger } from "../logger.ts";
 import type { AceMessage, ConcreteActivation } from "../protocol/ace-message.ts";
+import type { AceMetrics } from "./metrics.ts";
 import type { PendingEventStore } from "./pending-event-store.ts";
 
 /** Where an ACE message ended up after activation resolution. */
-export type DispatchDisposition = "injected" | "queued" | "stored";
+export type DispatchDisposition = "injected" | "queued" | "stored" | "deduped" | "spooled" | "dropped";
 
 export interface DispatchResult {
 	readonly activation: ConcreteActivation;
 	/**
-	 * - `injected`: the agent was idle; the event was placed in its context and a
-	 *   turn was started.
-	 * - `queued`: the agent was running; the event waits for the engine's next
-	 *   processing point.
+	 * - `injected`: the agent was idle; the event was placed in its context and a turn was started.
+	 * - `queued`: the agent was running; the event waits for the engine's next processing point.
 	 * - `stored`: a `manual` event retained by the runtime, no turn started.
+	 * - `deduped`: already seen `(sender, id)`; dropped, but acknowledged.
+	 * - `spooled`: written to a file with its burst; a summary event was injected instead.
+	 * - `dropped`: refused by policy (for example a sender that is not allowed).
 	 */
 	readonly disposition: DispatchDisposition;
 }
@@ -23,11 +25,13 @@ export class EventDispatcher {
 	private readonly engine: AgentEngine;
 	private readonly pendingEvents: PendingEventStore;
 	private readonly logger: AceLogger;
+	private readonly metrics: AceMetrics | undefined;
 
-	constructor(engine: AgentEngine, pendingEvents: PendingEventStore, logger: AceLogger = {}) {
+	constructor(engine: AgentEngine, pendingEvents: PendingEventStore, logger: AceLogger = {}, metrics?: AceMetrics) {
 		this.engine = engine;
 		this.pendingEvents = pendingEvents;
 		this.logger = logger;
+		this.metrics = metrics;
 	}
 
 	async dispatch(
@@ -37,19 +41,21 @@ export class EventDispatcher {
 	): Promise<DispatchResult> {
 		if (activation === "manual") {
 			this.pendingEvents.store(message, subscriptionName);
+			this.metrics?.increment(subscriptionName, "stored");
 			this.logger.info?.(
-				`[ACE] stored id=${message.id} sender=${message.sender} input=${subscriptionName} activation=manual`,
+				`[ACE] stored id=${message.id} sender=${message.sender} subscribe=${subscriptionName} activation=manual`,
 			);
 			return { activation, disposition: "stored" };
 		}
 
 		const running = this.engine.isRunning();
 		this.logger.info?.(
-			`[ACE] injecting id=${message.id} sender=${message.sender} input=${subscriptionName} activation=${activation} agent=${
+			`[ACE] injecting id=${message.id} sender=${message.sender} subscribe=${subscriptionName} activation=${activation} agent=${
 				running ? "running" : "idle"
 			}`,
 		);
 		await this.engine.inject(message, activation);
+		this.metrics?.increment(subscriptionName, running ? "queued" : "injected");
 		return { activation, disposition: running ? "queued" : "injected" };
 	}
 }

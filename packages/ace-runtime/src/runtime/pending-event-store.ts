@@ -4,33 +4,99 @@ import type { AceMessage } from "../protocol/ace-message.ts";
 export interface PendingAceEvent {
 	readonly message: AceMessage;
 	readonly subscriptionName: string;
+	/** Runtime-side bookkeeping for the retention window; not part of the protocol. */
+	readonly storedAt: number;
+}
+
+export type PendingEvictionReason = "expired" | "capacity";
+
+export interface PendingEventStoreOptions {
+	/** Retain at most this many events; the oldest is evicted first (default 100). */
+	max?: number;
+	/** Drop events older than this (default 24h). */
+	ttlMs?: number;
+	now?: () => number;
+	/** Called for every stored event so a host can persist it. */
+	persist?: (event: PendingAceEvent) => void;
+	onEvict?: (event: PendingAceEvent, reason: PendingEvictionReason) => void;
 }
 
 /**
  * In-memory holding area for `manual` events (RFC §7.3, §12).
  *
- * MVP limitation: events live in process memory only. A restart loses them;
- * there is no query, inbox, or persistence API (ACE 0.1 does not define one).
- * Ordering is arrival order; identity is `(sender, id)` (RFC §5.2).
+ * Bounded on purpose: without a cap, an event storm that ask for `manual` activation would grow
+ * until the process dies. Expired entries are dropped on every access, so `/ace pending` never
+ * shows stale events.
  */
 export class PendingEventStore {
 	private readonly events: PendingAceEvent[] = [];
+	private readonly max: number;
+	private readonly ttlMs: number;
+	private readonly now: () => number;
+	private readonly persist: ((event: PendingAceEvent) => void) | undefined;
+	private readonly onEvict: ((event: PendingAceEvent, reason: PendingEvictionReason) => void) | undefined;
+
+	constructor(options: PendingEventStoreOptions = {}) {
+		this.max = options.max ?? 100;
+		this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
+		this.now = options.now ?? (() => Date.now());
+		this.persist = options.persist;
+		this.onEvict = options.onEvict;
+	}
+
+	get size(): number {
+		return this.list().length;
+	}
 
 	/** Retained events, oldest first. */
 	list(): readonly PendingAceEvent[] {
+		this.evictExpired();
 		return [...this.events];
 	}
 
 	store(message: AceMessage, subscriptionName: string): PendingAceEvent {
-		const event: PendingAceEvent = { message, subscriptionName };
+		this.evictExpired();
+		const event: PendingAceEvent = { message, subscriptionName, storedAt: this.now() };
 		this.events.push(event);
+		this.evictOverCapacity();
+		this.persist?.(event);
 		return event;
 	}
 
 	/** Remove and return the first event matching `(sender, id)`. */
 	take(sender: string, id: string): PendingAceEvent | undefined {
+		this.evictExpired();
 		const index = this.events.findIndex((event) => event.message.sender === sender && event.message.id === id);
 		if (index === -1) return undefined;
 		return this.events.splice(index, 1)[0];
+	}
+
+	/** Adopt events persisted by an earlier session, honouring the current caps. */
+	restore(subscriptionName: string, messages: readonly AceMessage[]): number {
+		let restored = 0;
+		for (const message of messages) {
+			const event: PendingAceEvent = { message, subscriptionName, storedAt: this.now() };
+			this.events.push(event);
+			restored += 1;
+		}
+		this.evictOverCapacity();
+		return restored;
+	}
+
+	private evictExpired(): void {
+		const cutoff = this.now() - this.ttlMs;
+		for (let index = this.events.length - 1; index >= 0; index -= 1) {
+			const event = this.events[index] as PendingAceEvent;
+			if (event.storedAt >= cutoff) continue;
+			this.events.splice(index, 1);
+			this.onEvict?.(event, "expired");
+		}
+	}
+
+	private evictOverCapacity(): void {
+		while (this.events.length > this.max) {
+			const event = this.events.shift();
+			if (event) this.onEvict?.(event, "capacity");
+		}
 	}
 }

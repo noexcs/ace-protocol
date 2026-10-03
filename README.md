@@ -25,7 +25,9 @@ drives a turn (or is queued/deferred per `activation`), and two Pi agents can ta
 a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary and the split plan.
 
-Verified today: 225 tests, real Redis Streams broker, two live Pi sessions exchanging events.
+Verified today: 292 tests, `npm run verify:live` (seven scenarios against a real Redis Streams broker:
+delivery, poison messages, reclaim after a failed delivery, dedup, sender allowlists, manual activation,
+burst spooling), and two live Pi sessions exchanging events.
 
 ## Quick start
 
@@ -59,11 +61,16 @@ semantics on Pi, transports, delivery guarantees, and the current limitations.
 
 ```bash
 cd packages/ace-runtime
-npm test          # unit + integration tests; no broker or credentials needed
-npm run check     # biome + tsc --noEmit
+npm test            # unit + integration tests; no broker or credentials needed
+npm run check       # biome + tsc --noEmit
+npm run verify:live # the runtime against a real broker (redis-server); no model needed
 npm run build
 ```
 
 `pi/` is a checkout of the upstream Pi repository. Tests run against the published
 `@earendil-works/*` packages (the builds users install); the checkout is here to read Pi's sources
 and to run the live two-agent experiments in `docs/ace-v0.1.md`.
+
+ACE was first built inside the Pi fork [`noexcs/pi`](https://github.com/noexcs/pi), branch
+`ace-0.1-runtime`; that branch keeps the development history, this repository is where the code lives
+now (see the `28fcff8` commit for why it moved out of the fork).

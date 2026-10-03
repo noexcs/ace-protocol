@@ -57,7 +57,7 @@ describe("redisStreamsConfigFrom", () => {
 				},
 				options: {},
 			}),
-		).toEqual({
+		).toMatchObject({
 			url: "redis://broker:6380",
 			stream: "ace:builds",
 			group: "agents",
@@ -65,6 +65,10 @@ describe("redisStreamsConfigFrom", () => {
 			field: "ace",
 			count: 4,
 			blockMs: 250,
+			reclaimIdleMs: 60_000,
+			reclaimAttempts: 3,
+			retryDelayMs: 200,
+			maxRetryDelayMs: 5_000,
 		});
 	});
 

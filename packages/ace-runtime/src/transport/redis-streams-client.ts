@@ -18,6 +18,14 @@ export interface RedisStreamsClient {
 	ensureGroup(stream: string, group: string): Promise<void>;
 	/** Read up to `count` new entries for `group`, blocking at most `blockMs`. */
 	read(stream: string, group: string, consumer: string, count: number, blockMs: number): Promise<RedisStreamEntry[]>;
+	/** Claim up to `count` entries another consumer left pending for at least `minIdleMs`. */
+	reclaim(
+		stream: string,
+		group: string,
+		consumer: string,
+		minIdleMs: number,
+		count: number,
+	): Promise<RedisStreamEntry[]>;
 	/** Acknowledge one entry so it leaves the group's pending entries list. */
 	ack(stream: string, group: string, id: string): Promise<void>;
 	close(): Promise<void>;

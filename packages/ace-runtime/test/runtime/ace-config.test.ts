@@ -7,19 +7,21 @@ import {
 	channelWarnings,
 	createPublishers,
 	createTransports,
+	interpolateEnv,
 	loadAceConfig,
 	parseAceConfig,
 	resolveAceConfig,
 } from "../../src/runtime/ace-config.ts";
-import { AceConfigError } from "../../src/runtime/endpoint-config.ts";
+import { AceConfigError, type EndpointConfig } from "../../src/runtime/endpoint-config.ts";
 
-const inbox = {
+const inbox: EndpointConfig = {
 	name: "inbox",
 	transport: "redis-streams",
+	activation: "next_turn",
 	config: { stream: "ace:in.a", group: "agent-a" },
 	options: {},
 };
-const toB = { name: "to-b", transport: "redis-streams", config: { stream: "ace:in.b" }, options: {} };
+const toB: EndpointConfig = { name: "to-b", transport: "redis-streams", config: { stream: "ace:in.b" }, options: {} };
 
 const directories: string[] = [];
 
@@ -99,9 +101,41 @@ describe("parseAceConfig", () => {
 		["a sender with a newline", { sender: "agent\na", subscribe: [inbox], publish: [toB] }],
 		["an over-long sender", { sender: "a".repeat(129), subscribe: [inbox], publish: [toB] }],
 		["a duplicated subscribe name", { subscribe: [inbox, inbox] }],
+		[
+			"allowedSenders on a publish channel",
+			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, allowedSenders: ["ci"] }] },
+		],
+		["a non-array allowedSenders", { subscribe: [{ ...inbox, allowedSenders: "ci" }] }],
+		["an empty allowedSenders pattern", { subscribe: [{ ...inbox, allowedSenders: [""] }] }],
+		[
+			"spool on a publish channel",
+			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, spool: { afterEvents: 1, windowMs: 10 } }] },
+		],
+		["spool without windowMs", { subscribe: [{ ...inbox, spool: { afterEvents: 1 } }] }],
+		["spool with a zero threshold", { subscribe: [{ ...inbox, spool: { afterEvents: 0, windowMs: 10 } }] }],
+		["an unknown spool key", { subscribe: [{ ...inbox, spool: { afterEvents: 1, windowMs: 10, dir: "/tmp" } }] }],
+		["file-level spool without a dir", { subscribe: [inbox], spool: { retentionMs: 10 } }],
+		["a zero manual limit", { subscribe: [inbox], manual: { max: 0 } }],
+		["an unknown manual key", { subscribe: [inbox], manual: { ttl: 10 } }],
 		["a duplicated publish name", { sender: "agent-a", subscribe: [inbox], publish: [toB, toB] }],
 	])("rejects %s", (_name, document) => {
 		expect(() => parseAceConfig(document, ".ace.json")).toThrow(AceConfigError);
+	});
+
+	it("accepts allowedSenders, spool thresholds and file-level limits", () => {
+		const parsed = parseAceConfig(
+			{
+				subscribe: [{ ...inbox, allowedSenders: ["ci.*"], spool: { afterEvents: 5, windowMs: 2000 } }],
+				manual: { max: 10, ttlMs: 1000 },
+				spool: { dir: "/tmp/ace", retentionMs: 1000, maxFiles: 3 },
+			},
+			".ace.json",
+		);
+
+		expect(parsed.subscribe[0]?.allowedSenders).toEqual(["ci.*"]);
+		expect(parsed.subscribe[0]?.spool).toEqual({ afterEvents: 5, windowMs: 2000 });
+		expect(parsed.manual).toEqual({ max: 10, ttlMs: 1000 });
+		expect(parsed.spool).toEqual({ dir: "/tmp/ace", retentionMs: 1000, maxFiles: 3 });
 	});
 
 	it("accepts a sender without publish channels", () => {
@@ -140,6 +174,57 @@ describe("channelWarnings", () => {
 		expect(
 			channelWarnings({ subscribe: [inbox, { ...inbox, name: "b", config: { stream: "ace:in.b", group: "g" } }] }),
 		).toEqual([]);
+	});
+
+	it("warns when a subscription does not pin activation", () => {
+		const warnings = channelWarnings({ subscribe: [{ ...inbox, activation: undefined }] });
+
+		expect(warnings.some((warning) => warning.includes("does not pin activation"))).toBe(true);
+	});
+
+	it("leaves a disabled subscription alone", () => {
+		expect(channelWarnings({ subscribe: [{ ...inbox, activation: undefined, enabled: false }] })).toEqual([]);
+	});
+});
+
+// `${NAME}` built without a template placeholder, which the linter forbids in plain strings.
+const ref = (name: string): string => "$" + "{" + name + "}";
+
+describe("interpolateEnv", () => {
+	it("substitutes environment values anywhere in the document", () => {
+		const resolved = interpolateEnv(
+			{
+				subscribe: [
+					{
+						...inbox,
+						config: { stream: "ace:in", group: "g", url: "redis://:" + ref("REDIS_PASSWORD") + "@broker:6379" },
+					},
+				],
+			},
+			{ REDIS_PASSWORD: "s3cret" },
+			".ace.json",
+		) as { subscribe: Array<{ config: { url: string } }> };
+
+		expect(resolved.subscribe[0]?.config.url).toBe("redis://:s3cret@broker:6379");
+	});
+
+	it("fails loudly when a referenced variable is unset", () => {
+		expect(() => interpolateEnv({ subscribe: [{ url: ref("MISSING") }] }, {}, ".ace.json")).toThrow(
+			/uses \$\{MISSING\} but the variable is not set/,
+		);
+	});
+
+	it("keeps a literal dollar with $$", () => {
+		expect(interpolateEnv("cost: $" + ref("PRICE"), { PRICE: "5" }, ".ace.json")).toBe("cost: " + ref("PRICE"));
+	});
+
+	it("is applied when loading the file", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, { subscribe: [{ ...inbox, config: { stream: ref("ACE_TEST_STREAM"), group: "g" } }] });
+
+		expect(loadAceConfig({ cwd, env: { ACE_TEST_STREAM: "ace:from-env" } })?.config.subscribe[0]?.config.stream).toBe(
+			"ace:from-env",
+		);
 	});
 });
 

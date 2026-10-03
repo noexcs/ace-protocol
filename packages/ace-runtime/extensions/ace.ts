@@ -42,12 +42,14 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	ACE_CONFIG_FILENAME,
 	type AceLogger,
+	AceMetrics,
 	type AcePublisher,
 	AceRuntime,
 	createPublishers,
@@ -254,10 +256,26 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		publishers = createPublishers(resolved.publish, {
 			onError: (error) => report(ctx, `[ace] publish transport error: ${describeError(error)}`, "error"),
 		});
+		const spoolDir =
+			resolved.spool?.dir ??
+			(resolved.subscribe.some((entry) => entry.spool) ? join(ctx.cwd, ".ace", "spool") : undefined);
+		const metrics = new AceMetrics();
 		runtime = new AceRuntime({
 			engine: adapter,
+			metrics,
 			subscribe: resolved.subscribe,
+			...(spoolDir
+				? {
+						spool: {
+							dir: spoolDir,
+							...(resolved.spool?.retentionMs === undefined ? {} : { retentionMs: resolved.spool.retentionMs }),
+							...(resolved.spool?.maxFiles === undefined ? {} : { maxFiles: resolved.spool.maxFiles }),
+						},
+					}
+				: {}),
+			manual: resolved.manual,
 			transports: createTransports(resolved.subscribe, {
+				metrics,
 				onError: (error) => {
 					// A broker that dies mid-session would otherwise repeat the same error.
 					if (transportErrorReported) return;
@@ -282,6 +300,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}`,
 			);
 			for (const warning of resolved.warnings) report(ctx, `[ace] warning: ${warning}`, "warning");
+			if (resolved.subscribe.some((entry) => entry.spool)) {
+				report(ctx, `[ace] spooling bursts to ${spoolDir}`, "info");
+			}
 		} catch (error) {
 			runtime = undefined;
 			resolvedConfig = undefined;
@@ -332,6 +353,22 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			}
 
 			const pending = runtime.pendingEvents;
+			if (subcommand === "stats") {
+				const lines = runtime.metrics.render();
+				const windows = runtime
+					.openSpoolWindows()
+					.map((window) => `  spooling ${window.subscription}: ${window.buffered} buffered → ${window.path}`);
+				report(
+					ctx,
+					[
+						`[ace] stats (pending manual: ${pending.length}${resolvedConfig?.sender ? `, sender ${resolvedConfig.sender}` : ""})`,
+						...(lines.length > 0 ? lines.map((line) => `  ${line}`) : ["  (nothing yet)"]),
+						...windows,
+					].join("\n"),
+				);
+				return;
+			}
+
 			if (subcommand === "pending") {
 				if (pending.length === 0) {
 					report(ctx, "[ace] no pending manual events");

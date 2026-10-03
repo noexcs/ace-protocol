@@ -90,6 +90,16 @@ export function createRedisStreamsClient(
 			}));
 		},
 
+		async reclaim(stream, group, consumer, minIdleMs, count) {
+			// Scanning from 0-0 each time is enough for a runtime that keeps its PEL small; a
+			// long-lived PEL would want to carry `nextId` between calls.
+			const reply = await client.xAutoClaim(stream, group, consumer, minIdleMs, "0-0", { COUNT: count });
+			const messages = (reply.messages ?? []).filter(
+				(entry): entry is { id: string; message: Record<string, string> } => entry !== null,
+			);
+			return messages.map((entry) => ({ id: entry.id, payload: payloadOf(entry, field) }));
+		},
+
 		async ack(stream, group, id) {
 			await client.xAck(stream, group, id);
 		},

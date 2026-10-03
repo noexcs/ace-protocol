@@ -37,6 +37,43 @@
 			"items": {
 				"$ref": "#/$defs/publish"
 			}
+		},
+		"manual": {
+			"type": "object",
+			"description": "Retention limits for manual events (defaults: 100 events, 24h).",
+			"properties": {
+				"max": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"ttlMs": {
+					"type": "integer",
+					"minimum": 1
+				}
+			},
+			"additionalProperties": false
+		},
+		"spool": {
+			"type": "object",
+			"description": "Where burst files go; thresholds live on each subscription.",
+			"required": [
+				"dir"
+			],
+			"properties": {
+				"dir": {
+					"type": "string",
+					"minLength": 1
+				},
+				"retentionMs": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"maxFiles": {
+					"type": "integer",
+					"minimum": 1
+				}
+			},
+			"additionalProperties": false
 		}
 	},
 	"allOf": [
@@ -102,47 +139,56 @@
 						"default"
 					],
 					"description": "Subscribe only: receiver override for this channel (RFC \u00a78); default delegates to the message."
+				},
+				"allowedSenders": {
+					"type": "array",
+					"minItems": 1,
+					"description": "Subscribe only: glob patterns of accepted senders (e.g. ci.*); omit to accept any.",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"spool": {
+					"type": "object",
+					"description": "Subscribe only: spill bursts to a file beyond these thresholds.",
+					"required": [
+						"afterEvents",
+						"windowMs"
+					],
+					"properties": {
+						"afterEvents": {
+							"type": "integer",
+							"minimum": 1
+						},
+						"windowMs": {
+							"type": "integer",
+							"minimum": 1
+						}
+					},
+					"additionalProperties": false
 				}
 			},
 			"additionalProperties": false
 		},
-		"redisStreams": {
+		"redisStreamsPublish": {
 			"type": "object",
+			"description": "Append-only target: the publisher needs an address and a field, nothing to read.",
 			"properties": {
 				"stream": {
 					"type": "string",
 					"minLength": 1,
-					"description": "Stream to read or append to."
-				},
-				"group": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Consumer group (subscribe only; created at the tail)."
+					"description": "Stream to append to."
 				},
 				"url": {
 					"type": "string",
 					"minLength": 1,
 					"description": "Broker URL, default redis://127.0.0.1:6379."
 				},
-				"consumer": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Consumer name (subscribe only), default ace-<pid>."
-				},
 				"field": {
 					"type": "string",
 					"minLength": 1,
 					"description": "Entry field carrying the ACE JSON, default message."
-				},
-				"count": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "Entries per read (subscribe only), default 16."
-				},
-				"blockMs": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "Block window (subscribe only), default 1000."
 				}
 			},
 			"additionalProperties": false,
@@ -179,7 +225,28 @@
 				},
 				"blockMs": {
 					"type": "integer",
-					"minimum": 1
+					"minimum": 1,
+					"description": "Block window per read, default 1000."
+				},
+				"reclaimIdleMs": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Claim entries another consumer left pending this long; 0 disables reclaiming. Default 60000."
+				},
+				"reclaimAttempts": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Give up on a reclaimed entry after this many deliveries. Default 3."
+				},
+				"retryDelayMs": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "First reconnect delay after a read failure; doubles up to maxRetryDelayMs. Default 200."
+				},
+				"maxRetryDelayMs": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Cap for the reconnect delay. Default 5000."
 				}
 			},
 			"additionalProperties": false,
@@ -227,6 +294,20 @@
 					}
 				},
 				{
+					"not": {
+						"required": [
+							"allowedSenders"
+						]
+					}
+				},
+				{
+					"not": {
+						"required": [
+							"spool"
+						]
+					}
+				},
+				{
 					"if": {
 						"properties": {
 							"transport": {
@@ -240,7 +321,7 @@
 					"then": {
 						"properties": {
 							"config": {
-								"$ref": "#/$defs/redisStreams"
+								"$ref": "#/$defs/redisStreamsPublish"
 							}
 						}
 					}

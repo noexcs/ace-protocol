@@ -31,10 +31,24 @@ export interface EndpointConfig {
 	activation?: Activation;
 	/** Whether the runtime starts this channel at all; defaults to `true`. */
 	enabled?: boolean;
+	/**
+	 * Subscriptions only: glob patterns of senders this channel accepts (e.g. `ci.*`, `agent-?`).
+	 * Absent means "any sender" — the broker's permissions are then the only gate (RFC §18).
+	 */
+	allowedSenders?: string[];
+	/** Subscriptions only: spill bursts to a file and inject one summary instead of every event. */
+	spool?: SpoolConfig;
 	/** Transport-specific settings, validated by that kind. */
 	config: Record<string, unknown>;
 	/** Raw options handed to the transport's client library; never validated, never interpreted. */
 	options: Record<string, unknown>;
+}
+
+/** Per-channel burst thresholds; where the files go is a runtime-wide setting (`.ace.json` `spool`). */
+export interface SpoolConfig {
+	/** Events per window that are still injected one by one. */
+	afterEvents: number;
+	windowMs: number;
 }
 
 /** Thrown when runtime configuration is unusable (RFC-facing §10). */
@@ -65,7 +79,7 @@ export function validateEndpointConfig(value: unknown, role: EndpointRole): Endp
 		throw new AceConfigError(`${subject} entry must be an object, received ${describeValue(value)}`);
 	}
 
-	const { name, transport, description, activation, enabled, config, options } = value;
+	const { name, transport, description, activation, enabled, allowedSenders, spool, config, options } = value;
 	if (typeof name !== "string" || name.length === 0) {
 		throw new AceConfigError(`${subject} entry requires a non-empty name`);
 	}
@@ -96,7 +110,33 @@ export function validateEndpointConfig(value: unknown, role: EndpointRole): Endp
 		}
 	}
 
-	const allowed = role === "subscribe" ? [...COMMON_KEYS, "activation"] : [...COMMON_KEYS];
+	if (allowedSenders !== undefined) {
+		if (role === "publish")
+			throw new AceConfigError(`${named} must not set allowedSenders: it is a subscription setting`);
+		if (
+			!Array.isArray(allowedSenders) ||
+			allowedSenders.length === 0 ||
+			allowedSenders.some((pattern) => typeof pattern !== "string" || pattern.length === 0)
+		) {
+			throw new AceConfigError(
+				`${named} has invalid allowedSenders: expected a non-empty list of non-empty patterns, received ${describeValue(allowedSenders)}`,
+			);
+		}
+	}
+	if (spool !== undefined) {
+		if (role === "publish") throw new AceConfigError(`${named} must not set spool: it is a subscription setting`);
+		if (!isPlainObject(spool)) throw new AceConfigError(`${named} has invalid spool: ${describeValue(spool)}`);
+		rejectUnknownKeys(spool, ["afterEvents", "windowMs"], `${named} spool`);
+		for (const key of ["afterEvents", "windowMs"]) {
+			if (!Number.isInteger(spool[key]) || (spool[key] as number) < 1) {
+				throw new AceConfigError(
+					`${named} spool needs "${key}" as a positive integer, received ${describeValue(spool[key])}`,
+				);
+			}
+		}
+	}
+
+	const allowed = role === "subscribe" ? [...COMMON_KEYS, "activation", "allowedSenders", "spool"] : [...COMMON_KEYS];
 	rejectUnknownKeys(value, allowed, named);
 
 	return {
@@ -105,9 +145,27 @@ export function validateEndpointConfig(value: unknown, role: EndpointRole): Endp
 		...(description === undefined ? {} : { description }),
 		...(activation === undefined ? {} : { activation }),
 		...(enabled === undefined ? {} : { enabled }),
+		...(allowedSenders === undefined ? {} : { allowedSenders: allowedSenders as string[] }),
+		...(spool === undefined ? {} : { spool: spool as unknown as SpoolConfig }),
 		config: config ?? {},
 		options: options ?? {},
 	};
+}
+
+/** Glob matcher for `allowedSenders`: `*` and `?` only. */
+function matchesPattern(pattern: string, value: string): boolean {
+	const escaped = pattern
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".");
+	return new RegExp(`^${escaped}$`).test(value);
+}
+
+/** Whether a subscription accepts events from `sender`; no `allowedSenders` means "any". */
+export function senderAllowed(subscription: EndpointConfig, sender: string): boolean {
+	const allowed = subscription.allowedSenders;
+	if (!allowed || allowed.length === 0) return true;
+	return allowed.some((pattern) => matchesPattern(pattern, sender));
 }
 
 /** Validate the `sender` identity: stable, loggable, and impossible to forge a rendered header with. */

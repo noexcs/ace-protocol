@@ -15,9 +15,12 @@ export class FakeRedisStreamsClient implements RedisStreamsClient {
 	connectError?: unknown;
 	ensureGroupError?: unknown;
 	readError?: unknown;
+	reclaimError?: unknown;
 	ackError?: unknown;
 
+	readonly reclaimed: Array<{ consumer: string; minIdleMs: number; count: number }> = [];
 	private queued: RedisStreamEntry[] = [];
+	private reclaimable: RedisStreamEntry[] = [];
 	private pendingRead?: (entries: RedisStreamEntry[]) => void;
 	private readonly ackWaiters: Array<{ remaining: number; resolve: () => void }> = [];
 
@@ -39,6 +42,18 @@ export class FakeRedisStreamsClient implements RedisStreamsClient {
 		const { promise, resolve } = Promise.withResolvers<RedisStreamEntry[]>();
 		this.pendingRead = resolve;
 		return promise;
+	}
+
+	reclaim(
+		_stream: string,
+		_group: string,
+		consumer: string,
+		minIdleMs: number,
+		count: number,
+	): Promise<RedisStreamEntry[]> {
+		this.reclaimed.push({ consumer, minIdleMs, count });
+		if (this.reclaimError) return Promise.reject(this.reclaimError);
+		return Promise.resolve(this.reclaimable.splice(0, count));
 	}
 
 	async ack(_stream: string, _group: string, id: string): Promise<void> {
@@ -75,6 +90,11 @@ export class FakeRedisStreamsClient implements RedisStreamsClient {
 			return;
 		}
 		this.queued.push(...resolved);
+	}
+
+	/** Queue entries for the next reclaim, as a peer's abandoned PEL entries would. */
+	pushReclaimable(...entries: Array<{ id: string; payload?: string }>): void {
+		this.reclaimable.push(...entries.map((entry) => ({ id: entry.id, payload: entry.payload })));
 	}
 
 	/** Complete a blocked read with no entries, as a real `BLOCK` timeout would. */

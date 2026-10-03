@@ -131,13 +131,37 @@ Load it permanently by copying or symlinking the file into `~/.pi/agent/extensio
 | `subscribe[].activation` | Receiver override for this channel (RFC §8); `default` delegates to the message. Not allowed on `publish` |
 | `*.description` | Who sits on the other end; shown to the model in the `ace_publish` description |
 | `*.enabled` | `false` keeps the channel configured but starts nothing for it (default `true`) |
+| `subscribe[].allowedSenders` | Glob patterns (`*`, `?`) of accepted senders (RFC §18); absent means any sender, an empty list is an error |
+| `subscribe[].spool` | Spill bursts to a file beyond these thresholds: `{ afterEvents, windowMs }`, both ≥ 1 |
+| `spool` | Where burst files go (`{ dir, retentionMs?, maxFiles? }`); defaults to `<cwd>/.ace/spool` when a subscription sets thresholds |
+| `manual` | Retention for `manual` events (`{ max?, ttlMs? }`, defaults 100 events / 24h) |
 | `*.config` | Transport settings, validated against the kind; unknown keys are errors |
 | `*.options` | Raw options handed to the transport's client library; never validated |
-| `config.stream` … | redis-streams settings: `stream`, `group`, `url`, `consumer`, `field`, `count`, `blockMs` (publish: everything but `group`, `consumer`, `count`, `blockMs`) |
+| `config.stream` … | redis-streams subscribe: `stream`, `group`, `url`, `consumer`, `field`, `count`, `blockMs`, `reclaimIdleMs`, `reclaimAttempts`, `retryDelayMs`, `maxRetryDelayMs`; publish: `stream`, `url`, `field` |
 
 `.ace.json` is the only source of MQ configuration — there is no environment fallback for addresses, streams, or
 groups. `ACE_CONFIG` selects a different config file path, `ACE_LOG=1` also logs runtime lines in modes without a
 UI.
+
+Secrets stay out of the file: `${VAR}` in any string is resolved from the environment when the file is read
+(`"url": "redis://:${REDIS_PASSWORD}@broker:6379"`), `$$` writes a literal `${`, and an unset variable fails the
+load instead of silently becoming an empty string.
+
+### Bursts, allowlists, redelivery
+
+Three per-subscription policies keep a busy channel from flooding a conversation:
+
+- **Allowlist** — `allowedSenders: ["ci.*", "agent-?"]`: only matching senders are injected, everything else is
+  dropped and acknowledged before it reaches the agent.
+- **Burst spooling** — `spool: { afterEvents, windowMs }`: the first `afterEvents` events of a window are injected
+  normally, the rest are appended to a JSONL file under `spool.dir`, and the agent gets **one** summary event naming
+  the file, the senders and the window. 200 CI failures cost one turn instead of 200.
+- **Redelivery** — `reclaimIdleMs` / `reclaimAttempts`: an event whose handler failed stays in the group's pending
+  list, is claimed back after `reclaimIdleMs`, and is retried up to `reclaimAttempts` deliveries before the runtime
+  reports and acknowledges it rather than retrying forever.
+
+Deduplication is identity-based: `(sender, id)` is remembered for `dedupCapacity` events, and **only handled events
+are remembered** — a redelivery after a failure is retried, never mistaken for a duplicate.
 
 [`schema/ace-config.schema.json`](schema/ace-config.schema.json) describes the file, so editors validate and
 autocomplete it after adding a `$schema` line:
@@ -163,15 +187,15 @@ queue the event; the last action also shows on the status line (`ace: injecting 
 
 ### Talking to another agent
 
-`outputs` plus the `ace_publish` tool make two Pi sessions exchange ACE events (RFC §19, Agent → Agent). Each
+`publish` plus the `ace_publish` tool make two Pi sessions exchange ACE events (RFC §19, Agent → Agent). Each
 side consumes what the other publishes, so neither sees its own messages:
 
 ```text
 agent A                                    agent B
   .ace.json                                  .ace.json
-  inputs:  from-b  = ace:to-a                 inputs:  from-a  = ace:to-b
-  outputs: to-b    = ace:to-b                 outputs: to-a    = ace:to-a
-  sender:  agent-a                            sender:  agent-b
+  subscribe: from-b = ace:to-a                subscribe: from-a = ace:to-b
+  publish:   to-b   = ace:to-b                publish:   to-a   = ace:to-a
+  sender:    agent-a                          sender:    agent-b
        │  ace_publish ──► ace:to-b ──────────────►  injected into B's conversation
        │  ◄────────────── ace:to-a ◄──── ace_publish (B replies)
 ```
@@ -196,6 +220,7 @@ authorization (a peer can claim any `sessionId`, exactly like any `sender`). `/a
 | Command | Effect |
 |---|---|
 | `/ace` | origin of the configuration, agent state, number of retained `manual` events |
+| `/ace stats` | pending `manual` count, sender, and every burst window that is currently buffering |
 | `/ace pending` | list retained `manual` events (`sender/id: body`) |
 | `/ace activate <sender> <id>` | inject a retained event as `next_turn` |
 
@@ -284,12 +309,13 @@ client, and the transport, so the test suite drives a fake client.
 | Path | Role |
 |---|---|
 | `src/protocol/` | ACE 0.1 envelope, activation values, validator, decoder, [JSON Schema](schema/ace-message-0.1.schema.json) |
-| `src/runtime/` | endpoint (subscribe/publish) configuration, activation resolution, dispatcher, manual-event store, `AceRuntime` |
+| `src/runtime/` | endpoint (subscribe/publish) configuration, activation resolution, dispatcher, manual-event store, burst spool, dedup window, metrics, `AceRuntime` |
 | `src/transport/` | `Transport` boundary, `InMemoryTransport`, `RedisStreamsTransport` (+ client interface / node-redis adapter) |
 | `src/agent/` | `AgentEngine` interface and `PiAdapter` |
 | `src/logger.ts` | log lines that never carry a message body |
 | `extensions/` | `ace.ts`: Pi extension that injects events into the session it runs in |
 | `test/` | protocol, runtime, adapter and transport unit tests, plus real-Pi-session integration tests |
+| `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real broker (reclaim, dedup, allowlist, spool, manual) |
 | `schema/` | normative ACE 0.1 JSON Schema |
 
 ## Protocol summary
@@ -363,13 +389,18 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 
 ## MVP limitations
 
-- `manual` events live in process memory; a restart loses them (design doc §12). No persistence, no query API,
-  no inbox API, no deduplication store.
+- `manual` events live in process memory with `manual.max` / `manual.ttlMs` limits; a restart loses them
+  (design doc §12). No persistence, no query API, no inbox API.
 - Transports: `InMemoryTransport` and `RedisStreamsTransport`. Kafka/NATS adapters, a CLI, agent registry,
   dynamic targets, bindings, result events and acknowledgement APIs are out of scope (design doc §27, §37).
-- A Redis entry whose handler failed stays in the group's pending entries list; there is no reclaim worker
-  (`XAUTOCLAIM`) yet, and a failed read ends consumption until the transport is recreated.
-- The runtime does not reconnect in the background: start the broker, then restart Pi (or recreate the transport).
+- Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
+  and identities are not shared across processes.
+- A reclaimed entry that fails `reclaimAttempts` times is reported and acknowledged — there is no dead-letter queue,
+  so the event is gone once that happens (the report names `sender`/`id`).
+- Spool files are written, never read back: retention is by `maxFiles` / `retentionMs`, and opening the file is the
+  agent's job (the summary names it).
+- Reconnection is bounded: a failed read retries with `retryDelayMs` doubling up to `maxRetryDelayMs` and reports the
+  outage once, but a broker that is down at start fails the start rather than waiting for it.
 - `sender` and `sessionId` are claims: the broker's own permissions decide who may write a channel (see the security
   notes), but the runtime cannot verify that a peer is who it says it is.
 - `AceRuntime` registers transports by subscription name and rejects a transport instance shared by two subscriptions,
@@ -396,6 +427,8 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 
 ```bash
 npm test           # unit + integration tests (faux model, fake Redis client, no network)
+npm run verify:live   # the same runtime against a real broker (needs redis-server; no model needed)
+npm run check      # biome + tsc
 npm run build
 npm run example:basic   # in-memory transport, needs ACE_MODEL
 npm run example:redis   # Redis Streams consumer, needs ACE_MODEL + a broker

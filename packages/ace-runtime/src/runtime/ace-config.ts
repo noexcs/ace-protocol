@@ -20,6 +20,7 @@ import {
 	validateEndpointConfig,
 	validateSender,
 } from "./endpoint-config.ts";
+import type { AceMetrics } from "./metrics.ts";
 
 /**
  * Name of the runtime configuration file read from the session working directory.
@@ -51,6 +52,10 @@ export interface AceConfigFile {
 	subscribe: EndpointConfig[];
 	/** Channels this runtime may send ACE events to (RFC §19); the address stays here (§4.1). */
 	publish?: EndpointConfig[];
+	/** Retention limits for `manual` events (defaults: 100 events, 24h). */
+	manual?: { max?: number; ttlMs?: number };
+	/** Where burst files go; the thresholds themselves live on each subscription. */
+	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
 }
 
 export interface LoadedAceConfig {
@@ -72,6 +77,10 @@ export interface ResolvedAceConfig {
 	sender?: string;
 	/** Configuration smells that are legal but almost always mistakes. */
 	warnings: string[];
+	/** Retention limits for `manual` events, resolved from the file. */
+	manual: { max?: number; ttlMs?: number };
+	/** Burst spool directory and retention, when configured. */
+	spool?: { dir: string; retentionMs?: number; maxFiles?: number };
 	source: string;
 }
 
@@ -99,6 +108,41 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		for (const publication of publications) validatePublicationSettings(publication);
 	}
 
+	if (value.spool !== undefined) {
+		if (!isPlainObject(value.spool)) {
+			throw new AceConfigError(`${source}: spool must be an object, received ${describeValue(value.spool)}`);
+		}
+		rejectUnknownKeys(value.spool, ["dir", "retentionMs", "maxFiles"], `${source}: spool`);
+		if (typeof value.spool.dir !== "string" || value.spool.dir.length === 0) {
+			throw new AceConfigError(
+				`${source}: spool.dir must be a non-empty string, received ${describeValue(value.spool.dir)}`,
+			);
+		}
+		for (const key of ["retentionMs", "maxFiles"]) {
+			const limit = value.spool[key];
+			if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) {
+				throw new AceConfigError(
+					`${source}: spool.${key} must be a positive integer, received ${describeValue(limit)}`,
+				);
+			}
+		}
+	}
+
+	if (value.manual !== undefined) {
+		if (!isPlainObject(value.manual)) {
+			throw new AceConfigError(`${source}: manual must be an object, received ${describeValue(value.manual)}`);
+		}
+		rejectUnknownKeys(value.manual, ["max", "ttlMs"], `${source}: manual`);
+		for (const key of ["max", "ttlMs"]) {
+			const limit = value.manual[key];
+			if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) {
+				throw new AceConfigError(
+					`${source}: manual.${key} must be a positive integer, received ${describeValue(limit)}`,
+				);
+			}
+		}
+	}
+
 	if (sender !== undefined && publications) validateSender(sender, source);
 	if (publications && sender === undefined) {
 		throw new AceConfigError(`${source}: sender is required when publish is configured (peers identify you by it)`);
@@ -109,6 +153,10 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 		...(sender === undefined ? {} : { sender: sender as string }),
 		subscribe: subscriptions,
 		...(publications ? { publish: publications } : {}),
+		...(value.manual === undefined ? {} : { manual: value.manual as { max?: number; ttlMs?: number } }),
+		...(value.spool === undefined
+			? {}
+			: { spool: value.spool as { dir: string; retentionMs?: number; maxFiles?: number } }),
 	};
 }
 
@@ -173,6 +221,13 @@ export function channelWarnings(config: AceConfigFile): string[] {
 	}
 
 	const warnings: string[] = [];
+	for (const subscription of config.subscribe) {
+		if (subscription.enabled === false) continue;
+		if (subscription.activation !== undefined && subscription.activation !== "default") continue;
+		warnings.push(
+			`subscribe "${subscription.name}" does not pin activation: a sender may demand immediate; set "activation" to "next_turn" unless you want that`,
+		);
+	}
 	for (const [key, subscriptions] of byAddress) {
 		if (subscriptions.length < 2) continue;
 		const names = subscriptions.map((subscription) => `"${subscription.name}"`).join(" and ");
@@ -207,7 +262,7 @@ export function loadAceConfig(options: {
 			`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
-	return { source, config: parseAceConfig(parsed, source) };
+	return { source, config: parseAceConfig(interpolateEnv(parsed, env, source), source) };
 }
 
 /**
@@ -241,6 +296,8 @@ export function resolveAceConfig(options: {
 		defaultActivation: config.defaultActivation,
 		...(config.sender === undefined ? {} : { sender: config.sender }),
 		warnings: channelWarnings(config),
+		manual: config.manual ?? {},
+		...(config.spool === undefined ? {} : { spool: config.spool }),
 		source,
 	};
 }
@@ -251,19 +308,25 @@ export function resolveAceConfig(options: {
  */
 export function createTransports(
 	subscriptions: readonly EndpointConfig[],
-	options: { onError: (error: unknown) => void },
+	options: { onError: (error: unknown) => void; metrics?: AceMetrics },
 ): Record<string, Transport> {
 	const transports: Record<string, Transport> = {};
 	for (const subscription of subscriptions) {
-		transports[subscription.name] = createTransport(subscription, options.onError);
+		transports[subscription.name] = createTransport(subscription, options);
 	}
 	return transports;
 }
 
-function createTransport(subscription: EndpointConfig, onError: (error: unknown) => void): Transport {
+function createTransport(
+	subscription: EndpointConfig,
+	options: { onError: (error: unknown) => void; metrics?: AceMetrics },
+): Transport {
 	switch (subscription.transport) {
 		case "redis-streams":
-			return new RedisStreamsTransport(subscription, { onError });
+			return new RedisStreamsTransport(subscription, {
+				onError: options.onError,
+				...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+			});
 		default:
 			throw new AceConfigError(
 				`subscribe "${subscription.name}" uses unsupported transport "${subscription.transport}" (available: ${SUPPORTED_TRANSPORTS.join(", ")})`,
@@ -302,4 +365,47 @@ function createPublisher(publication: EndpointConfig, onError: (error: unknown) 
 				`publish "${publication.name}" uses unsupported transport "${publication.transport}" (available: ${SUPPORTED_TRANSPORTS.join(", ")})`,
 			);
 	}
+}
+
+/** `${VAR}` occurrences in configuration strings, so a broker password never has to be committed. */
+const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+const ESCAPED_DOLLAR = "\u0000ace-literal-dollar\u0000";
+
+/**
+ * Replace `${VAR}` in every string of the document with its environment value.
+ *
+ * An unset variable is an error rather than an empty string: silently connecting with a blank
+ * password produces a confusing failure much later. Use `$${VAR}` for a literal.
+ */
+export function interpolateEnv(
+	value: unknown,
+	env: Readonly<Record<string, string | undefined>>,
+	source: string,
+	path = "",
+): unknown {
+	if (typeof value === "string") {
+		// `$$` escapes a dollar so a literal `${VAR}` can be written in the configuration.
+		const escaped = value.replaceAll("$$", ESCAPED_DOLLAR);
+		return escaped
+			.replace(ENV_PATTERN, (_match, name: string) => {
+				const resolved = env[name];
+				if (resolved === undefined) {
+					throw new AceConfigError(`${source}: ${path || "<root>"} uses \${${name}} but the variable is not set`);
+				}
+				return resolved;
+			})
+			.replaceAll(ESCAPED_DOLLAR, "$");
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry, index) => interpolateEnv(entry, env, source, `${path}[${index}]`));
+	}
+	if (isPlainObject(value)) {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, entry]) => [
+				key,
+				interpolateEnv(entry, env, source, path ? `${path}.${key}` : key),
+			]),
+		);
+	}
+	return value;
 }

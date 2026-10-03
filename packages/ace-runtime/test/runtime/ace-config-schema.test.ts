@@ -42,6 +42,50 @@ describe("ACE runtime configuration JSON Schema", () => {
 			"an unknown setting inside config",
 			{ subscribe: [{ ...inbox, config: { stream: "s", group: "g", strem: "typo" } }] },
 		],
+		[
+			"reclaim and reconnect tuning",
+			{
+				subscribe: [
+					{
+						...inbox,
+						config: {
+							...inbox.config,
+							reclaimIdleMs: 0,
+							reclaimAttempts: 5,
+							retryDelayMs: 50,
+							maxRetryDelayMs: 2_000,
+						},
+					},
+				],
+			},
+		],
+		["a sender allowlist", { subscribe: [{ ...inbox, allowedSenders: ["ci.*", "agent-?"] }] }],
+		["burst spooling thresholds", { subscribe: [{ ...inbox, spool: { afterEvents: 2, windowMs: 500 } }] }],
+		[
+			"spool retention at the top level",
+			{ subscribe: [inbox], spool: { dir: "/var/lib/ace", retentionMs: 3_600_000, maxFiles: 20 } },
+		],
+		["manual event retention", { subscribe: [inbox], manual: { max: 5, ttlMs: 60_000 } }],
+		[
+			"a publish channel with its own field",
+			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, config: { stream: "ace:in.b", field: "ace" } }] },
+		],
+
+		["a negative reclaim idle time", { subscribe: [{ ...inbox, config: { ...inbox.config, reclaimIdleMs: -1 } }] }],
+		["zero reclaim attempts", { subscribe: [{ ...inbox, config: { ...inbox.config, reclaimAttempts: 0 } }] }],
+		["a zero retry delay", { subscribe: [{ ...inbox, config: { ...inbox.config, retryDelayMs: 0 } }] }],
+		["an empty sender allowlist", { subscribe: [{ ...inbox, allowedSenders: [] }] }],
+		["a non-string sender pattern", { subscribe: [{ ...inbox, allowedSenders: [7] }] }],
+		["spool thresholds without a window", { subscribe: [{ ...inbox, spool: { afterEvents: 2 } }] }],
+		["a zero spool threshold", { subscribe: [{ ...inbox, spool: { afterEvents: 0, windowMs: 500 } }] }],
+		["an unknown key inside spool", { subscribe: [{ ...inbox, spool: { afterEvents: 2, windowMs: 500, keep: 3 } }] }],
+		["a top-level spool without a directory", { subscribe: [inbox], spool: { retentionMs: 1_000 } }],
+		["a zero manual limit", { subscribe: [inbox], manual: { max: 0 } }],
+		["an unknown key inside manual", { subscribe: [inbox], manual: { keep: 5 } }],
+		[
+			"a publish channel with consumer-group settings",
+			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, config: { stream: "ace:in.b", group: "g" } }] },
+		],
 		["a non-integer count", { subscribe: [{ ...inbox, config: { ...inbox.config, count: "8" } }] }],
 		["a zero count", { subscribe: [{ ...inbox, config: { ...inbox.config, count: 0 } }] }],
 		["an empty description", { subscribe: [{ ...inbox, description: "" }] }],
