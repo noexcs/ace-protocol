@@ -17,6 +17,7 @@ export * from "./protocol/validator.ts";
 export * from "./runtime/ace-config.ts";
 export * from "./runtime/ace-runtime.ts";
 export * from "./runtime/activation-resolver.ts";
+export * from "./runtime/dead-letter.ts";
 export * from "./runtime/endpoint-config.ts";
 export * from "./runtime/event-dispatcher.ts";
 export * from "./runtime/event-spool.ts";

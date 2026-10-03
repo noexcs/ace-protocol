@@ -59,6 +59,7 @@ import {
 	AceRuntime,
 	createPublishers,
 	createTransports,
+	DeadLetterSink,
 	detectHostDelivery,
 	type EndpointConfig,
 	formatSessionLabel,
@@ -79,6 +80,23 @@ function report(ctx: ExtensionContext, message: string, type: "info" | "warning"
 		return;
 	}
 	console.error(message);
+}
+
+/**
+ * Whether this context belongs to a subagent session.
+ *
+ * oh-my-pi rebinds extensions to every session it spawns ("Each child rebinds fresh Extension
+ * instances to its OWN ExtensionAPI", `loader.ts`), so this factory runs again per subagent with its
+ * own locals. ACE must run once, in the session the human talks to: a runtime per subagent would
+ * join the same consumer group and silently take over events meant for the main session. The host
+ * exposes `ctx.agent.kind` for exactly this decision (`types.ts`: "Check this, not `depth`, to tell
+ * subagents apart").
+ */
+function isSubagentContext(ctx: ExtensionContext): boolean {
+	if (!("agent" in ctx)) return false; // upstream Pi has no subagent rebinding: one session per process
+	const agent: unknown = ctx.agent;
+	if (typeof agent !== "object" || agent === null || !("kind" in agent)) return false;
+	return agent.kind === "sub";
 }
 
 /** Runtime logs: last action on the status line, problems as notifications. */
@@ -193,6 +211,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let resolvedConfig: ResolvedAceConfig | undefined;
 	let sessionId: string | undefined;
 	let transportErrorReported = false;
+	let deadLetters: DeadLetterSink | undefined;
 
 	// Where the host's delivery cannot be trusted to reach the agent (oh-my-pi queues into an idle
 	// session without starting a turn), wait for the event to appear in the conversation. Upstream Pi's
@@ -258,6 +277,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	pi.registerTool(publishTool());
 
 	pi.on("session_start", async (_event, ctx) => {
+		if (isSubagentContext(ctx)) return; // one runtime, in the interactive session
 		sessionContext = ctx;
 		if (runtime) return;
 
@@ -279,6 +299,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			resolved.spool?.dir ??
 			(resolved.subscribe.some((entry) => entry.spool) ? join(ctx.cwd, ".ace", "spool") : undefined);
 		const metrics = new AceMetrics();
+		// Dead letters go next to the burst files: same directory, same retention policy, different
+		// prefix. Nothing is written until an entry is actually given up on.
+		deadLetters = new DeadLetterSink({
+			dir: resolved.spool?.dir ?? join(ctx.cwd, ".ace"),
+			...(resolved.spool?.retentionMs === undefined ? {} : { retentionMs: resolved.spool.retentionMs }),
+			...(resolved.spool?.maxFiles === undefined ? {} : { maxFiles: resolved.spool.maxFiles }),
+			logger,
+			onError: (error) => report(ctx, `[ace] dead letter: ${describeError(error)}`, "error"),
+		});
 		runtime = new AceRuntime({
 			engine: adapter,
 			metrics,
@@ -295,6 +324,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			manual: resolved.manual,
 			transports: createTransports(resolved.subscribe, {
 				metrics,
+				onDropped: (subscription, entry) => deadLetters?.record(subscription, entry),
 				onError: (error) => {
 					// A broker that dies mid-session would otherwise repeat the same error.
 					if (transportErrorReported) return;
@@ -333,13 +363,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (isSubagentContext(ctx)) return;
 		const active = runtime;
 		const activePublishers = Object.values(publishers);
 		runtime = undefined;
 		publishers = {};
 		resolvedConfig = undefined;
 		sessionContext = undefined;
+		deadLetters = undefined;
 		await active?.stop();
 		for (const publisher of activePublishers) await publisher.close();
 	});
@@ -350,6 +382,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		// in the TUI, which would run the command before its arguments are finished.
 		handler: async (args, ctx) => {
 			const [subcommand, ...rest] = args.trim().split(/\s+/);
+
+			if (isSubagentContext(ctx)) {
+				report(ctx, "[ace] this is a subagent session; ACE runs in the main session", "warning");
+				return;
+			}
 
 			if (!runtime) {
 				report(ctx, `[ace] not running: add ${ACE_CONFIG_FILENAME} to ${ctx.cwd} and restart Pi`, "warning");
@@ -380,7 +417,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				report(
 					ctx,
 					[
-						`[ace] stats (pending manual: ${pending.length}${resolvedConfig?.sender ? `, sender ${resolvedConfig.sender}` : ""})`,
+						`[ace] stats (pending manual: ${pending.length}, dead letters: ${deadLetters?.count ?? 0} → ${deadLetters?.directory ?? "none"}${resolvedConfig?.sender ? `, sender ${resolvedConfig.sender}` : ""})`,
 						...(lines.length > 0 ? lines.map((line) => `  ${line}`) : ["  (nothing yet)"]),
 						...windows,
 					].join("\n"),
@@ -411,7 +448,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			report(
 				ctx,
 				`[ace] ${identity}${sessionId ? ` session ${formatSessionLabel(sessionId)}` : ""} (${resolvedConfig?.source ?? "started"}), ` +
-					`agent ${state}, subscribe: ${subscribe}; publish: ${publish}; ${pending.length} pending manual event(s)`,
+					`agent ${state}, subscribe: ${subscribe}; publish: ${publish}; ${pending.length} pending manual event(s), ${deadLetters?.count ?? 0} dead letter(s)`,
 			);
 		},
 	});

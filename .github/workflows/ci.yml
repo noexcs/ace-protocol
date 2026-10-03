@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ace-runtime:
+    name: ace-runtime — tests, types, live broker
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: packages/ace-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/ace-runtime/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Unit and integration tests
+        run: npm test
+      - name: Lint and types
+        run: npm run check
+      - name: Build
+        run: npm run build
+      # Seven scenarios against the Redis service above: delivery, poison messages, reclaim after a
+      # failed delivery, dedup, sender allowlists, manual activation, burst spooling.
+      - name: Live broker scenarios
+        run: npm run verify:live
+        env:
+          ACE_VERIFY_REDIS_URL: redis://127.0.0.1:6379
+      # The oh-my-pi scenarios need an `omp` binary and a model, so CI only checks that the script
+      # skips cleanly; run `npm run verify:omp` locally.
+      - name: oh-my-pi scenarios (skipped)
+        run: npm run verify:omp
+        env:
+          ACE_VERIFY_OMP: "0"

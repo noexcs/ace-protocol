@@ -102,9 +102,27 @@ export function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStrea
 	};
 }
 
+/** An entry the transport gave up on after `reclaimAttempts` redeliveries. */
+export interface DroppedEntry {
+	/** Broker entry id, so the record can be traced back to the stream. */
+	brokerId: string;
+	/** Raw payload exactly as stored, `undefined` when the entry lacked the field. */
+	payload: string | undefined;
+	/** Delivery attempts made before giving up. */
+	attempts: number;
+	/** Why it was dropped, for the record. */
+	reason: string;
+}
+
 export interface RedisStreamsTransportOptions {
 	/** Injected client; defaults to a `redis` client for the configured URL. */
 	client?: RedisStreamsClient;
+	/**
+	 * Called with the last copy of an entry the transport gives up on. The entry leaves the PEL
+	 * (and stops blocking the group) only once this resolves; a rejection leaves it pending, so a
+	 * sink that cannot write makes the loss visible instead of silent.
+	 */
+	onDropped?: (entry: DroppedEntry) => void | Promise<void>;
 	/** Called when the broker connection or the read loop fails. */
 	onError?: (error: unknown) => void;
 	/** Counter sink for reconnects, reclaimed entries and dropped events. */
@@ -122,8 +140,8 @@ export interface RedisStreamsTransportOptions {
  *
  * - the handler resolving → the entry is acknowledged (`XACK`);
  * - the handler rejecting → the entry stays pending in the group's PEL;
- * - entries another consumer left pending are reclaimed after `reclaimIdleMs` and redelivered,
- *   and dropped (with a warning) after `reclaimAttempts`;
+ * - entries another consumer left pending are reclaimed after `reclaimIdleMs` and redelivered, and
+ *   dropped after `reclaimAttempts` -- handed to `onDropped` first, then acknowledged;
  * - an entry without the configured payload field → reported and acknowledged;
  * - invalid ACE messages are acknowledged too, because the runtime logs and drops them
  *   instead of rejecting them (RFC §13, design doc §30) — a poison message never blocks
@@ -135,11 +153,14 @@ export class RedisStreamsTransport implements Transport {
 	private readonly name: string;
 	private readonly client: RedisStreamsClient;
 	private readonly onError: (error: unknown) => void;
+	private readonly onDropped: ((entry: DroppedEntry) => void | Promise<void>) | undefined;
 	private readonly metrics: AceMetrics | undefined;
 	private readonly delay: (ms: number) => Promise<void>;
 	private readonly now: () => number;
 	/** Delivery attempts per reclaimed entry id; the transport's own idempotency guard. */
 	private readonly reclaimAttempts = new Map<string, number>();
+	/** Entries whose dead-letter write already failed: report once, not once per reclaim pass. */
+	private readonly reportedDrops = new Set<string>();
 	private loop?: Promise<void>;
 	private stopped = true;
 	private lastReclaimAt = 0;
@@ -148,6 +169,7 @@ export class RedisStreamsTransport implements Transport {
 		this.config = redisStreamsConfigFrom(subscription);
 		this.name = subscription.name;
 		this.onError = options.onError ?? (() => {});
+		this.onDropped = options.onDropped;
 		this.metrics = options.metrics;
 		this.delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 		this.now = options.now ?? (() => Date.now());
@@ -234,13 +256,36 @@ export class RedisStreamsTransport implements Transport {
 		for (const entry of entries) {
 			const attempts = this.reclaimAttempts.get(entry.id) ?? 0;
 			if (attempts >= reclaimAttempts) {
-				// Give up loudly: the entry leaves the PEL so it stops blocking the group.
+				// Give up. The last copy is recorded first: an entry that no handler could deliver is
+				// exactly the one worth keeping, and it may leave the PEL only once it is written down.
 				this.reclaimAttempts.delete(entry.id);
 				this.metrics?.increment(this.name, "dropped");
-				this.reportNotice(
-					`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${attempts} delivery attempts`,
-				);
-				await this.acknowledge(entry);
+				try {
+					await this.onDropped?.({
+						brokerId: entry.id,
+						payload: entry.payload,
+						attempts,
+						reason: `after ${attempts} delivery attempts`,
+					});
+					this.reportedDrops.delete(entry.id);
+					this.reportNotice(
+						`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${attempts} delivery attempts`,
+					);
+					await this.acknowledge(entry);
+				} catch (error) {
+					// Stay pending: the loss remains visible in the PEL, and the write failure is
+					// reported once per entry instead of once per reclaim pass.
+					if (!this.reportedDrops.has(entry.id)) {
+						this.reportedDrops.add(entry.id);
+						this.report(
+							new Error(
+								`redis stream ${this.config.stream}: cannot record dead letter for entry ${entry.id}: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							),
+						);
+					}
+				}
 				continue;
 			}
 

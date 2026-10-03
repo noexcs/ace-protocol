@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { buildPublishToolText } from "../../extensions/ace.ts";
+import aceExtension, { buildPublishToolText } from "../../extensions/ace.ts";
 import { formatSessionLabel, renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import type { ResolvedAceConfig } from "../../src/runtime/ace-config.ts";
 
@@ -121,5 +125,85 @@ describe("renderAceEvent", () => {
 		});
 
 		expect(rendered).toContain("sender: agent-a\nid: evt_1");
+	});
+});
+
+/** The slice of `ExtensionAPI` the extension touches; nothing else is reached in these tests. */
+function fakeExtensionApi() {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const tools: string[] = [];
+	const commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
+	return {
+		handlers,
+		tools,
+		commands,
+		// The factory uses exactly these members; the cast stands in for the rest of ExtensionAPI.
+		api: {
+			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+				handlers.set(event, handler);
+				return () => {};
+			},
+			registerTool: (definition: { name: string }) => void tools.push(definition.name),
+			registerCommand: (name: string, definition: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+				void commands.push({ name, handler: definition.handler }),
+			sendUserMessage: () => {},
+		} as unknown as ExtensionAPI,
+	};
+}
+
+/** A session context; only the fields the extension reads are present. */
+function fakeContext(kind: "main" | "sub", cwd: string) {
+	const notifications: string[] = [];
+	return {
+		notifications,
+		ctx: {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string) => void notifications.push(message), setStatus: () => {} },
+			sessionManager: { getSessionId: () => "01a102b6-9dac-75b6-80ca-21cbbf58e914" },
+			isIdle: () => true,
+			agent: { kind },
+		},
+	};
+}
+
+function withScratchDirectory(body: (dir: string) => Promise<void>): Promise<void> {
+	const dir = mkdtempSync(join(tmpdir(), "ace-extension-"));
+	return body(dir).finally(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+describe("subagent sessions", () => {
+	it("starts nothing in a subagent session and says so for /ace", async () => {
+		await withScratchDirectory(async (dir) => {
+			const { api, handlers, tools, commands } = fakeExtensionApi();
+			aceExtension(api);
+			const registered = [...tools];
+			const { ctx, notifications } = fakeContext("sub", dir);
+
+			await handlers.get("session_start")?.({}, ctx);
+
+			// A second runtime would join the same consumer group and steal the main session's events.
+			expect(notifications).toEqual([]);
+			expect(tools).toEqual(registered);
+
+			await handlers.get("session_shutdown")?.({}, ctx);
+			expect(notifications).toEqual([]);
+
+			const command = commands.find((entry) => entry.name === "ace");
+			await command?.handler("", ctx);
+			expect(notifications.join("\n")).toContain("subagent");
+		});
+	});
+
+	it("starts in the main session, reporting a missing configuration", async () => {
+		await withScratchDirectory(async (dir) => {
+			const { api, handlers } = fakeExtensionApi();
+			aceExtension(api);
+			const { ctx, notifications } = fakeContext("main", dir);
+
+			await handlers.get("session_start")?.({}, ctx);
+
+			expect(notifications.join("\n")).toContain("not started");
+		});
 	});
 });

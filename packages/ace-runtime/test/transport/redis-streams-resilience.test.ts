@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { EndpointConfig } from "../../src/runtime/endpoint-config.ts";
 import { AceMetrics } from "../../src/runtime/metrics.ts";
-import { RedisStreamsTransport } from "../../src/transport/redis-streams-transport.ts";
+import {
+	type DroppedEntry,
+	RedisStreamsTransport,
+	type RedisStreamsTransportOptions,
+} from "../../src/transport/redis-streams-transport.ts";
 import { FakeRedisStreamsClient } from "../support/fake-redis-client.ts";
 
 const validEntry = JSON.stringify({
@@ -17,7 +21,11 @@ async function settle(predicate: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) await Promise.resolve();
 }
 
-function setup(config: Record<string, unknown> = {}, now: () => number = () => 0) {
+function setup(
+	config: Record<string, unknown> = {},
+	now: () => number = () => 0,
+	options: Partial<RedisStreamsTransportOptions> = {},
+) {
 	const subscription: EndpointConfig = {
 		name: "inbox",
 		transport: "redis-streams",
@@ -33,6 +41,7 @@ function setup(config: Record<string, unknown> = {}, now: () => number = () => 0
 		onError: (error) => errors.push(error),
 		delay: async () => {},
 		now,
+		...options,
 	});
 	return { client, metrics, errors, transport };
 }
@@ -114,6 +123,71 @@ describe("RedisStreamsTransport resilience", () => {
 		expect(client.acked).toEqual(["9-0"]);
 		expect(metrics.snapshot().inbox?.dropped).toBe(1);
 		expect(errors.some((error) => String(error).includes("dropping entry 9-0"))).toBe(true);
+		await stop(transport, client);
+	});
+
+	it("records a dead letter before it acknowledges a dropped entry", async () => {
+		let now = 0;
+		const recorded: DroppedEntry[] = [];
+		const { client, transport } = setup({ reclaimAttempts: 1 }, () => now, {
+			onDropped: async (entry) => {
+				recorded.push(entry);
+			},
+		});
+		await transport.start(async () => {
+			throw new Error("agent unavailable");
+		});
+
+		now = 100;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await settle(() => client.reclaimed.length >= 1 && client.reads.length >= 3);
+
+		now = 200;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await client.waitForAcks(1);
+
+		expect(recorded).toEqual([
+			{ brokerId: "9-0", payload: validEntry, attempts: 1, reason: "after 1 delivery attempts" },
+		]);
+		expect(client.acked).toEqual(["9-0"]);
+		await stop(transport, client);
+	});
+
+	it("keeps the entry pending and reports once when the dead-letter write fails", async () => {
+		let now = 0;
+		const recorded: DroppedEntry[] = [];
+		const { client, errors, transport } = setup({ reclaimAttempts: 1 }, () => now, {
+			onDropped: async (entry) => {
+				recorded.push(entry);
+				throw new Error("disk full");
+			},
+		});
+		await transport.start(async () => {
+			throw new Error("agent unavailable");
+		});
+
+		now = 100;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await settle(() => client.reclaimed.length >= 1 && client.reads.length >= 3);
+
+		now = 200;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await settle(() => recorded.length >= 1 && client.reads.length >= 4);
+
+		// No acknowledgement: the event stays visible in the PEL instead of vanishing.
+		expect(client.acked).toEqual([]);
+
+		now = 300;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await settle(() => recorded.length >= 2 && client.reads.length >= 5);
+
+		expect(errors.filter((error) => String(error).includes("cannot record dead letter"))).toHaveLength(1);
+		expect(client.acked).toEqual([]);
 		await stop(transport, client);
 	});
 

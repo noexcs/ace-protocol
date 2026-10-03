@@ -163,6 +163,13 @@ Three per-subscription policies keep a busy channel from flooding a conversation
 Deduplication is identity-based: `(sender, id)` is remembered for `dedupCapacity` events, and **only handled events
 are remembered** — a redelivery after a failure is retried, never mistaken for a duplicate.
 
+When an entry is dropped after `reclaimAttempts`, the transport hands its last copy to the dead-letter sink first:
+one JSONL line per event (raw payload, broker id, attempts, reason) in `dead-letter.<timestamp>.jsonl`, in the same
+directory as the burst files and with the same retention (`retentionMs` / `maxFiles`). The entry is acknowledged
+**only once that line is fsynced**; a sink that cannot write leaves the entry pending — visible in the group's PEL —
+and reports the write error once. No summary event is injected: the agent already failed to receive it
+`reclaimAttempts` times, so feeding it back would loop. `/ace` and `/ace stats` count what was recorded.
+
 [`schema/ace-config.schema.json`](schema/ace-config.schema.json) describes the file, so editors validate and
 autocomplete it after adding a `$schema` line:
 
@@ -204,6 +211,13 @@ agent A                                    agent B
 (`default` \| `next_turn` \| `immediate` \| `manual`), optional `target` (an output name, needed only when several
 are configured — the address itself never travels in the message, RFC §4.1), and an optional `id` for correlation.
 The tool result reports the published id, sender, and target.
+
+### Subagent sessions
+
+oh-my-pi rebinds extensions to every session it spawns, so this factory runs again for each subagent. ACE starts
+nothing there: a second runtime would join the same consumer group and silently take over events meant for the
+session you are talking to. The gate reads `ctx.agent.kind` (upstream Pi has no such field and runs one session per
+process). `/ace` in a subagent session says so instead of reporting a configuration problem.
 
 ### Session identity
 
@@ -416,8 +430,8 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
   capability (RFC §17); the runtime consumes from now on.
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
-- A reclaimed entry that fails `reclaimAttempts` times is reported and acknowledged — there is no dead-letter queue,
-  so the event is gone once that happens (the report names `sender`/`id`).
+- A reclaimed entry that fails `reclaimAttempts` times is recorded in the dead-letter file and then acknowledged, so
+  it stops blocking the group. There is no replay command yet: reading the file is a human (or script) decision.
 - Spool files are written, never read back: retention is by `maxFiles` / `retentionMs`, and opening the file is the
   agent's job (the summary names it).
 - Reconnection is bounded: a failed read retries with `retryDelayMs` doubling up to `maxRetryDelayMs` and reports the
@@ -450,6 +464,12 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 npm test           # unit + integration tests (faux model, fake Redis client, no network)
 npm run verify:live   # the same runtime against a real broker (needs redis-server; no model needed)
 npm run verify:omp    # the extension inside a real oh-my-pi session (needs omp + a model; one small turn)
+```
+
+CI (`.github/workflows/ci.yml`) runs the tests, `check`, the build and `verify:live` against a Redis service on every
+push and pull request; `verify:omp` runs locally because it needs an `omp` binary and a model.
+
+```bash
 npm run check      # biome + tsc
 npm run build
 npm run example:basic   # in-memory transport, needs ACE_MODEL

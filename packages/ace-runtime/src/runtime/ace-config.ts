@@ -4,6 +4,7 @@ import type { ConcreteActivation } from "../protocol/ace-message.ts";
 import { isConcreteActivation } from "../protocol/ace-message.ts";
 import type { AcePublisher } from "../transport/redis-streams-publisher.ts";
 import { RedisStreamsPublisher } from "../transport/redis-streams-publisher.ts";
+import type { DroppedEntry } from "../transport/redis-streams-transport.ts";
 import {
 	REDIS_STREAMS_DEFAULTS,
 	RedisStreamsTransport,
@@ -306,9 +307,19 @@ export function resolveAceConfig(options: {
  * Create one transport per subscription, keyed by subscription name (the key
  * {@link AceRuntime} expects).
  */
+export interface TransportFactoryOptions {
+	onError: (error: unknown) => void;
+	metrics?: AceMetrics;
+	/**
+	 * Where an entry the transport gave up on goes (dead letters). The channel name is bound here,
+	 * so one sink can serve every subscription without the transport knowing its own name.
+	 */
+	onDropped?: (subscription: string, entry: DroppedEntry) => void | Promise<void>;
+}
+
 export function createTransports(
 	subscriptions: readonly EndpointConfig[],
-	options: { onError: (error: unknown) => void; metrics?: AceMetrics },
+	options: TransportFactoryOptions,
 ): Record<string, Transport> {
 	const transports: Record<string, Transport> = {};
 	for (const subscription of subscriptions) {
@@ -317,15 +328,15 @@ export function createTransports(
 	return transports;
 }
 
-function createTransport(
-	subscription: EndpointConfig,
-	options: { onError: (error: unknown) => void; metrics?: AceMetrics },
-): Transport {
+function createTransport(subscription: EndpointConfig, options: TransportFactoryOptions): Transport {
 	switch (subscription.transport) {
 		case "redis-streams":
 			return new RedisStreamsTransport(subscription, {
 				onError: options.onError,
 				...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+				...(options.onDropped === undefined
+					? {}
+					: { onDropped: (entry: DroppedEntry) => options.onDropped?.(subscription.name, entry) }),
 			});
 		default:
 			throw new AceConfigError(
