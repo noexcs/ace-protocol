@@ -2,6 +2,12 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# ace-claude-code depends on a *committed* copy of the runtime build (file:./vendor/ace-runtime):
+# a published plugin installs from this repo, so the vendored dist must be tracked. Keep the
+# negation after `dist/` so this exception wins.
+!packages/ace-claude-code/vendor/ace-runtime/dist/
+!packages/ace-claude-code/vendor/ace-runtime/dist/**
+
 # upstream checkouts, kept for integration testing against their sources
 pi/
 oh-my-pi/
@@ -14,3 +20,4 @@ oh-my-pi/
 *.log
 
 .DS_Store
+.idea/
