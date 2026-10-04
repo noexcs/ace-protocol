@@ -7,6 +7,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  hosts:
+    name: hosts — ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [ace-claude-code, ace-codex]
+    defaults:
+      run:
+        working-directory: packages/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # ace-codex depends on `file:../ace-runtime`, whose `main`/`types` point at dist — so the
+      # runtime must be built before either host package can typecheck or test.
+      - name: Build ace-runtime
+        working-directory: packages/ace-runtime
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      # Both host packages lock with bun.lock (ace-claude-code has no package-lock.json), so the
+      # install path is bun for both. `check` = biome + tsc; `test` = vitest.
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Lint and types
+        run: bun run check
+      - name: Unit tests
+        run: bun run test
+
   ace-runtime:
     name: ace-runtime — tests, types, live broker
     runs-on: ubuntu-latest
@@ -38,6 +69,11 @@ jobs:
         run: npm run check
       - name: Build
         run: npm run build
+      # ace-claude-code depends on a hand-copied vendored build (file:./vendor/ace-runtime) while
+      # ace-codex follows the live package — without this, a runtime change silently forks the two
+      # hosts. Fails when the vendor copy is not the current build.
+      - name: Vendored runtime is current
+        run: node ../../scripts/check-vendor-sync.ts
       # Seven scenarios against the Redis service above: delivery, poison messages, reclaim after a
       # failed delivery, dedup, sender allowlists, manual activation, burst spooling.
       - name: Live broker scenarios
