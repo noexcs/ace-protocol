@@ -200,6 +200,28 @@ export function formatChannelListing(
 	].join("\n");
 }
 
+/**
+ * The inputs every channel surface lists: the configured channels plus the inbox the agent directory
+ * registered for this session. One function keeps `ace_channels`, `/ace list` and the manager from
+ * disagreeing about what this session is wired to.
+ */
+export function channelListingInput(
+	config: ResolvedAceConfig,
+	inbox?: EndpointConfig,
+): {
+	subscriptions: readonly EndpointConfig[];
+	publications: readonly EndpointConfig[];
+	derivedName?: string;
+	disabled: readonly string[];
+} {
+	return {
+		subscriptions: inbox === undefined ? config.subscribe : [...config.subscribe, inbox],
+		publications: config.publish,
+		...(inbox === undefined ? {} : { derivedName: SESSION_INBOX }),
+		disabled: config.disabled,
+	};
+}
+
 /** Everything `/ace list` prints; the human face, so addresses are included (the tool's listing leaves them out). */
 export interface ChannelReport {
 	identity: string;
@@ -420,6 +442,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let memberPublishers: Map<string, RedisStreamsAddClient> | undefined;
 	let registryErrorReported: string | undefined;
 	let claimedRuntime = false;
+	/** The inbox the directory registered for this session; part of every channel listing while it lives. */
+	let sessionInbox: EndpointConfig | undefined;
 	let shuttingDown = false;
 
 	/** Directory problems are reported once per distinct message; they never fail a session. */
@@ -559,34 +583,34 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				if (!config) {
 					throw new Error(`ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`);
 				}
-				const derivedName = registration === undefined ? undefined : SESSION_INBOX;
+				const listing = channelListingInput(config, sessionInbox);
 				return {
 					content: [
 						{
 							type: "text",
-							text: formatChannelListing(config.subscribe, config.publish, {
-								...(derivedName === undefined ? {} : { derivedName }),
-								disabled: config.disabled,
+							text: formatChannelListing(listing.subscriptions, listing.publications, {
+								...(listing.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
+								disabled: listing.disabled,
 							}),
 						},
 					],
 					details: {
-						subscribe: config.subscribe.map((endpoint) => ({
+						subscribe: listing.subscriptions.map((endpoint) => ({
 							name: endpoint.name,
 							transport: endpoint.transport,
 							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
 							...(endpoint.activation === undefined ? {} : { activation: endpoint.activation }),
 							enabled: endpoint.enabled !== false,
-							derived: endpoint.name === derivedName,
+							derived: endpoint.name === listing.derivedName,
 						})),
-						publish: config.publish.map((endpoint) => ({
+						publish: listing.publications.map((endpoint) => ({
 							name: endpoint.name,
 							transport: endpoint.transport,
 							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
 							enabled: endpoint.enabled !== false,
 						})),
-						disabled: config.disabled,
-						count: config.subscribe.length + config.publish.length,
+						disabled: listing.disabled,
+						count: listing.subscriptions.length + listing.publications.length,
 					},
 				};
 			},
@@ -728,6 +752,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		}
 		process_[RUNTIME_CLAIMED_MARKER] = true;
 		claimedRuntime = true;
+		sessionInbox = undefined;
 
 		const logger = createLogger(ctx);
 		publishers = createPublishers(resolved.publish, {
@@ -757,16 +782,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					cwd: ctx.cwd,
 					url: resolved.registry.url,
 				});
-				subscriptions = [
-					...resolved.subscribe,
-					{
-						name: SESSION_INBOX,
-						transport: "redis-streams",
-						description: "this session's inbox (agent directory)",
-						config: { stream: registration.stream, group: registration.group, url: resolved.registry.url },
-						options: {},
-					},
-				];
+				const inbox: EndpointConfig = {
+					name: SESSION_INBOX,
+					transport: "redis-streams",
+					description: "this session's inbox (agent directory)",
+					config: { stream: registration.stream, group: registration.group, url: resolved.registry.url },
+					options: {},
+				};
+				sessionInbox = inbox;
+				subscriptions = [...resolved.subscribe, inbox];
 			} catch (error) {
 				registration = undefined;
 				await registry?.close();
@@ -856,6 +880,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		publishers = {};
 		resolvedConfig = undefined;
 		sessionContext = undefined;
+		sessionInbox = undefined;
 		deadLetters = undefined;
 		registry = undefined;
 		registration = undefined;
@@ -944,12 +969,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			}
 
 			if (subcommand === "list") {
+				const listing =
+					resolvedConfig === undefined ? undefined : channelListingInput(resolvedConfig, sessionInbox);
 				const describeChannel = (value: string): string[] | undefined => {
 					const [direction, name] = value.split(":");
 					if (direction !== "in" && direction !== "out") {
 						return [`${name} is disabled in ${ACE_CONFIG_FILENAME}`];
 					}
-					const endpoints = direction === "in" ? resolvedConfig?.subscribe : resolvedConfig?.publish;
+					const endpoints = direction === "in" ? listing?.subscriptions : listing?.publications;
 					const endpoint = endpoints?.find((candidate) => candidate.name === name);
 					if (endpoint === undefined) return undefined;
 					return [
@@ -959,7 +986,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						`address: ${endpointAddress(endpoint) ?? "(none)"}`,
 						...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
 						...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
-						...(name === SESSION_INBOX && registration !== undefined
+						...(name === SESSION_INBOX && listing?.derivedName !== undefined
 							? ["origin: registered by the agent directory for this session"]
 							: []),
 					];
@@ -976,12 +1003,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							() => ({
 								title: "ACE channels",
 								details: header,
-								items: channelMenuItems({
-									subscriptions: resolvedConfig?.subscribe ?? [],
-									publications: resolvedConfig?.publish ?? [],
-									...(registration === undefined ? {} : { derivedName: SESSION_INBOX }),
-									disabled: resolvedConfig?.disabled ?? [],
-								}),
+								items: channelMenuItems(listing ?? { subscriptions: [], publications: [], disabled: [] }),
 								empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
 							}),
 							describeChannel,
@@ -997,10 +1019,10 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						identity: senderIdentity(),
 						agentState: adapter.isRunning() ? "running" : "idle",
 						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
-						subscriptions: resolvedConfig?.subscribe ?? [],
-						publications: resolvedConfig?.publish ?? [],
-						...(registration === undefined ? {} : { derivedName: SESSION_INBOX }),
-						disabled: resolvedConfig?.disabled ?? [],
+						subscriptions: listing?.subscriptions ?? [],
+						publications: listing?.publications ?? [],
+						...(listing?.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
+						disabled: listing?.disabled ?? [],
 						pendingManual: pending.length,
 						deadLetters: {
 							count: deadLetters?.count ?? 0,

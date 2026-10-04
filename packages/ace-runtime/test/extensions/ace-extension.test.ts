@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import aceExtension, {
 	aceCompletions,
 	buildPublishToolText,
+	channelListingInput,
 	describeDiscovered,
 	formatChannelListing,
 	formatChannelReport,
@@ -299,6 +300,39 @@ describe("channel listing", () => {
 
 	it("says so when this session publishes nowhere", () => {
 		expect(formatChannelListing([], [])).toBe("subscribe:\npublish:\n  (none)");
+	});
+});
+
+describe("channel listing inputs", () => {
+	const config = {
+		source: "/tmp/.ace.json",
+		subscribe: [{ name: "inbox", transport: "redis-streams", config: { stream: "ace:in.a" }, options: {} }],
+		publish: [{ name: "out", transport: "redis-streams", config: { stream: "ace:in.b" }, options: {} }],
+		disabled: ["stale"],
+		warnings: [],
+		manual: {},
+	} as unknown as ResolvedAceConfig;
+
+	it("adds the inbox the directory registered, and marks it derived", () => {
+		const inbox = {
+			name: "session-inbox",
+			transport: "redis-streams",
+			config: { stream: "ace:lan:events:x" },
+			options: {},
+		};
+		const listing = channelListingInput(config, inbox);
+
+		expect(listing.subscriptions.map((endpoint) => endpoint.name)).toEqual(["inbox", "session-inbox"]);
+		expect(listing.derivedName).toBe("session-inbox");
+		expect(listing.disabled).toEqual(["stale"]);
+	});
+
+	it("lists only the configured channels when this session is not registered", () => {
+		const listing = channelListingInput(config);
+
+		expect(listing.subscriptions.map((endpoint) => endpoint.name)).toEqual(["inbox"]);
+		expect(listing.derivedName).toBeUndefined();
+		expect(listing.publications.map((endpoint) => endpoint.name)).toEqual(["out"]);
 	});
 });
 
