@@ -1,0 +1,102 @@
+# ACE 计划（决策记录 + 实施批次）
+
+状态：**仅记录，未实施**。本轮只完善既有设施（见 §4）。
+相关文件：`ace-contracts.ts`（协议）、`runtime-contracts.ts`（运行时/宿主契约）、`docs/ace-runtime-contracts.md`（逐条实现细节）。
+
+## 1. 已定的决策（本次讨论）
+
+### 1.1 拓扑真值来源：注册中心
+
+- **Channel（含 dispatch/consume）与 Subscription 住注册中心**，本地 ACE 文件只留**部署信息**。
+- 本地文件形状 = `LocalAceConfig`：`{ registry: { url, prefix? }, brokers: BrokerDescriptor[] }`。
+- 端点（url/凭据）只在本地的 Broker 项里，**寻址不进本地文件、端点不进注册中心**；这条分工是 dispatch/consume
+  能跨 kind 统一的前提。
+- 协议层**不动**：0.1 的 `dispatch` / `consume` 本就是不透明的，改的只是实现侧的形状。
+
+### 1.2 Broker 模型
+
+- 概念从 `Transport` 改为 **`Broker`**：`BrokerId` = 本地**实例**名（`local-redis`），`BrokerKind` = **种类**。
+- 本轮**只支持 `redis-streams`**；`nats-jetstream` / `kafka` / `mqtt` / 入站类 `http` / `file` 留在候选里，
+  不进实现也不进类型（`BrokerKind` 单成员即此意）。`amqp` 因两段式寻址（exchange + routingKey）与统一写法
+  不兼容，即便将来扩也不优先。
+- 形状：`BrokerDescriptor`（`id` / `kind` / `url?` / `addressPrefix?` / `defaults?` / `options?`）、
+  `Dispatch`（`address` / `field?` / `trim?`）、`Consume`（`address` / `group?` / `from?` / `field?` /
+  `consumer?` / `count?` / `blockMs?` / `reclaimIdleMs?` / `reclaimAttempts?` /
+  `retryDelayMs?` / `maxRetryDelayMs?`）、`PublishTarget`、`ChannelRecord`、`ChannelDraft`。
+- 依据：四家客户端库（node-redis / KafkaJS / nats.js / MQTT.js）都把 API 分成**连接 / 写 / 读 / 控制面**四块，
+  与上面一一对应（对照表见 `runtime-contracts.ts` §三 注释）。
+
+### 1.3 默认值（减少 AI 的订阅/创建复杂度）
+
+优先级：**内建默认 < `BrokerDescriptor.defaults` < 单条频道覆盖**。
+
+| 字段 | 默认 | 理由 |
+|---|---|---|
+| `addressPrefix` | `ace:` | 由它 + 频道名派生出 `address` |
+| `dispatch.address` / `consume.address` | `ace:<频道名>` | 唯一寻址来源；前缀避免撞键 |
+| `dispatch.field` / `consume.field` | `message` | 传输配置：信封放 stream entry 的哪个字段，两侧必须一致 |
+| `dispatch.trim` | `{ maxlen, approx, 10000 }` | 防流无限增长（**唯一的破坏性默认**，显式 `trim: null` 可关） |
+| `consume.group` | 本 participant 名 | = 每订阅者独立组 = 广播 |
+| `consume.from` | `latest`（`$`） | 组建立前的事件不投递 |
+| `consume.consumer` | `ace-<pid>` | 组内消费者名 |
+| `consume.count` / `blockMs` | 16 / 1000 | `XREADGROUP` 的 COUNT / BLOCK |
+| `consume.reclaimIdleMs` / `reclaimAttempts` | 60000 / 3 | PEL 重投 |
+| `consume.retryDelayMs` / `maxRetryDelayMs` | 200 / 5000 | 退避 |
+| `BrokerDescriptor.url` | `redis://127.0.0.1:6379` | 本机默认 |
+
+`field` 的含义：Redis Stream 每条 entry 是 field→value 表，整个 ACE 信封 JSON 塞进**一个**字段，字段名就是它。
+两侧不一致时订阅侧读到"entry 缺该字段"，现有实现记 notice 后 **ack**（不重投）= 静默丢事件。
+
+### 1.4 `ace_channel` 工具（一个工具、四个动作）
+
+`action: "list" | "subscribe" | "unsubscribe" | "create"`；`name` 支持正则（`create` 必须精确名）；
+`dryRun` 只回报将发生什么。`create` 时 `broker` 默认取配置里唯一那台，`dispatch` / `consume` 全有默认值。
+
+## 2. 待拍板（会直接改变实现，尚未决定）
+
+1. **正则边界**：建议默认只允许精确名/前缀，正则需显式开启，正则下强制先 `dryRun`，并设命中上限。
+2. **冷启动**：注册中心不可达或从未订阅过时可订阅集为空 —— 留"上次订阅集"快照，还是接受"重启后重新订阅"？
+3. **所有权/权限**：谁能 `create`、能否覆盖同名、谁能删（建议 `owner` + 不可覆盖 + 审计）。无认证现状下是软约束。
+4. **`trim` 默认的破坏性**：接受"默认修剪 10000 条"，还是默认不修剪？
+5. **默认交付语义**：`group` 默认 = participant 名（广播）；若想默认同组瓜分，改 `defaults.consume.group` 即可。
+
+## 3. 实施批次（依赖顺序）
+
+1. **两个宿主收口**：`ClaudeRegister`（Claude Code 注册）、`CodexRegister`（Codex 工具面）；随后补一次
+   **Codex 桥评审**（`CodexBridgeReview` 已 abort，评审从未落地）。
+2. **拆包**：核心下沉 + `ace-pi` / `ace-omp`（在干净边界上做后面的改动）。
+3. **动态频道模型**：registry 承载频道目录与订阅关系；`ace_channel` 四动作；`Transport` → **可热插拔**
+   （按订阅动态 start/stop，去重窗口、指标、pending、派生视图跟着订阅生命周期走）。
+4. **工具 spec 下沉 + 跨宿主一致性测试**：工具名/参数 schema/文本/返回形状归核心，宿主只负责绑定注册
+   （现状：`ace-claude-code/src/tools.ts` 抄了一份核心文本，会随本次下沉消除）。
+5. **迁移项**（`runtime-contracts.ts` §五）：删 `sessionId`、`ace_agents` → `ace_participants`、
+   `config` → `dispatch`/`consume`、`body` 不透明化、**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、
+   工具文本、docs、两个宿主 README 一次改齐）。
+
+## 4. 现有设施的缺口（本轮要完善的）
+
+| # | 缺口 | 证据 | 影响 |
+|---|---|---|---|
+| A | **CI 只覆盖 `ace-runtime`** | `.github/workflows/ci.yml` 只有一个 job；`ace-claude-code` / `ace-codex` 的 `check` / `test` 无人执行 | 宿主包里的坏测试（如 `this.calls`）能静默存活 |
+| B | **根目录两份契约文件无门禁** | 仓库根部没有 `package.json`/工作区，`ace-contracts.ts` / `runtime-contracts.ts` 只能手工 `tsc` | 契约改动不会被拦住 |
+| C | **runtime 的 vendor 快照无同步/校验** | `ace-claude-code` 依赖 `file:./vendor/ace-runtime`（只有 `dist`+`package.json`，**手工拷贝、无同步脚本、无标记**）；`ace-codex` 依赖 `file:../ace-runtime`（链工作区） | 一边手工、一边链接，改 runtime 后两边行为会静默分叉 |
+| D | **Codex 桥评审缺失** | `CodexBridgeReview` aborted | 出口在无人复核的状态下被人重写 |
+
+| E | **仓库根部没有工作区** | 根目录无 `package.json` / 锁文件，根部 `biome.json`、两份契约只能靠各包转调 | 新工具的落脚点不明确（本次用 `ace-runtime` 转调解决 B） |
+| F | **没有 `ace-runtime` 导出面摘要** | 两个宿主各自为接线重读 6~8 次 `src` / vendor `.d.ts`（`.d.ts` 还被 read 工具截断，只能 `cat` 拿全文） | 每次都从 vendored 编译产物里考古 —— 两个子代理一半以上的耗时都在这里 |
+
+**A、B 已在本次改动中修掉**：CI 新增 `hosts` job（bun + 两个宿主包矩阵，跑各自的 `check` / `test`）；
+`ace-runtime` 的 `check` 链上新增 `check:contracts`（对根部两份契约跑 `tsc --strict`，CI 无需再加步骤）。
+**C 完成**（`scripts/check-vendor-sync.ts`）：默认纯检查 —— 按 sha256 逐文件比 `packages/ace-runtime/dist` 与
+vendor 的 `dist`、并比版本；`--write` 就地刷新（只拷贝不同的文件、删掉构建里已不存在的、同步版本字段）；
+已接入 CI（`ace-runtime` job 的 `Build` 之后）。实测：基线 in sync ✓ → 人为造漂移被杀掉（exit 1）✓ →
+`--write` 修回 ✓ → 再检查 in sync ✓ → 两侧 sha256 一致 ✓。
+注意：`hosts` job 的实际结果要等两个子代理收口后才有意义 —— 它们正在改这两个包的代码与测试。
+
+## 5. 派活前置件（本次已建）
+
+- **`docs/ace-runtime-api.md`** —— `ace-runtime` 导出面单页摘要：传输接缝 / `AceRuntimeOptions` /
+  `.ace.json` 形状 / 注册中心 `store`+`options`+命名派生 / 发现与寻址 / **装配与关闭顺序**。开头明确标注
+  "对应今天的 `transport` + `config` 形状，不是计划里的 `Broker` + `dispatch`/`consume`"。
+  **下次给宿主派活时直接附这一页**（缺口 F 的直接原因就是没有它）。
+- 待办：把它改成**由脚本从 `dist/**/*.d.ts` 生成 + CI 校验**，免得手抄随代码漂移。

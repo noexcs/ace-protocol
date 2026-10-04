@@ -256,12 +256,11 @@ ACE 0.1 定义一个最小的 ACE Envelope。
 |---|---|---:|---|
 | `aceVersion` | string | 是 | ACE 协议版本 |
 | `id` | string | 是 | 当前消息的标识 |
-| `sender` | string | 是 | 发送方标识 |
-| `sessionId` | string | 否 | 发送方的会话/实例标识 |
+| `sender` | string | 是 | 发送方标识（名称承载会话含义，见 §5.4） |
 | `activation` | string | 是 | 消息的激活语义 |
 | `body` | string | 是 | Agent 实际需要接收的消息本体 |
 
-ACE 0.1 的核心字段由以上字段组成，其中 `aceVersion` / `id` / `sender` / `activation` / `body` 为必需字段，`sessionId` 为可选字段。
+ACE 0.1 的核心字段由以上字段组成，其中 `aceVersion` / `id` / `sender` / `activation` / `body` 为必需字段。
 
 ---
 
@@ -343,39 +342,19 @@ ACE 0.1 不定义全局 Sender Registry，也不规定 Identifier 的生成算�
 
 ---
 
-## 5.4 `sessionId`
+## 5.4 会话含义由 `sender` 承载（无独立字段）
 
-`sessionId` 表示发送方的**会话 / 实例标识**（Session Identifier）。
-
-它与 `sender` 的语义不同：
+ACE **不定义会话标识字段**："哪一个会话 / 哪一个实例"由 `sender` 本身承载。发布端按约定取名 `<coding-agent>:<sessionId>`，因此 `sender` 同时回答"谁"和"哪一次会话"。
 
 ```text
-sender
-  ↓
-哪个发送方（稳定的角色身份）
-
-sessionId
-  ↓
-发送方的哪一次会话 / 哪一个实例（易变的实例身份）
+(sender, id)   标识一条消息
+sender         既标识发送方角色，也承载其会话含义
 ```
 
-因此：
-
-```text
-(sender, id)        标识一条消息
-(sender, sessionId) 标识一次会话 / 一个实例
-```
-
-`sessionId` 是**可选字段**。缺失时接收侧不得推断或填充，只能按"该 `sender` 只有一个会话"处理。
-
-`sessionId` 的取值由部署环境定义，ACE 0.1 不规定生成算法（可以是 UUID、ULID、进程实例 ID 等）。它有两个刻意的性质：
-
-- **易变**：新会话产生新的 `sessionId`；同一会话恢复后保持不变。接收方据此判断"对方上下文是否已变更"。
-- **不是身份凭证**：`sessionId` 与 `sender` 一样，是发送方**声称**的值。它不得用于认证、授权或任何信任判定（认证属于 RFC §18 所述的基础设施职责）。
-
-`sessionId` 为字符串，长度上限由实现定义（建议不超过 128 字符），且**不得包含控制字符**：接收方可能会把它渲染进 Agent Context，控制字符会破坏渲染结构。
-
-`sessionId` 不参与消息去重：去重仍以 `(sender, id)` 为准。
+- **易变但自明**：新会话产生新的 `sender`；会话恢复后沿用同一 `sender`。接收方据此判断"对方上下文是否已变更"。
+- **不是身份凭证**：与字段级身份一样，`sender` 是发送方**声称**的值，不得用于认证、授权或任何信任判定（认证属 §18 的基础设施职责）。
+- **必须满足字符集约束**（见 §5.3 与 §12）：接收方会把它渲染进 Agent Context，控制字符/换行会破坏渲染结构。
+- **不参与消息去重以外的语义**：去重仍以 `(sender, id)` 为准。
 
 ---
 
@@ -785,7 +764,6 @@ AceMessage {
     aceVersion: string
     id: string
     sender: string
-    sessionId?: string
     activation: Activation
     body: string
 }
@@ -828,11 +806,6 @@ ACE 0.1 的 JSON Schema：
       "type": "string",
       "minLength": 1
     },
-    "sessionId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128
-    },
     "activation": {
       "type": "string",
       "enum": [
@@ -863,7 +836,7 @@ ACE 0.1 的 JSON Schema：
 - `aceVersion` 不是 `"0.1"`；
 - `activation` 不是 ACE 0.1 定义的枚举值；
 - `id` 或 `sender` 为空字符串；
-- `sessionId` 存在但不是字符串、为空字符串、超长或包含控制字符。
+- `sender` 不满足字符集约束（含空格、换行或控制字符，或超过 128 字符）。
 
 Runtime 对非法消息可以执行拒绝、记录、重试、隔离或其他错误处理，但这些行为不属于 ACE 0.1 Protocol Semantics。
 
@@ -1161,7 +1134,7 @@ ACE 0.1 当前核心设计：
 | Message ID | `(sender, id)` |
 | ID 生成算法 | 实现自行决定 |
 | Sender | Sender Identifier |
-| Session ID | `sessionId`，可选；部署定义；易变；不参与认证、不参与去重 |
+| 会话含义 | 由 `sender` 承载（约定 `<coding-agent>:<sessionId>`）；无独立字段；不参与认证与去重 |
 | Activation | `immediate` / `next_turn` / `manual` / `default` |
 | Input Configuration Activation | 可以覆盖 Message Activation |
 | Effective Activation | Input Configuration → Message → Runtime Default |
