@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TOOL_TEXT } from "../../extensions/ace.ts";
+import { ACE_TRUST_POLICY } from "../../src/agent/pi-adapter.ts";
 
 /**
  * The contracts document is a norm: it says what the model is told, so it has to quote the tool text
@@ -10,6 +11,7 @@ const contracts = readFileSync(new URL("../../../../docs/ace-runtime-contracts.m
 const collapse = (text: string): string => text.replace(/\s+/g, " ");
 
 const documented = [
+	ACE_TRUST_POLICY,
 	TOOL_TEXT.publish.intro,
 	...TOOL_TEXT.publish.guidelines,
 	...Object.values(TOOL_TEXT.publish.params),
