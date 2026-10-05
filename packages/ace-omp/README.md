@@ -70,7 +70,7 @@ the file it shadowed — silent precedence is how "why is my broker not used" bu
 A global file may also pin itself:
 
 ```json
-{ "projectConfig": "ignore", "subscribe": [ … ] }
+{ "projectConfig": "ignore", "servers": { "lan": { "url": "redis://…", "subscribe": [ … ] } } }
 ```
 
 With that key the global file wins over any project `.ace.json`, so a cloned repository cannot point
@@ -87,9 +87,8 @@ cat > .ace.json <<'JSON'
 {
   "$schema": "/path/to/ace-runtime/schema/ace-config.schema.json",
   "username": "alice",
-  "servers": { "local": { "url": "redis://127.0.0.1:6379" } },
-  "defaultActivation": "next_turn",
-  "subscribe": ["ci-failures"]
+  "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": ["ci-failures"] } },
+  "defaultActivation": "next_turn"
 }
 JSON
 
@@ -114,8 +113,7 @@ Every channel is a name; its address is derived from that name.
 | Field | Meaning |
 |---|---|
 | `username` | The user's name or nick; the second level of every channel name (`<namespace>:<username>:<local>`). Required in practice: it may be inherited from a host-global file or `$USER`. No colons |
-| `servers` | **Required, non-empty** object `{ "<name>": { url, namespace?, description? } }` — the ACE servers this machine talks to. `url` is a Redis connection string; `namespace` defaults to `ace`. Unknown keys are errors |
-| `subscribe[]` | Channel names this session reads. A short name is completed to `<namespace>:<username>:<name>`; with several servers, qualify it `<server>:<name>`. Omit for direct messages only |
+| `servers` | **Required, non-empty** object `{ "<name>": { url, namespace?, description?, subscribe? } }` — the ACE servers this machine talks to. `url` is a Redis connection string; `namespace` defaults to `ace`. `subscribe` is a list of channel names this session reads **on that server**: a short name is completed to `<namespace>:<username>:<name>` under that server's namespace, a full name passes through. Unknown keys are errors |
 | `defaultActivation` | `immediate` \| `next_turn` \| `manual`; the RFC §8 fallback when neither subscription nor message decides |
 | `manual` | Retention for `manual` events (`{ max?, ttlMs? }`, defaults 100 events / 24h) |
 | `projectConfig` | Host-global files only: `"ignore"` makes that file win over a project `.ace.json`, so a cloned repository cannot point the session at its own server |
@@ -166,10 +164,11 @@ autocomplete it after adding a `$schema` line (a local path inside the installed
 { "$schema": "https://raw.githubusercontent.com/noexcs/ace-protocol/v0.1.10/packages/ace-runtime/schema/ace-config.schema.json", "username": "alice", "servers": { "local": { "url": "redis://127.0.0.1:6379" } } }
 ```
 
-The schema covers structure, types and per-server required keys (`url`). Two rules are semantic and stay in the
-validator: a subscription name configured twice is an error, and a bare subscription name with several servers
-configured is ambiguous — qualify it as `<server>:<name>`. `test/runtime/ace-config-schema.test.ts` fails when the
-schema and the validator disagree.
+The schema covers structure, types and per-server required keys (`url`). One rule is semantic and stays in the
+validator: a subscription name configured twice on the same server is an error (JSON Schema cannot express array
+uniqueness here). A subscription always belongs to the server that carries it, so a short name is completed under
+that server's namespace and there is no cross-server ambiguity to resolve. `test/runtime/ace-config-schema.test.ts`
+fails when the schema and the validator disagree.
 
 ### What injection looks like
 

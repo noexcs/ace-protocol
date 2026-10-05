@@ -136,14 +136,15 @@ the `channelsEnabled` organization policy still applies.
 
 Every session whose working directory holds a `.ace.json` starts ACE — the same rule as the Pi host.
 The file is read by the reused `resolveAceConfig`, so it accepts exactly the
-[contract's keys](../ace-runtime/README.md#configuration): `username`, `servers`, `subscribe[]`,
-`defaultActivation` and `manual`. It holds **local deployment information only** — who this user is
-and which servers this machine talks to; channels, subscriptions and presence live on a server. The
+[contract's keys](../ace-runtime/README.md#configuration): `username`, `servers` (each with an optional
+`subscribe[]`), `defaultActivation` and `manual`. It holds **local deployment information only** — who this user
+is and which servers this machine talks to; channels, subscriptions and presence live on a server. The
 two JSON Schemas under [`schema/`](schema/) are byte-identical to `ace-runtime`'s, so the same file
 works on both hosts.
 
-A channel **name** is the address. A short `subscribe` name is uploaded as
-`<namespace>:<username>:<name>`, its stream key is derived from the name
+A channel **name** is the address. A `subscribe` entry belongs to the server that carries it: a short name is
+uploaded as `<namespace>:<username>:<name>` under *that server's* namespace, a full name passes through. Its
+stream key is derived from the name
 (`<namespace>:ch:<name>`), and this session's own inbox is the channel named by its sender
 (`<namespace>:<username>:<codingAgent>:<sessionId>`). There is no `publish` list: `ace_publish` takes
 any channel name as its `target`.

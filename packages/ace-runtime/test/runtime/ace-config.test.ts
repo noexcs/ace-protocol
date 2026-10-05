@@ -8,7 +8,6 @@ import {
 	loadAceConfig,
 	parseAceConfig,
 	resolveAceConfig,
-	resolveSubscription,
 	subscriptionEndpoint,
 } from "../../src/runtime/ace-config.ts";
 import { AceConfigError } from "../../src/runtime/endpoint-config.ts";
@@ -69,15 +68,32 @@ describe("parseAceConfig", () => {
 			/defaultActivation/,
 		);
 		expect(() => parseAceConfig({ ...minimal, projectConfig: "merge" }, ".ace.json")).toThrow(/projectConfig/);
-		expect(() => parseAceConfig({ ...minimal, subscribe: "inbox" }, ".ace.json")).toThrow(/subscribe/);
-		expect(() => parseAceConfig({ ...minimal, subscribe: [""] }, ".ace.json")).toThrow(/non-empty strings/);
 		expect(() => parseAceConfig({ ...minimal, manual: { ttl: 5 } }, ".ace.json")).toThrow(/unknown setting/);
 	});
 
-	it("accepts a plain username and subscribe names as written", () => {
-		const parsed = parseAceConfig({ ...minimal, subscribe: ["inbox", "lan:ci-failures"] }, ".ace.json");
+	it("validates subscribe inside a server entry", () => {
+		const server = (subscribe: unknown) => ({
+			...minimal,
+			servers: { local: { url: "redis://127.0.0.1:6379", subscribe } },
+		});
+		expect(() => parseAceConfig(server("inbox"), ".ace.json")).toThrow(/subscribe must be an array/);
+		expect(() => parseAceConfig(server([""]), ".ace.json")).toThrow(/non-empty strings/);
+		expect(() => parseAceConfig(server(["inbox", "inbox"]), ".ace.json")).toThrow(/configured twice/);
+	});
 
-		expect(parsed.subscribe).toEqual(["inbox", "lan:ci-failures"]);
+	it("points a top-level subscribe at the per-server form", () => {
+		expect(() => parseAceConfig({ ...minimal, subscribe: ["inbox"] }, ".ace.json")).toThrow(
+			/subscribe belongs inside a server — servers: \{ "<name>": \{ url, subscribe: \["<channel>"\] \} \}/,
+		);
+	});
+
+	it("accepts subscribe names as written inside a server", () => {
+		const parsed = parseAceConfig(
+			{ ...minimal, servers: { local: { url: "redis://127.0.0.1:6379", subscribe: ["inbox", "lan:ci-failures"] } } },
+			".ace.json",
+		);
+
+		expect(parsed.servers.local.subscribe).toEqual(["inbox", "lan:ci-failures"]);
 	});
 });
 
@@ -198,19 +214,69 @@ describe("resolveAceConfig", () => {
 		]);
 	});
 
-	it("resolves subscriptions: a short name against the only server", () => {
+	it("resolves a short name against the only server, under that server's namespace", () => {
 		const cwd = temporaryDirectory();
-		writeConfig(cwd, { username: "noexcs", servers: { local: { url: "redis://x" } }, subscribe: ["inbox"] });
+		writeConfig(cwd, {
+			username: "noexcs",
+			servers: { local: { url: "redis://x", subscribe: ["inbox"] } },
+		});
 
 		const resolved = resolveAceConfig({ cwd, env: {} });
 
 		expect(resolved.subscriptions).toEqual([
 			{
-				server: { name: "local", url: "redis://x", namespace: "ace" },
+				server: { name: "local", url: "redis://x", namespace: "ace", subscribe: ["inbox"] },
 				channel: "ace:noexcs:inbox",
 				name: "ace:noexcs:inbox",
 			},
 		]);
+	});
+
+	it("resolves each short name under its own server's namespace, server by server", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, {
+			username: "u",
+			servers: {
+				lan: { url: "redis://lan", namespace: "lan", subscribe: ["from-wsl", "from-ci"] },
+				local: { url: "redis://local", subscribe: ["ci-ok"] },
+			},
+		});
+
+		const resolved = resolveAceConfig({ cwd, env: {} });
+
+		expect(resolved.subscriptions.map(({ server, channel }) => [server.name, channel])).toEqual([
+			["lan", "lan:u:from-wsl"],
+			["lan", "lan:u:from-ci"],
+			["local", "ace:u:ci-ok"],
+		]);
+	});
+
+	it("resolves the same short name on two servers sharing a namespace to the same channel", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, {
+			username: "u",
+			servers: {
+				a: { url: "redis://a", namespace: "shared", subscribe: ["inbox"] },
+				b: { url: "redis://b", namespace: "shared", subscribe: ["inbox"] },
+			},
+		});
+
+		const resolved = resolveAceConfig({ cwd, env: {} });
+
+		expect(resolved.subscriptions.map(({ server, channel }) => [server.name, channel])).toEqual([
+			["a", "shared:u:inbox"],
+			["b", "shared:u:inbox"],
+		]);
+	});
+
+	it("passes a full channel name through untouched", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, {
+			username: "u",
+			servers: { local: { url: "redis://x", subscribe: ["ace:someone-else:inbox"] } },
+		});
+
+		expect(resolveAceConfig({ cwd, env: {} }).subscriptions[0]?.channel).toBe("ace:someone-else:inbox");
 	});
 
 	it("reports two servers sharing one Redis as the two islands they are", () => {
@@ -221,37 +287,6 @@ describe("resolveAceConfig", () => {
 		});
 
 		expect(resolveAceConfig({ cwd, env: {} }).warnings.join(" ")).toContain("cannot see each other");
-	});
-});
-
-describe("resolveSubscription", () => {
-	const servers = [
-		{ name: "lan", url: "redis://x", namespace: "lan" },
-		{ name: "ci", url: "redis://y", namespace: "ci" },
-	];
-
-	it("completes the namespace and username of a short name", () => {
-		expect(resolveSubscription({ servers: [servers[0]!], username: "noexcs", name: "ci-failures" })).toEqual({
-			server: servers[0],
-			channel: "lan:noexcs:ci-failures",
-		});
-	});
-
-	it("refuses a short name when several servers could own it", () => {
-		expect(() => resolveSubscription({ servers, username: "noexcs", name: "ci-failures" })).toThrow(/ambiguous/);
-	});
-
-	it("honours an explicit server prefix", () => {
-		expect(resolveSubscription({ servers, username: "noexcs", name: "ci:ci-failures" })).toEqual({
-			server: servers[1],
-			channel: "ci:noexcs:ci-failures",
-		});
-	});
-
-	it("refuses an unknown server prefix and lists the known ones", () => {
-		expect(() => resolveSubscription({ servers, username: "noexcs", name: "nope:ci-failures" })).toThrow(
-			/unknown server "nope"/,
-		);
 	});
 });
 

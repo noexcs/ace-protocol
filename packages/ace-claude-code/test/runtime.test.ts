@@ -40,14 +40,20 @@ const directories: string[] = [];
 interface ServerSpec {
 	url: string;
 	namespace?: string;
+	subscribe?: string[];
 }
 
 function configDirectory(servers: Record<string, ServerSpec>, subscribe: string[] = []): string {
 	const directory = mkdtempSync(join(tmpdir(), "ace-cc-runtime-"));
 	directories.push(directory);
+	// A subscription belongs to the server that carries it: put these names on the first server.
+	const entries = Object.entries(servers).map(([name, server], index) => [
+		name,
+		index === 0 && subscribe.length > 0 ? { ...server, subscribe } : server,
+	]);
 	writeFileSync(
 		join(directory, ".ace.json"),
-		JSON.stringify({ username: USERNAME, servers, subscribe, defaultActivation: "next_turn" }),
+		JSON.stringify({ username: USERNAME, servers: Object.fromEntries(entries), defaultActivation: "next_turn" }),
 	);
 	return directory;
 }
@@ -283,10 +289,10 @@ describe("startAce registration and inbox derivation", () => {
 
 describe("startAce when a server is unreachable", () => {
 	it("skips that server and keeps the rest of the session running", async () => {
-		const cwd = configDirectory(
-			{ primary: { url: URL_A, namespace: NS_A }, secondary: { url: URL_B, namespace: NS_B } },
-			["secondary:ci"],
-		);
+		const cwd = configDirectory({
+			primary: { url: URL_A, namespace: NS_A },
+			secondary: { url: URL_B, namespace: NS_B, subscribe: ["ci"] },
+		});
 		const warnings: string[] = [];
 		const { recording, factory } = recordingStores({ failStream: (url) => url === URL_B });
 		const transports: TransportRecording = { subscriptions: [], order: [] };

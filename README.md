@@ -52,8 +52,7 @@ cat > /tmp/ace-demo/.ace.json <<'JSON'
 {
   "$schema": "/path/to/ace-protocol/packages/ace-runtime/schema/ace-config.schema.json",
   "username": "alice",
-  "servers": { "local": { "url": "redis://127.0.0.1:6379" } },
-  "subscribe": ["ci-failures"]
+  "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": ["ci-failures"] } }
 }
 JSON
 

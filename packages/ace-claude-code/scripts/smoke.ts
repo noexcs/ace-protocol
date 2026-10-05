@@ -229,8 +229,7 @@ async function main(): Promise<void> {
 		const namespace = `acesmoke${Math.random().toString(16).slice(2)}`;
 		const registryConfigText = JSON.stringify({
 			username: "smoke",
-			servers: { local: { url: liveRedis, namespace } },
-			subscribe: [],
+			servers: { local: { url: liveRedis, namespace, subscribe: [] } },
 			defaultActivation: "next_turn",
 		});
 		if (!(await brokerReachable(registryConfigText))) {

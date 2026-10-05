@@ -95,9 +95,8 @@ async function runRegistry(executable: string): Promise<boolean> {
 		// A minimal `.ace.json` in a temp workspace: one configured channel on one server.
 		const aceConfig = {
 			username,
-			servers: { local: { url, namespace } },
+			servers: { local: { url, namespace, subscribe: ["from-ci"] } },
 			defaultActivation: "next_turn",
-			subscribe: ["from-ci"],
 		};
 		writeFileSync(join(cwd, ".ace.json"), JSON.stringify(aceConfig));
 

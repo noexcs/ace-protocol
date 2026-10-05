@@ -140,6 +140,7 @@ interface ServerSpec {
 	name: string;
 	url: string;
 	namespace: string;
+	subscribe?: readonly string[];
 }
 
 let current: Harness | undefined;
@@ -152,13 +153,19 @@ afterEach(async () => {
 	}
 });
 
-function writeAceConfig(cwd: string, servers: readonly ServerSpec[], subscribe: readonly string[]): void {
+function writeAceConfig(cwd: string, servers: readonly ServerSpec[]): void {
 	const config: Record<string, unknown> = {
 		username: USERNAME,
 		servers: Object.fromEntries(
-			servers.map((server) => [server.name, { url: server.url, namespace: server.namespace }]),
+			servers.map((server) => [
+				server.name,
+				{
+					url: server.url,
+					namespace: server.namespace,
+					...(server.subscribe === undefined ? {} : { subscribe: [...server.subscribe] }),
+				},
+			]),
 		),
-		subscribe: [...subscribe],
 	};
 	writeFileSync(join(cwd, ".ace.json"), JSON.stringify(config));
 }
@@ -179,14 +186,18 @@ async function setup(options: {
 	startNow?: boolean;
 }): Promise<Harness> {
 	const namespace = `ace-test-${Math.random().toString(16).slice(2)}`;
-	const servers = options.servers ?? [{ name: "local", url: REGISTRY_URL, namespace }];
+	const baseServers = options.servers ?? [{ name: "local", url: REGISTRY_URL, namespace }];
 	const subscribe = options.subscribe ?? ["from-peer"];
+	// A subscription belongs to the server that carries it: name it on the first server.
+	const servers = baseServers.map((spec, index) =>
+		index === 0 && subscribe.length > 0 ? { ...spec, subscribe } : spec,
+	);
 	const failUrls = options.failUrls ?? new Set<string>();
 	const registerGate = options.registerGate;
 	const logger = options.logger ?? SILENT;
 	const startNow = options.startNow ?? true;
 	const cwd = mkdtempSync(join(tmpdir(), "ace-codex-bridge-"));
-	writeAceConfig(cwd, servers, subscribe);
+	writeAceConfig(cwd, servers);
 
 	const { a, b } = createMemoryConnections();
 	const server = new FakeAppServer(b);
@@ -218,15 +229,12 @@ async function setup(options: {
 	const multi = servers.length > 1;
 	const transportByName: Record<string, InMemoryTransport> = {};
 	for (const spec of servers) {
-		transportByName[multi ? `${spec.name}:${SESSION_INBOX}` : SESSION_INBOX] = inboxTransport;
-	}
-	for (const name of subscribe) {
-		const [maybeServer, ...rest] = name.split(":");
-		const owner = multi ? servers.find((spec) => spec.name === maybeServer) : servers[0];
-		if (owner === undefined) continue;
-		const short = multi ? rest.join(":") : name;
-		const channel = channelName(owner.namespace, USERNAME, short);
-		transportByName[multi ? `${owner.name}:${channel}` : channel] = peerTransport;
+		const prefix = multi ? `${spec.name}:` : "";
+		transportByName[`${prefix}${SESSION_INBOX}`] = inboxTransport;
+		for (const name of spec.subscribe ?? []) {
+			const channel = channelName(spec.namespace, USERNAME, name);
+			transportByName[`${prefix}${channel}`] = peerTransport;
+		}
 	}
 
 	const env: Record<string, string | undefined> = { ...process.env };
@@ -408,7 +416,7 @@ describe("createBridge agent-directory registration", () => {
 		};
 		const harness = await setup({
 			servers: [up, down],
-			subscribe: ["up:from-peer"],
+			subscribe: ["from-peer"],
 			failUrls: new Set([DOWN_URL]),
 			logger,
 		});

@@ -96,8 +96,7 @@ redis-cli ping                              # PONG
 omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.10/ace-runtime-0.1.10.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
-  "servers": { "local": { "url": "redis://127.0.0.1:6379" } },
-  "subscribe": [ "inbox" ] }
+  "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
 JSON
 omp                                          # the installed plugin loads the extension itself
 
@@ -117,10 +116,13 @@ One machine can host the broker for both sessions: expose Redis on that machine 
 publishing to the channel that peer's own sender names:
 
 ```jsonc
-// mac/.ace.json                                    // wsl/.ace.json
-{ "username": "ana",                               { "username": "ana",
-  "servers": { "lan": { "url": "redis://<lan-ip>:6379" } },   "servers": { "lan": { "url": "redis://<lan-ip>:6379" } },
-  "subscribe": [ "from-wsl" ] }                      "subscribe": [ "from-mac" ] }
+// mac/.ace.json
+{ "username": "ana",
+  "servers": { "lan": { "url": "redis://<lan-ip>:6379", "subscribe": [ "from-wsl" ] } } }
+
+// wsl/.ace.json
+{ "username": "ana",
+  "servers": { "lan": { "url": "redis://<lan-ip>:6379", "subscribe": [ "from-mac" ] } } }
 ```
 
 ```bash

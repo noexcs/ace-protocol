@@ -4,7 +4,7 @@ import { isConcreteActivation } from "../protocol/ace-message.js";
 import { REDIS_STREAMS_DEFAULTS, RedisStreamsTransport, redisStreamsConfigFrom, } from "../transport/redis-streams-transport.js";
 import { describeValue, isPlainObject } from "../utils.js";
 import { AceConfigError, rejectUnknownKeys } from "./endpoint-config.js";
-import { assertNoColon, channelName, channelStreamKey, NAMESPACE_DEFAULT, resolveLocalName } from "./naming.js";
+import { assertNoColon, channelStreamKey, NAMESPACE_DEFAULT, resolveLocalName } from "./naming.js";
 /**
  * Name of the runtime configuration file read from the session working directory.
  *
@@ -31,12 +31,15 @@ export function parseAceConfig(value, source) {
         refuseColon(username, `${source}: username`);
     }
     const servers = parseServers(value.servers, source);
-    const subscribe = parseSubscriptions(value.subscribe, source);
     const manual = parseManual(value.manual, source);
+    // The keys are checked after the ones with a dedicated message, so a typo gets the clearest answer.
+    if (value.subscribe !== undefined) {
+        throw new AceConfigError(`${source}: subscribe belongs inside a server — servers: { "<name>": { url, subscribe: ["<channel>"] } }`);
+    }
+    rejectUnknownKeys(value, ["$schema", "username", "servers", "defaultActivation", "manual", "projectConfig"], source);
     return {
         username: typeof username === "string" ? username : "",
         servers,
-        ...(subscribe === undefined ? {} : { subscribe }),
         ...(defaultActivation === undefined ? {} : { defaultActivation }),
         ...(manual === undefined ? {} : { manual }),
         ...(value.projectConfig === undefined ? {} : { projectConfig: value.projectConfig }),
@@ -62,7 +65,7 @@ function parseServers(value, source) {
         if (!isPlainObject(entry)) {
             throw new AceConfigError(`${subject} must be an object, received ${describeValue(entry)}`);
         }
-        rejectUnknownKeys(entry, ["url", "namespace", "description"], subject);
+        rejectUnknownKeys(entry, ["url", "namespace", "description", "subscribe"], subject);
         if (typeof entry.url !== "string" || entry.url.length === 0) {
             throw new AceConfigError(`${subject}.url must be a non-empty string, received ${describeValue(entry.url)}`);
         }
@@ -75,10 +78,12 @@ function parseServers(value, source) {
         if (entry.description !== undefined && typeof entry.description !== "string") {
             throw new AceConfigError(`${subject}.description must be a string, received ${describeValue(entry.description)}`);
         }
+        const subscribe = parseSubscriptions(entry.subscribe, `${subject}.subscribe`);
         servers[name] = {
             url: entry.url,
             ...(typeof entry.namespace === "string" ? { namespace: entry.namespace } : {}),
             ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+            ...(subscribe === undefined ? {} : { subscribe }),
         };
     }
     return servers;
@@ -205,11 +210,14 @@ export function resolveAceConfig(options) {
         url: entry.url,
         namespace: entry.namespace ?? NAMESPACE_DEFAULT,
         ...(entry.description === undefined ? {} : { description: entry.description }),
+        ...(entry.subscribe === undefined ? {} : { subscribe: entry.subscribe }),
     }));
-    const subscriptions = (config.subscribe ?? []).map((name) => {
-        const { server, channel } = resolveSubscription({ servers, username, name });
+    // A subscription lives on the server that carries it: the name is uploaded under that server's
+    // namespace and read over that server's url, so nothing has to guess a server for a bare name.
+    const subscriptions = servers.flatMap((server) => (server.subscribe ?? []).map((local) => {
+        const channel = resolveLocalName({ namespace: server.namespace, username, name: local });
         return { server, channel, name: channel };
-    });
+    }));
     return {
         username,
         servers,
@@ -240,35 +248,6 @@ function islandWarnings(servers) {
         warnings.push(`servers ${names} share one Redis: each namespace is its own directory, so they cannot see each other`);
     }
     return warnings;
-}
-/**
- * Resolve one configured subscription name to a server and its uploaded channel name.
- *
- * A short name (`ci-failures`) needs a single server to default to; with several, qualify it
- * (`lan:ci-failures`) rather than let the runtime guess which one was meant.
- */
-export function resolveSubscription(options) {
-    const { servers, username, name } = options;
-    const first = servers[0];
-    if (first === undefined)
-        throw new AceConfigError("no servers configured");
-    const qualified = name.includes(":");
-    if (!qualified) {
-        if (servers.length > 1) {
-            const names = servers.map((server) => `"${server.name}"`).join(", ");
-            throw new AceConfigError(`subscribe "${name}" is ambiguous with several servers configured (${names}): qualify it as "<server>:${name}"`);
-        }
-        return { server: first, channel: channelName(first.namespace, username, name) };
-    }
-    const [serverName, ...rest] = name.split(":");
-    const server = servers.find((candidate) => candidate.name === serverName);
-    if (server === undefined) {
-        const names = servers.map((candidate) => `"${candidate.name}"`).join(", ");
-        throw new AceConfigError(`subscribe "${name}" names unknown server "${serverName}" (configured: ${names})`);
-    }
-    const short = rest.join(":");
-    const uploaded = resolveLocalName({ namespace: server.namespace, username, name: short });
-    return { server, channel: uploaded };
 }
 /**
  * The runtime endpoint for a subscribed channel: the address and the group are derived from the

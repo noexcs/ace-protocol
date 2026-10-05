@@ -121,8 +121,7 @@ function writeConfig(local: string): string {
 		`${JSON.stringify(
 			{
 				username,
-				servers: { local: { url, namespace } },
-				subscribe: [local],
+				servers: { local: { url, namespace, subscribe: [local] } },
 			},
 			null,
 			2,

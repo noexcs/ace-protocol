@@ -51,7 +51,7 @@ describe("resolveAceConfig without a configuration file", () => {
 
 	it("rejects a document with no servers", () => {
 		const cwd = temporaryDirectory();
-		writeFileSync(join(cwd, ACE_CONFIG_FILENAME), JSON.stringify({ username: "claude", subscribe: ["inbox"] }));
+		writeFileSync(join(cwd, ACE_CONFIG_FILENAME), JSON.stringify({ username: "claude" }));
 		expect(() => resolveAceConfig({ cwd, env: {} })).toThrow();
 	});
 });

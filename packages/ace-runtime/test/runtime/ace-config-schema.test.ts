@@ -16,7 +16,13 @@ describe("ACE local configuration JSON Schema", () => {
 		["a username with punctuation", { username: "ci.runner-7@host", servers }],
 		["a namespace", { username: "u", servers: { lan: { url: "redis://x", namespace: "lan" } } }],
 		["a server description", { username: "u", servers: { lan: { url: "redis://x", description: "the LAN box" } } }],
-		["short subscribe names", { username: "u", servers, subscribe: ["inbox", "lan:ci-failures"] }],
+		[
+			"subscribe names inside a server",
+			{
+				username: "u",
+				servers: { local: { url: "redis://127.0.0.1:6379", subscribe: ["inbox", "lan:ci-failures"] } },
+			},
+		],
 		["a default activation", { username: "u", servers, defaultActivation: "manual" }],
 		["manual retention", { username: "u", servers, manual: { max: 5, ttlMs: 60_000 } }],
 		["a pinned global file", { username: "u", servers, projectConfig: "ignore" }],
@@ -32,8 +38,9 @@ describe("ACE local configuration JSON Schema", () => {
 		["a colon in a namespace", { username: "u", servers: { lan: { url: "redis://x", namespace: "a:b" } } }],
 		["a colon in a server name", { username: "u", servers: { "a:b": { url: "redis://x" } } }],
 		["an empty username", { username: "", servers }],
-		["a non-string subscribe", { username: "u", servers, subscribe: "inbox" }],
-		["an empty subscribe entry", { username: "u", servers, subscribe: [""] }],
+		["a top-level subscribe", { username: "u", servers, subscribe: ["inbox"] }],
+		["a non-string subscribe", { username: "u", servers: { local: { url: "redis://x", subscribe: "inbox" } } }],
+		["an empty subscribe entry", { username: "u", servers: { local: { url: "redis://x", subscribe: [""] } } }],
 		["a delegated defaultActivation", { username: "u", servers, defaultActivation: "default" }],
 		["an unknown key inside manual", { username: "u", servers, manual: { keep: 5 } }],
 		["a projectConfig other than ignore", { username: "u", servers, projectConfig: "merge" }],
@@ -50,7 +57,10 @@ describe("ACE local configuration JSON Schema", () => {
 
 	// Semantic rules JSON Schema cannot express: the validator owns them alone.
 	it.each<[string, unknown]>([
-		["duplicated subscription names", { username: "u", servers, subscribe: ["inbox", "inbox"] }],
+		[
+			"duplicated subscription names",
+			{ username: "u", servers: { local: { url: "redis://127.0.0.1:6379", subscribe: ["inbox", "inbox"] } } },
+		],
 	])("rejects %s in code although the schema cannot see it", (_name, document) => {
 		expect(schemaErrors(document, schema)).toEqual([]);
 		expect(() => parseAceConfig(document, ".ace.json")).toThrow(/configured twice/);

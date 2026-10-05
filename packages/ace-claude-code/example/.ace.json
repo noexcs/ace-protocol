@@ -4,9 +4,9 @@
 		"local": {
 			"url": "redis://127.0.0.1:6379",
 			"namespace": "ace",
-			"description": "The ACE server this machine talks to"
+			"description": "The ACE server this machine talks to",
+			"subscribe": ["inbox"]
 		}
 	},
-	"subscribe": ["inbox"],
 	"defaultActivation": "next_turn"
 }

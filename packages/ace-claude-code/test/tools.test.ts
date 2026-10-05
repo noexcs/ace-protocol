@@ -227,8 +227,7 @@ beforeAll(() => {
 		join(dir, ".ace.json"),
 		JSON.stringify({
 			username: "claude",
-			servers: { local: { url: SERVER_URL, namespace: "ace" } },
-			subscribe: ["inbox"],
+			servers: { local: { url: SERVER_URL, namespace: "ace", subscribe: ["inbox"] } },
 			defaultActivation: "next_turn",
 		}),
 	);

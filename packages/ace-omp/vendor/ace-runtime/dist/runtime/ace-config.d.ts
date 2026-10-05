@@ -17,6 +17,13 @@ export interface ServerEntry {
     /** Namespace this server owns; keys live under it. Defaults to `ace`. */
     namespace?: string;
     description?: string;
+    /**
+     * Channel names this session reads **on this server**: a subscription belongs to the server that
+     * carries it, because the name is uploaded under that server's namespace and read over its url.
+     * A short name (`ci-ok`) is uploaded as `<namespace>:<username>:<name>`; a full channel name passes
+     * through. Absent: direct messages only (the derived inbox).
+     */
+    subscribe?: string[];
 }
 /**
  * Runtime configuration as stored in {@link ACE_CONFIG_FILENAME}.
@@ -30,8 +37,6 @@ export interface AceConfigFile {
     servers: Record<string, ServerEntry>;
     /** Activation used when neither the subscription nor the message decides. */
     defaultActivation?: ConcreteActivation;
-    /** Channel names this session subscribes to. Absent: direct messages only (the derived inbox). */
-    subscribe?: string[];
     /** Retention limits for `manual` events (defaults: 100 events, 24h). */
     manual?: {
         max?: number;
@@ -58,6 +63,8 @@ export interface ResolvedServer {
     url: string;
     namespace: string;
     description?: string;
+    /** Channel names this session reads on this server, as written in the file. */
+    subscribe?: string[];
 }
 /**
  * One configured subscription after resolution: which server carries it, and the channel name on it.
@@ -115,20 +122,6 @@ export declare function resolveAceConfig(options: {
     /** Host-owned global candidates, in the host's own order — see {@link loadAceConfig}. */
     globalConfigPaths?: readonly string[];
 }): ResolvedAceConfig;
-/**
- * Resolve one configured subscription name to a server and its uploaded channel name.
- *
- * A short name (`ci-failures`) needs a single server to default to; with several, qualify it
- * (`lan:ci-failures`) rather than let the runtime guess which one was meant.
- */
-export declare function resolveSubscription(options: {
-    servers: readonly ResolvedServer[];
-    username: string;
-    name: string;
-}): {
-    server: ResolvedServer;
-    channel: string;
-};
 /**
  * The runtime endpoint for a subscribed channel: the address and the group are derived from the
  * channel name, so nothing here can disagree with what a peer computes.

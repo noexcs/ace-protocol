@@ -107,24 +107,25 @@ The package declares a `bin` entry, so after install the launcher is on `PATH` a
 ## Configure
 
 `.ace.json` is read from the bridge's working directory — the same directory the Codex thread runs in — and declares a
-`username`, one or more `servers` (each a broker URL and the namespace it owns), and the `subscribe` channel names,
-exactly as for the Pi host (see `ace-runtime` for the full key set). A channel **name is the address**: a short
-subscribe entry is completed to `<namespace>:<username>:<name>`, and its Redis stream key and consumer group are
+`username`, one or more `servers` (each a broker URL, the namespace it owns, and an optional `subscribe` list of the
+channel names this session reads **on that server**), exactly as for the Pi host (see `ace-runtime` for the full key
+set). A channel **name is the address**: a short subscribe entry is completed to `<namespace>:<username>:<name>`
+under its own server's namespace (a full name passes through), and its Redis stream key and consumer group are
 derived from that name — there is no separate stream/group config, and no `publish` list to declare. A minimal example:
 
 ```json
 {
   "username": "alice",
   "servers": {
-    "lan": { "url": "redis://192.168.2.11:6379", "namespace": "ace" }
+    "lan": { "url": "redis://192.168.2.11:6379", "namespace": "ace", "subscribe": ["from-ci"] }
   },
-  "defaultActivation": "next_turn",
-  "subscribe": ["from-ci"]
+  "defaultActivation": "next_turn"
 }
 ```
 
-`subscribe: ["from-ci"]` on the single `lan` server means the channel `ace:alice:from-ci`. With more than one server,
-qualify a subscription with the server name (`"lan:from-ci"`) so the runtime knows which directory to read it in.
+`subscribe: ["from-ci"]` on the `lan` server means the channel `ace:alice:from-ci`. A subscription always belongs to
+the server that carries it, so a short name is completed under *that* server's namespace and there is nothing to
+qualify.
 
 ### Agent directory (auto-registration)
 

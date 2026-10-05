@@ -130,18 +130,28 @@ export interface EndpointConfig { /* 上述键 */ }
 export interface AceConfigFile {
 	/** 命名层级第二段（`<ns>:<username>:<name>`）；不含冒号。文件里可省，解析时按 文件→全局→$USER 继承 */
 	username: string;
-	/** 非空；`{ "<name>": { url, namespace?, description? } }`，名字与 namespace 不含冒号 */
+	/** 非空；`{ "<name>": { url, namespace?, description?, subscribe? } }`，名字与 namespace 不含冒号 */
 	servers: Record<string, ServerEntry>;
-	/** 本会话订阅的 channel 名；数组内不得重复。缺省 = 只收直投（派生的收件箱） */
-	subscribe?: string[];
 	defaultActivation?: ConcreteActivation;   // immediate | next_turn | manual
 	manual?: { max?: number; ttlMs?: number }; // 默认 100 / 24h
 	projectConfig?: "ignore";                  // 只在全局文件里有意义：压过项目文件
 }
 
-export interface ServerEntry { url: string; namespace?: string; description?: string }
+export interface ServerEntry {
+	url: string;
+	namespace?: string;
+	description?: string;
+	/** 该 server 上本会话订阅的 channel 名；数组内不得重复。缺省 = 只收直投 */
+	subscribe?: string[];
+}
 
-export interface ResolvedServer { name: string; url: string; namespace: string; description?: string }
+export interface ResolvedServer {
+	name: string;
+	url: string;
+	namespace: string;
+	description?: string;
+	subscribe?: string[];
+}
 
 /** 配置层只有名字：地址、组、transport 设置都由 subscriptionEndpoint 派生 */
 export interface ResolvedSubscription {
@@ -165,16 +175,11 @@ export interface ResolvedAceConfig {
 transport/stream/group/config/options —— 频道与订阅关系全部从名字派生，见 §5。
 `docs/ace-plan.md` 里的 `registry: { url, prefix? }` 是旧形状，别照抄。
 
-订阅的解析与派生：
+订阅的解析与派生：`resolveAceConfig` 逐 server 把它配置的 `subscribe` 名字补全为
+`(server, channel)`（短名按**该 server** 的 namespace 补成 `<ns>:<username>:<name>`，段数 ≥ 3 的全名原样透传），
+每台 server 各用它的 namespace，不跨 server 猜测。
 
 ```ts
-/** 短名（`ci-failures`）只在单 server 时默认补全；多 server 必须写 `<server>:<name>`，否则抛 */
-export function resolveSubscription(options: {
-	servers: readonly ResolvedServer[];
-	username: string;
-	name: string;
-}): { server: ResolvedServer; channel: string };
-
 /** 订阅的地址与消费组都从 channel 名派生，对端算出来的必与此一致 */
 export function subscriptionEndpoint(options: {
 	channel: string;
@@ -307,8 +312,8 @@ export function addressOf(endpoint: EndpointConfig): string;
    - `await registry.register({ sender, codingAgent, sessionId, cwd })` → `Registration { channel, stream, group }`。
      注册失败就 `registry.close()` 并跳过该 server（目录不可用不该拦住会话）；
    - 收件箱订阅 = `subscriptionEndpoint({ channel: sender, name: SESSION_INBOX（多 server 加前缀）, url: server.url, namespace: server.namespace, sender })`。
-2. **订阅**：配置里的 `subscribe` 名字经 `resolveSubscription` 解析到 `(server, channel)` 后，同样用
-   `subscriptionEndpoint` 派生（`group = 该 server 的 sender`）。
+2. **订阅**：逐 server，把它配置的 `subscribe` 名字在该 server 的 namespace 下补全为 `(server, channel)`
+   （全名原样透传），再用 `subscriptionEndpoint` 派生（`group = 该 server 的 sender`）。
 3. **装配**：`subscriptions = [...各 server 的收件箱订阅, ...配置订阅]` →
    `createTransports(subscriptions, { onError, metrics, onDropped })` →
    `new AceRuntime({ engine, subscribe: subscriptions, transports, ... })` → `await runtime.start()`。

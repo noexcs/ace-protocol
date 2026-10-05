@@ -35,14 +35,14 @@
 |---|---|---|---|
 | `$schema` | string | 否 | 编辑器提示，运行时忽略 |
 | `username` | string | 否 | 真实用户名/昵称，命名层级的第二段（`<ns>:<username>:<name>`）。**不含冒号**。省略时按下面的继承链取值 |
-| `servers` | object（非空） | **是** | `{ "<name>": { url, namespace?, description? } }`；server 名与 `namespace` **不含冒号**，`namespace` 缺省 `ace` |
-| `subscribe` | string[]（非空） | 否 | 本会话订阅的频道名；数组内不得重复；缺省表示只收直投（派生收件箱） |
+| `servers` | object（非空） | **是** | `{ "<name>": { url, namespace?, description?, subscribe? } }`；server 名与 `namespace` **不含冒号**，`namespace` 缺省 `ace`；`subscribe` 是该 server 上的频道名数组（非空、不得重复），缺省表示只收直投（派生收件箱） |
 | `defaultActivation` | enum | 否 | `immediate` \| `next_turn` \| `manual`；缺省由 runtime 取 `next_turn` |
 | `manual` | `{ max?, ttlMs? }` | 否 | manual 事件保留上限；缺省 100 条 / 24h |
 | `projectConfig` | `"ignore"` | 否 | **只在全局文件里有意义**：让该文件压过项目 `.ace.json`，使克隆下来的仓库不能改掉用户集中配置的会话 |
 
-每个 `servers["<name>"]` 只允许 `url`（必填，非空；`${VAR}` 插值）、`namespace?`、`description?`。
-`.ace.json` 里**没有** `sender`、`publish`、`registry`，也没有 transport/stream/group/config/options —— 频道与订阅关系全部从名字派生，见 §3。
+每个 `servers["<name>"]` 只允许 `url`（必填，非空；`${VAR}` 插值）、`namespace?`、`description?`、`subscribe?`。
+`subscribe` **属于承载它的那台 server**：短名（`ci-ok`）按该 server 的 `namespace` 补全为 `<ns>:<username>:<name>`，全名原样透传。
+`.ace.json` 里**没有**顶层 `subscribe`，也**没有** `sender`、`publish`、`registry`，也没有 transport/stream/group/config/options —— 频道与订阅关系全部从名字派生，见 §3。
 
 未知键一律报错（逐键校验，不静默忽略）。
 
@@ -358,7 +358,7 @@ List this session's ACE channels: the channels it reads — its own inbox, named
   → 逐台 server：senderName(ns, username, codingAgent, sessionId)
       → AgentRegistry.register（建 channel 流+组 → ZADD/HSET 公示）
       → 派生 session-inbox 订阅（channel = 该 server 上的 sender）
-  → 配置的 subscribe 名字解析为 (server, channel) → 派生订阅（group = 该 server 的 sender）
+  → 逐 server：该 server 配置的 subscribe 名字在其 namespace 下补全为 (server, channel) → 派生订阅（group = 该 server 的 sender）
   → createTransports（每订阅一个 transport；start 时 ensureGroup，从队尾起）
   → 启动 AceRuntime（dispatcher + 去重窗口 + manual store + spool + dead-letter sink）
   → 注册 ace_publish（带通道目录描述）/ ace_agents / ace_channels 与 /ace 命令

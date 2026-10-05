@@ -5,6 +5,7 @@
 	"description": "Local deployment information only: who this user is, and which servers this machine talks to. Channels, subscriptions and presence live on a server.",
 	"type": "object",
 	"required": ["servers"],
+	"additionalProperties": false,
 	"properties": {
 		"$schema": {
 			"type": "string",
@@ -28,14 +29,6 @@
 				"$ref": "#/definitions/server"
 			},
 			"description": "Servers this machine talks to. Each one is a complete ACE domain: Redis, a member directory, and the channels on it."
-		},
-		"subscribe": {
-			"type": "array",
-			"items": {
-				"type": "string",
-				"minLength": 1
-			},
-			"description": "Channel names this session subscribes to. A short name (ci-failures) is completed to <ns>:<username>:ci-failures; with several servers, qualify it as <server>:<name>. Omit for direct messages only."
 		},
 		"defaultActivation": {
 			"type": "string",
@@ -82,6 +75,14 @@
 				"description": {
 					"type": "string",
 					"description": "Free-form note about this server, for humans."
+				},
+				"subscribe": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					},
+					"description": "Channel names this session reads on this server: a subscription belongs to the server that carries it. A short name (ci-failures) is uploaded as <ns>:<username>:<name> under this server's namespace; a full channel name passes through. Omit for direct messages only."
 				}
 			}
 		}
