@@ -1,6 +1,6 @@
 {
 	"name": "ace-claude-code",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "ACE (Agent Context Event Protocol) 0.1 for Claude Code: an MCP channel plugin that turns broker events into turns in a live session.",
 	"license": "MIT",
 	"type": "module",

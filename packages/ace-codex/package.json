@@ -1,6 +1,6 @@
 {
 	"name": "ace-codex",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "ACE (Agent Context Event Protocol) 0.1 bridge for Codex: drives a live `codex app-server` session from external events — an ACE event becomes a turn, a busy session gets steered mid-turn, and manual events are held by the ACE runtime's pending store.",
 	"type": "module",
 	"private": true,

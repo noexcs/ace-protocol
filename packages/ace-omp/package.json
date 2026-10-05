@@ -1,6 +1,6 @@
 {
 	"name": "ace-omp",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "ACE (Agent Context Event Protocol) 0.1 host plugin for oh-my-pi / Pi: external events (CI results, alerts, peer agents) as an active input to a running coding session.",
 	"private": false,
 	"type": "module",
