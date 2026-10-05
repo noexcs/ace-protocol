@@ -110,8 +110,11 @@ export interface ParticipantView {
 	lastSeen?: EpochMillis;
 	/** 不续期即过期的时间点。 */
 	expiresAt: EpochMillis;
-	/** 可寻址时的落点：它在哪台 server 上，以及它的 member 全名（收件箱流由约定派生）。 */
-	inbox?: { server: ServerName; member: string };
+	/**
+	 * 直投落点就是**以它自己命名的 channel**（= `name`）✓ —— 所以这里没有单独的"收件箱"字段：
+	 * 名字即频道名，目录只是"这些自动 channel 在线"的索引。
+	 */
+	addressable?: boolean;
 }
 
 /** 本会话接的一条 channel，即模型/UI 看到的视图：不含连接凭据，按需才带计数器。 */
@@ -178,8 +181,9 @@ export interface ServerDescriptor {
 	 * 这台 server 的**命名空间**：它拥有的键都落在其下 —— 成员目录、频道、每会话流。默认 `ace`。
 	 * **不含冒号**（全名的第二段）。
 	 *
-	 * 键布局：`<ns>:agents`（成员 ZSet）、`<ns>:entry`（条目 hash）、`<ns>:events:<member>`（会话收件箱流）、
-	 * `<ns>:ch:<name>`（频道流）。**地址由约定派生**，所以频道记录里没有地址字段。
+	 * 键布局：`<ns>:agents`（在线 participant 目录 ZSet）、`<ns>:entry`（目录条目 hash）、
+	 * `<ns>:ch:<name>`（频道流 —— **在线会话的收件箱也是其中之一** ✓）。**地址由约定派生** ✓，
+	 * 所以频道记录里没有地址字段 ✓。
 	 */
 	namespace?: string;
 	description?: string;
@@ -234,23 +238,24 @@ export interface ServerConfigFile {
 }
 
 /**
- * 一个会话在**一台** server 上的身份：同一个 member 名在多台 server 上各有一条条目，
- * 各自心跳、各自 TTL。
+ * 一次注册的产物：**一个会话在某一台 server 上的存在**。
  *
- * `member` 的上传形式是 **`<ns>:<username>:<codingAgent>:<sessionId>`**（如 `ace:noexcs:oh-my-pi:01a10a…`，
- * 最后一段允许冒号）；它**不含 server 段**（不上传）。多 server 时，本地区分与工具输出用
- * `lan:ace:noexcs:oh-my-pi:01a10a…`。
+ * 只有两样：在哪台 server 上 ✓、它的 channel 名是什么 ✓ —— 而那正是它的 **sender 名**
+ * （`<ns>:<username>:<codingAgent>:<sessionId>` ✓）。收件箱流、组、心跳都从这两样派生 ✓，
+ * 所以这里**没有 member 字段** ✗：member 曾经只是 sender 的另一个说法 ✓，而它本质上就是
+ * "该 sender 自动注册的接收 channel" ✓。
  */
-export interface ServerMembership {
+export interface ServerRegistration {
 	server: ServerName;
-	member: string;
-	/** 本会话在该 server 上的收件箱流与组：由 server 侧创建，随会话生命周期收放。 */
-	stream: string;
-	group: string;
+	/** = 该会话的 sender 名；也是它的收件箱 channel 名，别人拿它当 `target` ✓。 */
+	channel: string;
 }
 
 /**
- * 注册中心里的一条频道记录：**没有 broker、也没有地址** —— 它在 `server` 上，地址由约定派生。只剩策略与元数据。
+ * 注册中心里的一条**频道记录**：**没有 broker、也没有地址** —— 它在 `server` 上，地址由约定派生。
+ *
+ * 注意：**在线会话的收件箱也是频道** ✓（名为该会话的 sender ✓，随会话自动注册/回收）——
+ * 所以这张表只有一种"东西"，目录只是"哪些自动频道现在在线"的索引 ✓，不存在第二种名字 ✗。
  */
 export interface ServerChannelRecord {
 	server: ServerName;
@@ -264,7 +269,7 @@ export interface ServerChannelRecord {
 	owner?: string;
 }
 
-/** 投递一个事件所需的全部：那一台 server，以及目标（频道全名或 member 全名）。 */
+/** 投递一个事件所需的全部：那一台 server，以及目标频道全名（直投对方 = 填它的 sender 名 ✓）。 */
 export interface PublishTarget {
 	server: ServerName;
 	target: string;
@@ -305,10 +310,10 @@ export interface ChannelDraft {
  *   - `BrokerId` / `ServerId` → **`ServerName`**；`prefix` → **`namespace`**（代码里 `RegistryDefaults.prefix`、
  *     配置键、文档、两个宿主 README 全改）；
  *   - 默认命名空间由 `ace:agents` 改为 **`ace`**（覆盖目录 + 频道 + 会话流），键布局随之变为
- *     `<ns>:agents` / `<ns>:entry` / `<ns>:events:<member>` / `<ns>:ch:<name>` —— 现存部署是一次键名迁移；
- *   - **member / sender 加 ns 与 username 前缀**：`<codingAgent>:<sessionId>` →
- *     `<ns>:<username>:<codingAgent>:<sessionId>`（**线上可见**的变化，两个宿主的 vendored 核心一起同步）；
- *     频道名同理 `<ns>:<username>:<name>`；
+ *     `<ns>:agents` / `<ns>:entry` / `<ns>:ch:<name>`（**没有第 4 族键**：收件箱就是频道 ✓）—— 现存部署是一次键名迁移；
+ *   - **sender 名带 ns 与 username 前缀**：`<codingAgent>:<sessionId>` → `<ns>:<username>:<codingAgent>:<sessionId>`
+ *     （**线上可见**的变化，两个宿主的 vendored 核心一起同步）；它就是该会话的收件箱 channel 名 ✓，频道名同理
+ *     `<ns>:<username>:<name>`；
  *   - 配置文件由 `registry` + `brokers[]` → `username` + `servers{}`；
  *   - **描述符归位（已定）**：`ChannelDescriptor` / `ParticipantDescriptor` / `Subscription` 从协议文件
  *     （`ace-contracts.ts`）移到本文件 —— 信封里本来就没有 channel 字段，它们都是运行时/配置概念 ✓。
@@ -406,7 +411,7 @@ export interface AceChannelTool {
  *
  * 1. **工具名**：`ace_agents` → `ace_participants`（工具描述、文档、两条一致性测试一起改）。
  * 2. **信封字段**：删除 `sessionId`（协议与 RFC 已删；代码、`schema/ace-message-0.1.schema.json`、
- *    三个宿主待改；注册表**内部**的 `sessionId` 保留 —— 它用来拼 member 名与收件箱流名）。
+ *    三个宿主待改；注册表**内部**的 `sessionId` 保留 —— 它用来拼 sender 名（也就是收件箱 channel 名））。
  * 3. **载荷类型**：实现里是 `body: string`，契约是不透明的 `Body`（`unknown`）。
  * 4. **通道配置**：实现里是 `.ace.json` 的 `config`；目标是频道记录（`ServerChannelRecord`，只有
  *    `publish`/`consume` 策略与元数据）住进 server，本地文件只剩 `username` + `servers{}`
@@ -427,9 +432,10 @@ export interface AceChannelTool {
 /**
  * 一台 **Server**（今天的 Redis）承载三样东西，它们是这套模型里唯一的**拓扑真值来源**：
  *
- * 1. **成员目录**：member、TTL、心跳（`ParticipantView` 的来源），键 `<ns>:agents` / `<ns>:entry`；
+ * 1. **participant 目录**：在线 sender（= 它们各自自动注册的收件箱 channel）、TTL、心跳
+ *    （`ParticipantView` 的来源），键 `<ns>:agents` / `<ns>:entry`；
  * 2. **频道目录**：`ServerChannelRecord`（只有策略与元数据 —— 地址由约定派生，没有端点字段）；
- * 3. **会话流与频道流**：`<ns>:events:<member>`（每会话收件箱）与 `<ns>:ch:<name>`。
+ * 3. **频道流**：`<ns>:ch:<name>` —— 普通频道与在线会话的收件箱**走同一条键路** ✓。
  *
  * 本地文件（`ServerConfigFile`）只留**部署信息**：`username` + 每个 server 的连接与命名空间。
  * 端点与凭据**永不进 server** ✗ —— 这正是本期改动的核心：目录条目再也不会广播别人的连接信息。

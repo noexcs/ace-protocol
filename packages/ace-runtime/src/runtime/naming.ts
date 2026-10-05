@@ -7,7 +7,11 @@
  * ```
  *
  * 前三段不含冒号、最后一段允许冒号，所以"按固定段数切开、余下全是名字"是无歧义的。
- * 这个模块是这套约定的唯一实现处：键名、member 名、频道名都从这里派生，宿主与工具都不再自己拼。
+ * 这个模块是这套约定的唯一实现处：键名、sender 名、频道名都从这里派生，宿主与工具都不再自己拼。
+ *
+ * **只有一个名字空间：channel** ✓。一个在线 participant 的收件箱，就是**以它自己的 sender 名命名的
+ * channel**（随会话自动注册、自动回收）✓ —— 所以没有单独的 "member" 概念：直投对方，就是往那个
+ * channel 发；目录，就是这些自动 channel 的索引。
  */
 
 /** 命名空间默认值。 */
@@ -16,11 +20,13 @@ export const NAMESPACE_DEFAULT = "ace";
 /** 冒号：段的边界，也是禁止出现在前三段里的字符。 */
 const SEGMENT_SEPARATOR = ":";
 
-/** `agents` / `entry` / `events` / `ch` 这几个键段，是命名空间私有词汇，别处不要硬编码。 */
+/** 命名空间私有的键段，别处不要硬编码。 */
 export const NAMESPACE_KEYS = {
-	members: "agents",
+	/** 在线 participant 目录（ZSet）。 */
+	directory: "agents",
+	/** 目录条目（Hash）。 */
 	entry: "entry",
-	events: "events",
+	/** 频道流。 */
 	channels: "ch",
 } as const;
 
@@ -42,8 +48,11 @@ export function channelName(namespace: string, username: string, name: string): 
 	return [namespace, username, name].join(SEGMENT_SEPARATOR);
 }
 
-/** 上传形式的成员名：`<ns>:<username>:<codingAgent>:<sessionId>`。 */
-export function memberName(options: {
+/**
+ * 一个会话的 **sender 名**，也就是它自动注册的那条收件箱 channel 的名字：
+ * `<ns>:<username>:<codingAgent>:<sessionId>`。
+ */
+export function senderName(options: {
 	namespace: string;
 	username: string;
 	codingAgent: string;
@@ -70,29 +79,24 @@ export function resolveLocalName(options: { namespace: string; username: string;
 	return channelName(options.namespace, options.username, options.name);
 }
 
-/** 频道流键：`<ns>:ch:<上传名>`。 */
+/** 频道流键：`<ns>:ch:<上传名>`。收件箱也是 channel，所以走同一条键路 ✓。 */
 export function channelStreamKey(namespace: string, uploaded: string): string {
 	return [namespace, NAMESPACE_KEYS.channels, uploaded].join(SEGMENT_SEPARATOR);
 }
 
-/** 会话收件箱流键：`<ns>:events:<member>`。 */
-export function eventsStreamKey(namespace: string, member: string): string {
-	return [namespace, NAMESPACE_KEYS.events, member].join(SEGMENT_SEPARATOR);
+/** 在线 participant 目录键（ZSet）。 */
+export function directoryKey(namespace: string): string {
+	return [namespace, NAMESPACE_KEYS.directory].join(SEGMENT_SEPARATOR);
 }
 
-/** 成员目录键（ZSet）。 */
-export function membersKey(namespace: string): string {
-	return [namespace, NAMESPACE_KEYS.members].join(SEGMENT_SEPARATOR);
-}
-
-/** 成员条目键（Hash）。 */
-export function entryKey(namespace: string): string {
+/** 目录条目键（Hash）。 */
+export function directoryEntryKey(namespace: string): string {
 	return [namespace, NAMESPACE_KEYS.entry].join(SEGMENT_SEPARATOR);
 }
 
 /**
- * 从上传名里取出 username（第二段）。用于把别人的频道归到某个人名下做展示，
- * 不用于鉴权 —— 名字是自称，同 server 的凭据域才是边界。
+ * 从上传名里取出 username（第二段）。用于展示，**不用于鉴权** —— 名字是自称，
+ * 同 server 的凭据域才是边界。
  */
 export function usernameOf(uploaded: string): string | undefined {
 	const segments = uploaded.split(SEGMENT_SEPARATOR);

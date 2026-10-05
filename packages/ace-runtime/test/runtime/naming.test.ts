@@ -3,30 +3,32 @@ import {
 	assertNoColon,
 	channelName,
 	channelStreamKey,
-	entryKey,
-	eventsStreamKey,
+	directoryEntryKey,
+	directoryKey,
 	localName,
-	memberName,
-	membersKey,
 	NAMESPACE_DEFAULT,
 	namespaceOf,
 	resolveLocalName,
+	senderName,
 	usernameOf,
 } from "../../src/runtime/naming.ts";
 
 /**
- * The naming grammar is the one thing every host and tool must agree on, so it lives in one module
- * and is pinned here: `<server>:<ns>:<username>:<name>` locally, `<ns>:<username>:<name>` uploaded.
+ * The naming grammar is the one thing every host and tool must agree on, so it lives in one module and
+ * is pinned here: `<server>:<ns>:<username>:<name>` locally, `<ns>:<username>:<name>` uploaded.
+ * There is one name space — channels; a session's inbox is the channel named by its own sender.
  */
 describe("naming", () => {
 	it("builds the uploaded channel name", () => {
 		expect(channelName("ace", "noexcs", "ci-failures")).toBe("ace:noexcs:ci-failures");
 	});
 
-	it("builds the uploaded member name", () => {
-		expect(memberName({ namespace: "ace", username: "noexcs", codingAgent: "oh-my-pi", sessionId: "01a10a" })).toBe(
-			"ace:noexcs:oh-my-pi:01a10a",
-		);
+	it("names a session's inbox channel after its sender", () => {
+		const sender = senderName({ namespace: "ace", username: "noexcs", codingAgent: "oh-my-pi", sessionId: "01a10a" });
+
+		expect(sender).toBe("ace:noexcs:oh-my-pi:01a10a");
+		// The inbox is a channel like any other — same key path, no separate concept.
+		expect(channelStreamKey("ace", sender)).toBe("ace:ch:ace:noexcs:oh-my-pi:01a10a");
 	});
 
 	it("defaults the namespace", () => {
@@ -50,10 +52,8 @@ describe("naming", () => {
 	});
 
 	it("derives the keys a namespace owns", () => {
-		expect(membersKey("ace")).toBe("ace:agents");
-		expect(entryKey("ace")).toBe("ace:entry");
-		expect(eventsStreamKey("ace", "ace:noexcs:oh-my-pi:01a10a")).toBe("ace:events:ace:noexcs:oh-my-pi:01a10a");
-		expect(channelStreamKey("ace", "ace:noexcs:ci-failures")).toBe("ace:ch:ace:noexcs:ci-failures");
+		expect(directoryKey("ace")).toBe("ace:agents");
+		expect(directoryEntryKey("ace")).toBe("ace:entry");
 	});
 
 	it("reads the username back out of an uploaded name", () => {
