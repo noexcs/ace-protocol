@@ -42,10 +42,24 @@ export declare const TOOL_TEXT: {
         };
     };
     readonly channels: {
-        readonly description: "List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not — address live peers with ace_agents.";
+        readonly description: "List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not";
+        /**
+         * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
+         * has no directory tool), so it is a separate piece a host appends or drops. Compose with
+         * {@link channelsToolText} rather than concatenating by hand.
+         */
+        readonly agentsPointer: "— address live peers with ace_agents.";
         readonly guidelines: readonly ["Use a `publish` channel name, or a live member from ace_agents, as the ace_publish `target`."];
     };
 };
+/**
+ * The `ace_channels` description for a host. The tail pointing at `ace_agents` belongs only to hosts
+ * that register that tool, so a host without it passes `{ agentsTool: false }` and drops the pointer
+ * instead of rewording the shared text.
+ */
+export declare function channelsToolText(options?: {
+    agentsTool?: boolean;
+}): string;
 /** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
 export declare const PUBLISH_PARAMETERS: Type.TObject<{
     body: Type.TString;

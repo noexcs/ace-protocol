@@ -65,6 +65,7 @@ import {
 	buildPublishToolText,
 	CHANNELS_PARAMETERS,
 	channelListingInput,
+	channelsToolText,
 	createPublishers,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
@@ -360,7 +361,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.channels,
 			label: "ACE Channels",
-			description: TOOL_TEXT.channels.description,
+			description: channelsToolText(),
 			promptGuidelines: [...TOOL_TEXT.channels.guidelines],
 			parameters: CHANNELS_PARAMETERS,
 			async execute() {

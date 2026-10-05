@@ -1,0 +1,66 @@
+import { readFileSync } from "node:fs";
+import { ACE_TOOL_NAMES, channelsToolText, TOOL_TEXT } from "ace-runtime";
+import { describe, expect, it } from "vitest";
+import { buildToolDefinitions } from "../src/tools.ts";
+
+/**
+ * The tool surface is defined once, in `ace-runtime`, and every host binds it. This host used to keep
+ * its own copy of the text — which drifts silently, leaving the model with two different descriptions
+ * of the same tool depending on the host. These tests fail the moment a copy comes back.
+ */
+const shared = buildToolDefinitions();
+const publishDef = shared.find((tool) => tool.name === ACE_TOOL_NAMES.publish);
+const channelsDef = shared.find((tool) => tool.name === ACE_TOOL_NAMES.channels);
+
+describe("tool text unity with the runtime spec", () => {
+	it("registers the shared tools under the runtime's names", () => {
+		expect(publishDef).toBeDefined();
+		expect(channelsDef).toBeDefined();
+	});
+
+	it("uses the runtime's publish text verbatim when there is no member to name", () => {
+		expect(publishDef?.description).toBe(TOOL_TEXT.publish.intro);
+	});
+
+	it("drops only the ace_agents pointer from the shared channels text", () => {
+		// This host registers no `ace_agents` tool, so it takes the pointer-free composition…
+		expect(channelsDef?.description).toBe(channelsToolText({ agentsTool: false }));
+		// …and that composition is the runtime's own text, not a rewording of it.
+		expect(channelsDef?.description).toBe(TOOL_TEXT.channels.description);
+	});
+
+	it("takes the publish parameter schema from the runtime", () => {
+		const schema = publishDef?.inputSchema as { required?: string[]; properties?: Record<string, unknown> };
+
+		expect(schema.required).toEqual(["body", "target"]);
+		expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["activation", "body", "target"]);
+	});
+
+	it("adds the directory member to the shared text instead of rewording it", () => {
+		const member = "claude-code:sess-1";
+		const withMember = buildToolDefinitions(member).find((tool) => tool.name === ACE_TOOL_NAMES.publish);
+
+		expect(withMember?.description.startsWith(TOOL_TEXT.publish.intro)).toBe(true);
+		expect(withMember?.description).toContain(member);
+	});
+
+	it("keeps no literal copy of the shared text in its sources", () => {
+		// A literal here is a second source of truth: exactly what the model must never see. The shared
+		// text belongs to `ace-runtime`, and this host reaches it through the import, by name.
+		const sources = ["../src/tools.ts", "../src/server.ts"].map((path) =>
+			readFileSync(new URL(path, import.meta.url), "utf8"),
+		);
+		const sharedText = [
+			TOOL_TEXT.publish.intro,
+			...TOOL_TEXT.publish.guidelines,
+			...Object.values(TOOL_TEXT.publish.params),
+			TOOL_TEXT.channels.description,
+			TOOL_TEXT.channels.agentsPointer,
+			...TOOL_TEXT.channels.guidelines,
+		];
+
+		for (const text of sharedText) {
+			for (const source of sources) expect(source).not.toContain(text);
+		}
+	});
+});

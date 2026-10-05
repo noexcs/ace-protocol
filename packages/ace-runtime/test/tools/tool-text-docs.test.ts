@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ACE_TRUST_POLICY } from "../../src/agent/pi-adapter.ts";
-import { TOOL_TEXT } from "../../src/tools/spec.ts";
+import { channelsToolText, TOOL_TEXT } from "../../src/tools/spec.ts";
 
 /**
  * The contracts document is a norm: it says what the model is told, so it has to quote the tool text
@@ -18,7 +18,7 @@ const documented = [
 	TOOL_TEXT.agents.description,
 	...TOOL_TEXT.agents.guidelines,
 	...Object.values(TOOL_TEXT.agents.params),
-	TOOL_TEXT.channels.description,
+	channelsToolText(),
 	...TOOL_TEXT.channels.guidelines,
 ];
 

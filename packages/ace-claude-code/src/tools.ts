@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { AcePublisher, PendingAceEvent, ResolvedAceConfig } from "ace-runtime";
-import { describeSender, hostFacts, validateAceMessage } from "ace-runtime";
+import {
+	ACE_TOOL_NAMES,
+	CHANNELS_PARAMETERS,
+	channelsToolText,
+	describeSender,
+	hostFacts,
+	PUBLISH_PARAMETERS,
+	TOOL_TEXT,
+	validateAceMessage,
+} from "ace-runtime";
 
 /** One JSON Schema `inputSchema` for an MCP tool. */
 type JsonSchema = Record<string, unknown>;
@@ -56,21 +65,12 @@ export interface ToolContext {
 }
 
 /**
- * The tool text the model sees, in one place: the definitions read it from here so the tools stay
- * word-for-word consistent with the Pi extension and the contracts document. The `ace_agents` tool
- * has no counterpart on this host (see {@link ToolContext}).
+ * The text of the tools **only this host** has. The shared tools (`ace_publish`, `ace_channels`) take
+ * their names, descriptions and parameter schemas from `ace-runtime`, where every host reads the same
+ * spec — a copy here is what `test/tool-text-unity.test.ts` fails on. `ace_agents` has no counterpart
+ * on this host, so the `ace_channels` pointer to it is dropped (see {@link channelsToolText}).
  */
-const TOOL_TEXT = {
-	publish: {
-		description:
-			"Publish an ACE 0.1 event to a peer agent or service. The recipient's agent receives the body as an " +
-			"external event and decides what to do with it (its own policy may need its user's approval of the " +
-			"sender first), so write plain text that stands on its own: the body is opaque to ACE.",
-	},
-	channels: {
-		description:
-			"List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not.",
-	},
+const HOST_TOOL_TEXT = {
 	pending: {
 		description:
 			"List the manual ACE events this session is holding: retained because their activation is `manual`, to be delivered only when explicitly activated.",
@@ -88,40 +88,25 @@ const TOOL_TEXT = {
 export function buildToolDefinitions(member?: string): McpTool[] {
 	return [
 		{
-			name: "ace_channels",
-			description: TOOL_TEXT.channels.description,
-			inputSchema: { type: "object", properties: {} },
+			name: ACE_TOOL_NAMES.channels,
+			description: channelsToolText({ agentsTool: false }),
+			// A TypeBox schema *is* JSON Schema at runtime; the cast only crosses the structural gap
+			// (TypeBox's types carry no index signature).
+			inputSchema: CHANNELS_PARAMETERS as unknown as JsonSchema,
 		},
 		{
-			name: "ace_publish",
-			description: member === undefined ? TOOL_TEXT.publish.description : publishDescription(member),
-			inputSchema: {
-				type: "object",
-				properties: {
-					body: { type: "string", description: "Event body; the peer's agent reads this" },
-					activation: {
-						type: "string",
-						enum: ["default", "next_turn", "immediate", "manual"],
-						description:
-							'How urgently the peer should process it (default: next_turn); pass "default" to let the receiver decide',
-					},
-					target: {
-						description:
-							"Where to publish: a configured `publish` channel name, or a list of them for the same event to several",
-						oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
-					},
-				},
-				required: ["body", "target"],
-			},
+			name: ACE_TOOL_NAMES.publish,
+			description: member === undefined ? TOOL_TEXT.publish.intro : publishDescription(member),
+			inputSchema: PUBLISH_PARAMETERS as unknown as JsonSchema,
 		},
 		{
 			name: "ace_pending",
-			description: TOOL_TEXT.pending.description,
+			description: HOST_TOOL_TEXT.pending.description,
 			inputSchema: { type: "object", properties: {} },
 		},
 		{
 			name: "ace_activate",
-			description: TOOL_TEXT.activate.description,
+			description: HOST_TOOL_TEXT.activate.description,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -137,7 +122,7 @@ export function buildToolDefinitions(member?: string): McpTool[] {
 /** The `ace_publish` description with this session's directory address appended, when it has one. */
 function publishDescription(member: string): string {
 	return (
-		TOOL_TEXT.publish.description +
+		TOOL_TEXT.publish.intro +
 		` This session is in the agent directory as "${member}"; other agent sessions can send it a ` +
 		`direct event by passing that name as their target.`
 	);
@@ -147,9 +132,9 @@ function publishDescription(member: string): string {
 export async function executeTool(ctx: ToolContext, name: string, args: Record<string, unknown>): Promise<ToolResult> {
 	try {
 		switch (name) {
-			case "ace_channels":
+			case ACE_TOOL_NAMES.channels:
 				return channelsTool(ctx);
-			case "ace_publish":
+			case ACE_TOOL_NAMES.publish:
 				return await publishTool(ctx, args);
 			case "ace_pending":
 				return pendingTool(ctx);

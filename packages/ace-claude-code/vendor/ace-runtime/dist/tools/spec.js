@@ -85,10 +85,26 @@ export const TOOL_TEXT = {
         },
     },
     channels: {
-        description: "List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not — address live peers with ace_agents.",
+        description: "List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not",
+        /**
+         * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
+         * has no directory tool), so it is a separate piece a host appends or drops. Compose with
+         * {@link channelsToolText} rather than concatenating by hand.
+         */
+        agentsPointer: "— address live peers with ace_agents.",
         guidelines: ["Use a `publish` channel name, or a live member from ace_agents, as the ace_publish `target`."],
     },
 };
+/**
+ * The `ace_channels` description for a host. The tail pointing at `ace_agents` belongs only to hosts
+ * that register that tool, so a host without it passes `{ agentsTool: false }` and drops the pointer
+ * instead of rewording the shared text.
+ */
+export function channelsToolText(options = {}) {
+    return options.agentsTool === false
+        ? TOOL_TEXT.channels.description
+        : `${TOOL_TEXT.channels.description} ${TOOL_TEXT.channels.agentsPointer}`;
+}
 /** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
 export const PUBLISH_PARAMETERS = Type.Object({
     body: Type.String({ description: TOOL_TEXT.publish.params.body }),
