@@ -381,6 +381,9 @@ Nothing outside `packages/ace-claude-code/` is touched: `ace-runtime` and the re
 used, not modified. The vendored `vendor/ace-runtime/` is a byte-identical copy of the `dist/` that
 `ace-runtime` builds — the compiled barrel imports only `redis` and Node builtins, the Pi adapter's
 `@earendil-works/*` imports being type-only and erased at compile — so the vendored `package.json`
-declares just `redis` as a runtime dependency. It is wired in as a `file:` dependency so the host never
-needs to resolve the workspace. No host source file is patched; the plugin is installed by the host's
-own mechanism and removed by the host's own command.
+declares just `redis` as a runtime dependency. It is reached by relative path — it is *not* declared as a
+`file:` dependency, which bun cannot resolve inside an installed tarball (it rewrites the specifier
+against its own cache root, where the tarball's `package/` level is missing). `tsconfig.json` `paths` and
+the Vitest alias map the bare `ace-runtime` specifier to the vendored build for the tests, while `src/`
+and `scripts/` import it directly so a tarball install runs without a workspace. No host source file is
+patched; the plugin is installed by the host's own mechanism and removed by the host's own command.

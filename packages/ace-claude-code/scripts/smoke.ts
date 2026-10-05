@@ -31,10 +31,10 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { channelStreamKey, directoryEntryKey, directoryKey, senderName } from "ace-runtime";
 import { createClient } from "redis";
 import * as z from "zod/v4";
 import { ackFilePath, readNewTrail } from "../src/ack.ts";
+import { channelStreamKey, directoryEntryKey, directoryKey, senderName } from "../vendor/ace-runtime/dist/index.js";
 
 const root = join(import.meta.dirname, "..");
 

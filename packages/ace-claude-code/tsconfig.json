@@ -12,7 +12,14 @@
 		"forceConsistentCasingInFileNames": true,
 		"allowImportingTsExtensions": true,
 		"noEmit": true,
-		"types": ["node"]
+		"types": ["node"],
+		// The core is a *vendored copy*, not a dependency: `file:./vendor/ace-runtime` cannot resolve
+		// when this package is installed from a tarball (bun rewrites it against its cache root), so the
+		// bare specifier is mapped here for the tests and scripts only. The plugin itself imports the
+		// vendored build by relative path.
+		"paths": {
+			"ace-runtime": ["./vendor/ace-runtime/dist/index.d.ts"]
+		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
 	"exclude": ["node_modules", "vendor", "dist"]

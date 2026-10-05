@@ -1,5 +1,11 @@
-import type { AceMessage, AgentEngine, DeliveryObserver, InjectionContext, InjectionMode } from "ace-runtime";
-import { renderAceEvent } from "ace-runtime";
+import type {
+	AceMessage,
+	AgentEngine,
+	DeliveryObserver,
+	InjectionContext,
+	InjectionMode,
+} from "../vendor/ace-runtime/dist/index.js";
+import { renderAceEvent } from "../vendor/ace-runtime/dist/index.js";
 
 /**
  * Push an event into the session over the host's channel: `notifications/claude/channel` with the

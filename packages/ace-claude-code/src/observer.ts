@@ -1,5 +1,5 @@
-import type { AceMessage, DeliveryObserver } from "ace-runtime";
-import { renderAceEvent } from "ace-runtime";
+import type { AceMessage, DeliveryObserver } from "../vendor/ace-runtime/dist/index.js";
+import { renderAceEvent } from "../vendor/ace-runtime/dist/index.js";
 import type { AckObservation } from "./ack.ts";
 
 interface PendingEntry {

@@ -10,7 +10,7 @@ import type {
 	ResolvedServer,
 	Transport,
 	TransportFactoryOptions,
-} from "ace-runtime";
+} from "../vendor/ace-runtime/dist/index.js";
 import {
 	ACE_CONFIG_FILENAME,
 	AceMetrics,
@@ -32,7 +32,7 @@ import {
 	shutdownAce,
 	subscriptionEndpoint,
 	TOOL_ERROR_TEXT,
-} from "ace-runtime";
+} from "../vendor/ace-runtime/dist/index.js";
 import { readNewTrail } from "./ack.ts";
 import type { ChannelPush } from "./engine.ts";
 import { ClaudeCodeEngine } from "./engine.ts";

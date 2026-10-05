@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { AceMessage, EndpointConfig, PendingAceEvent, ResolvedAceConfig, ResolvedServer } from "ace-runtime";
+import type {
+	AceMessage,
+	EndpointConfig,
+	PendingAceEvent,
+	ResolvedAceConfig,
+	ResolvedServer,
+} from "../vendor/ace-runtime/dist/index.js";
 import {
 	ACE_TOOL_NAMES,
 	CHANNELS_PARAMETERS,
@@ -17,7 +23,7 @@ import {
 	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
-} from "ace-runtime";
+} from "../vendor/ace-runtime/dist/index.js";
 
 /** One JSON Schema `inputSchema` for an MCP tool. */
 type JsonSchema = Record<string, unknown>;
