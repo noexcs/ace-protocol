@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentRegistry,
 	type AgentRegistryStore,
-	REGISTRY_CHANNEL_NOTE,
 	type RegistryEntry,
 	resolveTarget,
 } from "../../src/runtime/agent-registry.ts";
@@ -125,7 +124,7 @@ describe("AgentRegistry", () => {
 		const stored = store.entries.get(sender);
 		expect(stored?.expiresAt).toBe(1_000 + 90_000);
 		expect(stored?.description).toContain(
-			`${REGISTRY_CHANNEL_NOTE} | agent=oh-my-pi | session=${sessionId.slice(-6)} | cwd=/Users/noexcs/Projects/ace-protocol | host=`,
+			`agent=oh-my-pi | session=${sessionId.slice(-6)} | cwd=/Users/noexcs/Projects/ace-protocol | host=`,
 		);
 		expect(stored?.description).toContain("platform=");
 		expect(stored?.description).toContain(`pid=${process.pid}`);

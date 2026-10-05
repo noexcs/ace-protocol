@@ -135,10 +135,6 @@ export declare function hostFacts(options: {
 }): HostFacts;
 /** `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…` — what a channel says about itself. */
 export declare function describeSender(facts: HostFacts): string;
-/** `direct messages addressed to me | agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`. */
-export declare function describeLocation(facts: HostFacts): string;
-/** What the channel's own description text starts with, before the host details. */
-export declare const REGISTRY_CHANNEL_NOTE = "direct messages addressed to me";
 /** How a target resolves: an exact channel name, or a prefix that matches exactly one. */
 export type TargetResolution = {
     ok: true;

@@ -293,8 +293,7 @@ export function localName(server: string | undefined, uploaded: string): string;
 ```ts
 export function hostFacts(options: { codingAgent; agentVersion?; sessionId; cwd }): HostFacts;  // 采集 host/ip/…
 export function describeSender(facts: HostFacts): string;    // `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`
-export function describeLocation(facts: HostFacts): string;  // `direct messages addressed to me | …`
-export const REGISTRY_CHANNEL_NOTE = "direct messages addressed to me";
+// 目录条目的自述就是这个字符串本身：加固定前缀只会让每个会话的自述都变得一样。
 
 // tools/listing.ts
 export function describeDiscovered(entry: RegistryEntry): string;  // `<channel> — <自述> (renews in Ns)`

@@ -57,7 +57,7 @@ export class AgentRegistry {
         const stream = channelStreamKey(this.namespace, channel);
         // The group is the channel name: unique per session, and it never leaves this machine's reader.
         const group = channel;
-        const description = describeLocation(hostFacts(registration));
+        const description = describeSender(hostFacts(registration));
         await this.store.ensureStream(stream, group);
         await this.store.put(channel, description, this.now() + this.ttlMs);
         const registered = { channel, stream, group };
@@ -138,12 +138,6 @@ export function describeSender(facts) {
         `pid=${facts.pid}`,
     ].join(" | ");
 }
-/** `direct messages addressed to me | agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`. */
-export function describeLocation(facts) {
-    return [REGISTRY_CHANNEL_NOTE, describeSender(facts)].join(" | ");
-}
-/** What the channel's own description text starts with, before the host details. */
-export const REGISTRY_CHANNEL_NOTE = "direct messages addressed to me";
 /**
  * Resolve a `target` against the live channels.
  *

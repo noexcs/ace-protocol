@@ -123,7 +123,7 @@
 自述文本（`describeLocation`）：
 
 ```text
-direct messages addressed to me | agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | platform=… | pid=…
+agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | platform=… | pid=…
 ```
 
 生命周期与参数（`REGISTRY_DEFAULTS`）：

@@ -293,7 +293,8 @@ async function main(): Promise<void> {
 						zscore !== null &&
 						zscore > Date.now() &&
 						typeof entryRaw === "string" &&
-						entryRaw.includes("direct messages addressed to me")
+						entryRaw.includes("agent=") &&
+						entryRaw.includes("cwd=")
 					) {
 						ok(`directory holds the channel (zset score, ${directoryEntries} hash)`);
 					} else {
