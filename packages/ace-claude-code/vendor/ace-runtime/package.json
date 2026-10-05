@@ -1,6 +1,6 @@
 {
 	"name": "ace-runtime",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"description": "ACE (Agent Context Event Protocol) 0.1 runtime — vendored compiled barrel for the Claude Code plugin. The Pi host adapter and its @earendil-works/* dependencies are not part of this surface; the compiled `dist/` imports only `redis` and node builtins, so those are the only declared dependencies.",
 	"private": true,
 	"type": "module",

@@ -84,6 +84,7 @@ import {
 	formatDiscoveredSessions,
 	formatPublishResult,
 	formatSessionLabel,
+	hasKnownReader,
 	hostFacts,
 	NO_SESSION_LABEL,
 	PiExtensionAdapter,
@@ -250,6 +251,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let activeServers: ActiveServer[] = [];
 	/** Channels this session reads (derived): subscribed names plus one inbox per server. */
 	let subscriptions: EndpointConfig[] = [];
+	/** The channel names behind {@link subscriptions}: what a publish target is checked against. */
+	let readChannels = new Set<string>();
 	/** Lazily opened writer per server URL: publishing needs no configured list of publications. */
 	const addClients = new Map<string, RedisStreamsAddClient>();
 	let resolvedConfig: ResolvedAceConfig | undefined;
@@ -477,10 +480,17 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					try {
 						const target = await resolvePublishTarget(name);
 						const stream = channelStreamKey(target.server.server.namespace, target.channel);
+						// A channel nobody is known to read is exactly what a mistyped target looks like. The
+						// event is still published (a channel is a name, not a mailbox), but the result says so.
+						const unknownReader = !hasKnownReader({
+							channel: target.channel,
+							live: await target.server.registry.list(),
+							subscriptions: [...readChannels],
+						});
 						// The same channel twice in one call is one delivery.
 						const address = `${target.server.server.url}#${stream}`;
 						if (sentStreams.has(address)) {
-							delivered.push(deliveredChannel(target.channel));
+							delivered.push(deliveredChannel(target.channel, unknownReader));
 							continue;
 						}
 						sentStreams.add(address);
@@ -496,7 +506,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							body: params.body,
 						});
 						await publishToChannel(target, message);
-						delivered.push(deliveredChannel(target.channel));
+						delivered.push(deliveredChannel(target.channel, unknownReader));
 					} catch (error) {
 						failures.push(failedTarget(name, describeError(error)));
 					}
@@ -601,6 +611,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		const multi = resolved.servers.length > 1;
 		const derived: EndpointConfig[] = [];
 		activeServers = [];
+		readChannels = new Set();
 		sessionInbox = undefined;
 		for (const server of resolved.servers) {
 			const sender = senderName({
@@ -632,6 +643,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				continue;
 			}
 			activeServers.push({ server, sender, registry });
+			readChannels.add(sender);
 			const inbox = subscriptionEndpoint({
 				channel: sender,
 				name: multi ? `${server.name}:${SESSION_INBOX}` : SESSION_INBOX,
@@ -648,6 +660,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		for (const subscribed of resolved.subscriptions) {
 			const owner = activeServers.find((active) => active.server.name === subscribed.server.name);
 			if (owner === undefined) continue;
+			readChannels.add(subscribed.channel);
 			derived.push(
 				subscriptionEndpoint({
 					channel: subscribed.channel,
@@ -739,6 +752,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		sessionInbox = undefined;
 		deadLetters = undefined;
 		subscriptions = [];
+		readChannels = new Set();
 		activeServers = [];
 		addClients.clear();
 		// The order (reader → directory entry and stream → client) and its best-effort error handling

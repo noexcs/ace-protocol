@@ -5,8 +5,14 @@
  *
  * The hosts keep only what is theirs: turning a core result into the host's tool-result shape.
  */
-/** `channel "outbox"` — the target channel name an event was published to. */
-export declare function deliveredChannel(name: string): string;
+/**
+ * `channel "outbox"` — the target channel name an event was published to.
+ *
+ * `unknownReader` adds the note that neither the live directory nor this session's own subscriptions
+ * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox —
+ * but it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
+ */
+export declare function deliveredChannel(name: string, unknownReader?: boolean): string;
 /** One entry of the failure list: `"target": reason`. */
 export declare function failedTarget(target: string, detail: string): string;
 /** The `ace_publish` result: what went out, and what did not (with the memory of ids and sender). */

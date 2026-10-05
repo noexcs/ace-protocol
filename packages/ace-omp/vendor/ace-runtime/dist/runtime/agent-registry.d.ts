@@ -18,6 +18,18 @@ export interface RegistryEntry {
     expiresAt: number;
 }
 /**
+ * Whether anything is *known* to read `channel`: a live directory entry (a session's own channel), or
+ * one of the channels the calling session itself subscribes to. Only those two are knowable — another
+ * session's configured subscriptions live in its own file — so a `false` here means "nobody we know
+ * reads this", which is what a mistyped target looks like. It is not a delivery precondition: a channel
+ * is a name, and publishing to a name that has no reader yet is legal.
+ */
+export declare function hasKnownReader(options: {
+    channel: string;
+    live: readonly RegistryEntry[];
+    subscriptions: readonly string[];
+}): boolean;
+/**
  * The directory as the runtime needs it: a presence index with expiry, and one stream per live
  * channel. `transport/redis-agent-registry.ts` implements it against Redis; tests implement it in
  * memory.

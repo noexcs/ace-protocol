@@ -202,9 +202,10 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 1. `Use ace_publish to notify another agent or service; keep the body self-contained.`
 2. `Choose the target by the peer it names; pass a list to publish the same event to several at once.`
 3. ``Call ace_agents for the channels that are live right now, then pass one of them as `target`.``
-4. `Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.`
-5. ``To answer an event, publish to a channel ace_agents lists as live: the header's `sender` is who wrote it and that name is their channel; a sender with no live channel (a service, or a session that has gone) cannot be answered there.``
-6. `There is no reply protocol: if you expect an answer, say so and name the channel to answer on.`
+4. `If a publish result says a channel has no known reader, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.`
+5. `Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.`
+6. ``To answer an event, publish to a channel ace_agents lists as live: the header's `sender` is who wrote it and that name is their channel; a sender with no live channel (a service, or a session that has gone) cannot be answered there.``
+7. `There is no reply protocol: if you expect an answer, say so and name the channel to answer on.`
 
 **参数 description 原文（模型可见）**
 

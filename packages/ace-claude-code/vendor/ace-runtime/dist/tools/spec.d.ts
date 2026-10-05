@@ -26,7 +26,7 @@ export declare const ACE_TOOL_NAMES: {
 export declare const TOOL_TEXT: {
     readonly publish: {
         readonly intro: string;
-        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
+        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "If a publish result says a channel has no known reader, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
         readonly params: {
             readonly body: "Event body; the peer's agent reads this";
             readonly activation: "How urgently the peer should process it (default: next_turn); pass \"default\" to let the receiver decide";

@@ -7,6 +7,17 @@ export const REGISTRY_DEFAULTS = {
     refreshMs: 30_000,
 };
 /**
+ * Whether anything is *known* to read `channel`: a live directory entry (a session's own channel), or
+ * one of the channels the calling session itself subscribes to. Only those two are knowable — another
+ * session's configured subscriptions live in its own file — so a `false` here means "nobody we know
+ * reads this", which is what a mistyped target looks like. It is not a delivery precondition: a channel
+ * is a name, and publishing to a name that has no reader yet is legal.
+ */
+export function hasKnownReader(options) {
+    const { channel, live, subscriptions } = options;
+    return live.some((entry) => entry.channel === channel) || subscriptions.includes(channel);
+}
+/**
  * Registers one session's channel in the shared directory (RFC §22 item 1 — not part of ACE 0.1).
  *
  * The directory answers what configuration cannot: *which channels are live right now*, and *what to

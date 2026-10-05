@@ -8,9 +8,15 @@ import { ACE_CONFIG_FILENAME } from "../runtime/ace-config.ts";
  * The hosts keep only what is theirs: turning a core result into the host's tool-result shape.
  */
 
-/** `channel "outbox"` — the target channel name an event was published to. */
-export function deliveredChannel(name: string): string {
-	return `channel "${name}"`;
+/**
+ * `channel "outbox"` — the target channel name an event was published to.
+ *
+ * `unknownReader` adds the note that neither the live directory nor this session's own subscriptions
+ * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox —
+ * but it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
+ */
+export function deliveredChannel(name: string, unknownReader = false): string {
+	return unknownReader ? `channel "${name}" (no known reader)` : `channel "${name}"`;
 }
 
 /** One entry of the failure list: `"target": reason`. */
