@@ -26,17 +26,19 @@ import {
 	AceRuntime,
 	type AgentEngine,
 	AgentRegistry,
+	channelStreamKey,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
 	DeadLetterSink,
+	directoryEntryKey,
+	directoryKey,
 	type EndpointConfig,
 	type InjectionMode,
 	parseDeadLetters,
-	publishEndpointOf,
 	RedisStreamsPublisher,
 	RedisStreamsTransport,
-	registryMember,
 	replayDeadLetters,
+	senderName,
 } from "../src/index.ts";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -78,30 +80,11 @@ class StubEngine implements AgentEngine {
 const admin = createClient({ url });
 await admin.connect();
 
-const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Read the stored channel entry; the script only asserts on these four fields. */
-function readChannel(raw: unknown): { name?: string; description?: string; stream?: string; group?: string } {
-	if (typeof raw !== "string") return {};
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return {};
-	}
-	if (typeof parsed !== "object" || parsed === null) return {};
-	const channel: { name?: string; description?: string; stream?: string; group?: string } = {};
-	if ("name" in parsed && typeof parsed.name === "string") channel.name = parsed.name;
-	if ("description" in parsed && typeof parsed.description === "string") channel.description = parsed.description;
-	if ("config" in parsed) {
-		const config: unknown = parsed.config;
-		if (typeof config === "object" && config !== null) {
-			if ("stream" in config && typeof config.stream === "string") channel.stream = config.stream;
-			if ("group" in config && typeof config.group === "string") channel.group = config.group;
-		}
-	}
-	return channel;
-}
+const settle = (ms: number): Promise<void> => {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, ms);
+	return promise;
+};
 
 /** Wait until `predicate` holds, so a slow broker cannot make the run flaky. */
 async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000): Promise<boolean> {
@@ -306,39 +289,46 @@ await scenario(
 	{ spool: { afterEvents: 2, windowMs: 1_000 } },
 );
 
-// 8. The agent directory: a session registers itself, stays fresh, and leaves nothing behind.
+// 8. The agent directory: a session registers the channel named by its sender, stays fresh, and leaves
+// nothing behind. Old name, new model — there is no member: the channel *is* the sender.
 await (async () => {
-	const prefix = `ace:verify:agents:${run}`;
+	const namespace = `ace-verify-${run}`;
+	const username = "verify";
 	const sessionId = `session-${run}`;
-	const member = registryMember("verify-agent", sessionId);
+	const sender = senderName({ namespace, username, codingAgent: "verify-agent", sessionId });
+	const stream = channelStreamKey(namespace, sender);
 	const registry = new AgentRegistry({
-		store: createRedisAgentRegistry({ url, prefix }),
-		prefix,
+		store: createRedisAgentRegistry({ url, namespace }),
+		namespace,
 		ttlMs: 1_500,
 		refreshMs: 300,
 	});
 	try {
-		const registered = await registry.register({ codingAgent: "verify-agent", sessionId, cwd: "/tmp/verify", url });
-		const visible = await waitFor(async () => (await registry.list()).some((entry) => entry.member === member));
-		const stored = readChannel(await admin.hGet(`${prefix}:entry`, member));
-		const firstScore = Number(await admin.zScore(prefix, member));
+		const registered = await registry.register({
+			sender,
+			codingAgent: "verify-agent",
+			sessionId,
+			cwd: "/tmp/verify",
+		});
+		const visible = await waitFor(async () => (await registry.list()).some((entry) => entry.channel === sender));
+		const stored = await admin.hGet(directoryEntryKey(namespace), sender);
+		const firstScore = Number(await admin.zScore(directoryKey(namespace), sender));
 		await settle(800); // two heartbeats
-		const renewedScore = Number(await admin.zScore(prefix, member));
+		const renewedScore = Number(await admin.zScore(directoryKey(namespace), sender));
 
 		await registry.unregister();
-		const gone = (await registry.list()).every((entry) => entry.member !== member);
-		const streamGone = (await admin.exists(registered.stream)) === 0;
-		const entryGone = (await admin.hLen(`${prefix}:entry`)) === 0;
+		const gone = (await registry.list()).every((entry) => entry.channel !== sender);
+		const streamGone = (await admin.exists(stream)) === 0;
+		const entryGone = (await admin.hLen(directoryEntryKey(namespace))) === 0;
 
 		check(
 			"agent directory",
-			"registers, renews each heartbeat, and leaves nothing behind",
-			`visible=${visible} name=${stored.name === member} stream=${stored.stream === registered.stream} group=${stored.group === registered.group} location=${stored.description?.includes("cwd=/tmp/verify")} renewed=${renewedScore > firstScore} gone=${gone && streamGone && entryGone}`,
+			"registers the sender's channel, renews each heartbeat, and leaves nothing behind",
+			`visible=${visible} derived=${registered.stream === stream && registered.group === sender} location=${stored?.includes("cwd=/tmp/verify")} renewed=${renewedScore > firstScore} gone=${gone && streamGone && entryGone}`,
 			visible &&
-				stored.name === member &&
-				stored.stream === registered.stream &&
-				stored.group === registered.group &&
-				stored.description?.includes("cwd=/tmp/verify") === true &&
+				registered.stream === stream &&
+				registered.group === sender &&
+				stored?.includes("cwd=/tmp/verify") === true &&
 				renewedScore > firstScore &&
 				gone &&
 				streamGone &&
@@ -348,42 +338,43 @@ await (async () => {
 		check("agent directory", "scenario completes", error instanceof Error ? error.message : String(error), false);
 	} finally {
 		await registry.close();
-		await admin.del(prefix);
-		await admin.del(`${prefix}:entry`);
+		await admin.del(directoryKey(namespace));
+		await admin.del(directoryEntryKey(namespace));
 	}
 })();
 
 // 9. A session that dies without unregistering: the next reader sweeps its leftovers.
 await (async () => {
-	const prefix = `ace:verify:agents-gc:${run}`;
+	const namespace = `ace-verify-gc-${run}`;
+	const username = "verify";
 	const sessionId = `session-gc-${run}`;
-	const member = registryMember("verify-agent", sessionId);
+	const sender = senderName({ namespace, username, codingAgent: "verify-agent", sessionId });
 	const registry = new AgentRegistry({
-		store: createRedisAgentRegistry({ url, prefix }),
-		prefix,
+		store: createRedisAgentRegistry({ url, namespace }),
+		namespace,
 		ttlMs: 400,
 		refreshMs: 0, // no heartbeat: the registration expires and nothing cleans up after itself
 	});
 	try {
-		const registered = await registry.register({ codingAgent: "verify-agent", sessionId, cwd: "/tmp/gc", url });
+		const registered = await registry.register({ sender, codingAgent: "verify-agent", sessionId, cwd: "/tmp/gc" });
 		await settle(600); // past the expiry
 		const live = await registry.list(); // the read is what sweeps
 		const swept =
-			live.every((entry) => entry.member !== member) &&
-			(await admin.hLen(`${prefix}:entry`)) === 0 &&
+			live.every((entry) => entry.channel !== sender) &&
+			(await admin.hLen(directoryEntryKey(namespace))) === 0 &&
 			(await admin.exists(registered.stream)) === 0;
 		check(
 			"agent directory gc",
-			"expired registrations lose their entry, hash field and stream",
-			`swept=${swept} hashFields=${await admin.hLen(`${prefix}:entry`)} streamExists=${await admin.exists(registered.stream)}`,
+			"an expired channel loses its entry, hash field and stream",
+			`swept=${swept} hashFields=${await admin.hLen(directoryEntryKey(namespace))} streamExists=${await admin.exists(registered.stream)}`,
 			swept,
 		);
 	} catch (error) {
 		check("agent directory gc", "scenario completes", error instanceof Error ? error.message : String(error), false);
 	} finally {
 		await registry.close();
-		await admin.del(prefix);
-		await admin.del(`${prefix}:entry`);
+		await admin.del(directoryKey(namespace));
+		await admin.del(directoryEntryKey(namespace));
 	}
 })();
 
@@ -460,45 +451,39 @@ await (async () => {
 	}
 })();
 
-// 11. A directory entry advertises its own broker, stream and field, and that is where a publish goes.
+// 11. Direct publish by name: a peer's channel name is all you need — stream and group are derived from it.
 await (async () => {
-	const prefix = `ace:verify:endpoint:${run}`;
+	const namespace = `ace-verify-endpoint-${run}`;
+	const username = "verify";
 	const sessionId = `session-endpoint-${run}`;
-	const member = registryMember("verify-agent", sessionId);
+	const sender = senderName({ namespace, username, codingAgent: "verify-agent", sessionId });
 	const registry = new AgentRegistry({
-		store: createRedisAgentRegistry({ url, prefix }),
-		prefix,
+		store: createRedisAgentRegistry({ url, namespace }),
+		namespace,
 		ttlMs: 5_000,
 		refreshMs: 0,
 	});
 	let stream = "";
 	try {
 		const registration = await registry.register({
+			sender,
 			codingAgent: "verify-agent",
 			sessionId,
 			cwd: "/tmp/endpoint",
-			url,
 		});
 		stream = registration.stream;
-		const entry = (await registry.list()).find((candidate) => candidate.member === member);
-		const endpoint = entry === undefined ? undefined : publishEndpointOf(entry);
+		const derived = registration.stream === channelStreamKey(namespace, sender) && registration.group === sender;
 
-		const advertised =
-			endpoint?.transport === "redis-streams" &&
-			endpoint.url === url &&
-			endpoint.stream === registration.stream &&
-			endpoint.field === "message";
-
-		// Publish exactly the way the extension does: through the endpoint the entry advertises.
-		const client = createRedisStreamsAddClient(endpoint?.url ?? "", () => {});
+		// Publish exactly the way the extension does: to the channel the peer's name addresses.
+		const client = createRedisStreamsAddClient(url, () => {});
 		try {
-			await client.add(endpoint?.stream ?? "", endpoint?.field ?? "message", JSON.stringify({ probe: true }));
+			await client.add(registration.stream, "message", JSON.stringify({ probe: true }));
 		} finally {
 			await client.close();
 		}
 		const landed = (await admin.xLen(registration.stream)) === 1;
 
-		// A broker the entry does not name is not silently substituted: that write fails.
+		// A broker that is not reachable is not silently substituted: that write fails.
 		const elsewhere = createRedisStreamsAddClient("redis://127.0.0.1:6399", () => {});
 		let refused = false;
 		try {
@@ -510,14 +495,14 @@ await (async () => {
 		}
 
 		check(
-			"directory publish endpoint",
-			"publishes to the broker and stream the entry advertises",
-			`advertised=${advertised} landed=${landed} otherBrokerRefused=${refused}`,
-			advertised && landed && refused,
+			"direct publish by name",
+			"the channel name alone addresses the peer; its stream and group are derived",
+			`derived=${derived} landed=${landed} otherBrokerRefused=${refused}`,
+			derived && landed && refused,
 		);
 	} catch (error) {
 		check(
-			"directory publish endpoint",
+			"direct publish by name",
 			"scenario completes",
 			error instanceof Error ? error.message : String(error),
 			false,
@@ -525,26 +510,27 @@ await (async () => {
 	} finally {
 		await registry.close();
 		if (stream !== "") await admin.del(stream);
-		await admin.del(prefix);
-		await admin.del(`${prefix}:entry`);
+		await admin.del(directoryKey(namespace));
+		await admin.del(directoryEntryKey(namespace));
 	}
 })();
 
 // Leaving the directory must not wake a reader whose group just died: stop the reader first.
 await (async () => {
-	const prefix = `ace:verify:${run}:shutdown`;
+	const namespace = `ace-verify-shutdown-${run}`;
 	const failures: string[] = [];
 	let registeredStream = "";
 	try {
+		const sender = senderName({ namespace, username: "verify", codingAgent: "verify", sessionId: `${run}-shutdown` });
 		const registry = new AgentRegistry({
-			store: createRedisAgentRegistry({ url, prefix, onError: (error) => failures.push(String(error)) }),
-			prefix,
+			store: createRedisAgentRegistry({ url, namespace, onError: (error) => failures.push(String(error)) }),
+			namespace,
 		});
 		const registration = await registry.register({
+			sender,
 			codingAgent: "verify",
 			sessionId: `${run}-shutdown`,
 			cwd: "/tmp",
-			url,
 		});
 		registeredStream = registration.stream;
 		const transport = new RedisStreamsTransport(
@@ -573,7 +559,7 @@ await (async () => {
 		check("shutdown order", "scenario completes", error instanceof Error ? error.message : String(error), false);
 	} finally {
 		if (registeredStream !== "") await admin.del(registeredStream);
-		await admin.del(`${prefix}:entry`);
+		await admin.del(directoryEntryKey(namespace));
 	}
 })();
 

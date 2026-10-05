@@ -1,10 +1,6 @@
 import { createClient, type RedisClientOptions } from "redis";
-import {
-	type AgentRegistryStore,
-	REGISTRY_DEFAULTS,
-	type RegistryChannel,
-	type RegistryEntry,
-} from "../runtime/agent-registry.ts";
+import type { AgentRegistryStore, RegistryEntry } from "../runtime/agent-registry.ts";
+import { channelStreamKey, directoryEntryKey, directoryKey, NAMESPACE_DEFAULT } from "../runtime/naming.ts";
 
 /** Give up after this many failed attempts instead of retrying a dead broker forever. */
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -12,8 +8,8 @@ const RECONNECT_DELAY_MS = 150;
 
 export interface RedisAgentRegistryOptions {
 	url: string;
-	/** Key namespace; defaults to `ace:agents`. */
-	prefix?: string;
+	/** Namespace this server owns; keys live under it. Defaults to `ace`. */
+	namespace?: string;
 	/** Raw client options passed through to the `redis` package; never validated. */
 	clientOptions?: Record<string, unknown>;
 	/** Called when the broker connection fails, at most once per outage. */
@@ -24,37 +20,26 @@ function isBusyGroup(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("BUSYGROUP");
 }
 
-/** The session stream recorded in a stored entry, when the payload still parses. */
-function streamOf(raw: string | null): string | undefined {
-	if (raw === null) return undefined;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return undefined;
-	}
-	if (typeof parsed !== "object" || parsed === null || !("config" in parsed)) return undefined;
-	const config: unknown = parsed.config;
-	if (typeof config !== "object" || config === null || !("stream" in config)) return undefined;
-	return typeof config.stream === "string" ? config.stream : undefined;
-}
-
 /**
- * The agent directory on Redis (RFC §22 item 1).
+ * The directory on Redis (RFC §22 item 1).
  *
  * ```text
- * <prefix>                  ZSet   score = expiresAt, member = "<coding-agent>:<sessionId>"
- * <prefix>:entry            Hash   field = member,     value = the channel entry
- * <prefix>:events:<member>  Stream one per session, holding the events peers send it
+ * <ns>                 ZSet   score = expiresAt, member = the channel name (= a session's sender)
+ * <ns>:entry           Hash   field = channel,     value = what it says about itself
+ * <ns>:ch:<channel>    Stream the channel's events — the same key path as any other channel
  * ```
  *
- * Presence is the ZSet score, so a session that dies without unregistering stops being discoverable
- * when its score falls behind the clock — no sweeper process, no ghost entries. Discovery reads
- * prune expired members on the way, which is the only cleanup this needs.
+ * There is one kind of thing here — a channel — so a live session needs no second record: it registers
+ * the channel named by its own sender, and everything else (stream key, group) is derived from that
+ * name. Presence is the ZSet score, so a session that dies without unregistering stops being
+ * discoverable when its score falls behind the clock — no sweeper, no ghost entries. Discovery prunes
+ * expired channels on the way, deleting the leftovers (hash field, stream) it can derive.
  */
 export function createRedisAgentRegistry(options: RedisAgentRegistryOptions): AgentRegistryStore {
 	const onError = options.onError ?? (() => {});
-	const prefix = options.prefix ?? REGISTRY_DEFAULTS.prefix;
+	const namespace = options.namespace ?? NAMESPACE_DEFAULT;
+	// Library boundary: `clientOptions` is operator-supplied and never validated on our side — the cast
+	// is only to reach `createClient`, which is typed with the `redis` package's own options type.
 	const operatorOptions = options.clientOptions as RedisClientOptions | undefined;
 	const operatorSocket = typeof operatorOptions?.socket === "object" ? operatorOptions.socket : {};
 	const client = createClient({
@@ -69,7 +54,8 @@ export function createRedisAgentRegistry(options: RedisAgentRegistryOptions): Ag
 		},
 	});
 
-	const entriesKey = `${prefix}:entry`;
+	const membersKey = directoryKey(namespace);
+	const entriesKey = directoryEntryKey(namespace);
 	let connected = false;
 	let outageReported = false;
 	client.on("error", (error) => {
@@ -101,23 +87,23 @@ export function createRedisAgentRegistry(options: RedisAgentRegistryOptions): Ag
 			});
 		},
 
-		async put(member, channel, expiresAt) {
+		async put(channel, description, expiresAt) {
 			await use(async () => {
 				await client
 					.multi()
-					.zAdd(prefix, { score: expiresAt, value: member })
-					.hSet(entriesKey, member, JSON.stringify(channel))
+					.zAdd(membersKey, { score: expiresAt, value: channel })
+					.hSet(entriesKey, channel, description)
 					.exec();
 			});
 		},
 
-		async refresh(member, expiresAt) {
-			await use(() => client.zAdd(prefix, { score: expiresAt, value: member }, { XX: true }));
+		async refresh(channel, expiresAt) {
+			await use(() => client.zAdd(membersKey, { score: expiresAt, value: channel }, { XX: true }));
 		},
 
-		async remove(member) {
+		async remove(channel) {
 			await use(async () => {
-				await client.multi().zRem(prefix, member).hDel(entriesKey, member).exec();
+				await client.multi().zRem(membersKey, channel).hDel(entriesKey, channel).exec();
 			});
 		},
 
@@ -126,40 +112,29 @@ export function createRedisAgentRegistry(options: RedisAgentRegistryOptions): Ag
 		},
 
 		async list(now): Promise<RegistryEntry[]> {
-			// Housekeeping happens on the read path. A session killed without a clean shutdown never
-			// runs its own cleanup, so whoever reads next removes the expired entry *and* its leftovers
-			// (hash field, session stream) — otherwise every crash would leak a stream forever.
+			// Housekeeping happens on the read path. A session killed without a clean shutdown never runs
+			// its own cleanup, so whoever reads next removes the expired channel *and* its leftovers
+			// (hash field, stream) — all of them derivable from the channel name.
 			const live = await use(async () => {
-				const expired = await client.zRangeByScore(prefix, "-inf", `(${now}`);
+				const expired = await client.zRangeByScore(membersKey, "-inf", `(${now}`);
 				if (expired.length > 0) {
-					const stale = await client.hmGet(entriesKey, expired);
-					await client.multi().zRemRangeByScore(prefix, "-inf", `(${now}`).hDel(entriesKey, expired).exec();
-					const payloads: Array<string | null> = Array.isArray(stale)
-						? stale.map((value) => (typeof value === "string" ? value : null))
-						: [];
-					for (const raw of payloads) {
-						const stream = streamOf(raw);
-						if (stream !== undefined) await client.del(stream);
-					}
+					await client.multi().zRemRangeByScore(membersKey, "-inf", `(${now}`).hDel(entriesKey, expired).exec();
+					for (const channel of expired) await client.del(channelStreamKey(namespace, channel));
 				}
-				return client.zRangeByScoreWithScores(prefix, `(${now}`, "+inf");
+				return client.zRangeByScoreWithScores(membersKey, `(${now}`, "+inf");
 			});
 			if (live.length === 0) return [];
-			const members = live.map((entry) => entry.value);
-			const values = await use(() => client.hmGet(entriesKey, members));
+			const channels = live.map((entry) => entry.value);
+			const values = await use(() => client.hmGet(entriesKey, channels));
 			// `redis` types the reply as a broad union; narrow it once instead of trusting it.
-			const payloads: Array<string | null> = Array.isArray(values)
+			const descriptions: Array<string | null> = Array.isArray(values)
 				? values.map((value) => (typeof value === "string" ? value : null))
 				: [];
 			const entries: RegistryEntry[] = [];
 			live.forEach((scored, index) => {
-				const raw = payloads[index];
-				if (typeof raw !== "string") return;
-				entries.push({
-					member: scored.value,
-					channel: JSON.parse(raw) as RegistryChannel,
-					expiresAt: scored.score,
-				});
+				const description = descriptions[index];
+				if (typeof description !== "string") return;
+				entries.push({ channel: scored.value, description, expiresAt: scored.score });
 			});
 			return entries;
 		},

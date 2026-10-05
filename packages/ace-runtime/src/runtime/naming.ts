@@ -17,6 +17,12 @@
 /** 命名空间默认值。 */
 export const NAMESPACE_DEFAULT = "ace";
 
+/**
+ * 本地订阅名：本会话读自己那条收件箱 channel 时用的**本地标签**（不上传、不参与寻址）。
+ * 收件箱 channel 的名字是会话的 sender 名；这个名字只是配置/工具里对它的称呼。
+ */
+export const SESSION_INBOX = "session-inbox";
+
 /** 冒号：段的边界，也是禁止出现在前三段里的字符。 */
 const SEGMENT_SEPARATOR = ":";
 

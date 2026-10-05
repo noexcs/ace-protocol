@@ -1,150 +1,96 @@
 import { networkInterfaces, hostname as osHostname } from "node:os";
 import type { AceLogger } from "../logger.ts";
 import { formatSessionLabel } from "../utils.ts";
-import type { EndpointConfig } from "./endpoint-config.ts";
+import { channelStreamKey, NAMESPACE_DEFAULT } from "./naming.ts";
 
-/** Subscription name of the inbox the agent directory registers for this session. */
-export const SESSION_INBOX = "session-inbox";
-
-/**
- * The subscription that reads the inbox the directory registered: the address peers are told to
- * publish to. Every host wires this up, and it has to be the same shape everywhere — so it is built
- * here from the {@link Registration} the registry returned, not spelled out per host.
- */
-export function sessionInboxEndpoint(registration: Registration, url: string): EndpointConfig {
-	return {
-		name: SESSION_INBOX,
-		transport: "redis-streams",
-		description: "this session's inbox (agent directory)",
-		config: { stream: registration.stream, group: registration.group, url },
-		options: {},
-	};
-}
-
-/** What a sender is called when the host has no session id to name it by. */
-export const NO_SESSION_LABEL = "(no session)";
-
-/**
- * The identity this session publishes under: its directory member when it has one, otherwise the same
- * `<coding-agent>:<sessionId>` shape. A sender never needs to be registered to send, but when it is,
- * member and sender are the same value — which is what lets a peer answer the session that wrote to it.
- */
-export function senderIdentity(options: { member?: string; codingAgent: string; sessionId?: string }): string {
-	return options.member ?? registryMember(options.codingAgent, options.sessionId ?? NO_SESSION_LABEL);
-}
-
-/** Key layout, expiry and heartbeat, derived from `.ace.json` `registry.prefix`. */
+/** Expiry and heartbeat for a directory entry. Key names come from `naming.ts`. */
 export const REGISTRY_DEFAULTS = {
-	prefix: "ace:agents",
-	/** A registration whose score is in the past is offline; the heartbeat keeps it fresh. */
 	ttlMs: 90_000,
-	/** Refresh interval; 0 keeps the entry until the session unregisters (no crash recovery). */
 	refreshMs: 30_000,
 } as const;
 
-/** The channel entry stored for one session, exactly as peers read it back. */
-export interface RegistryChannel {
-	/** The member itself: what a peer passes as `target`. */
-	name: string;
-	transport: string;
-	description: string;
-	/** `field` is optional: a peer publishing here uses the runtime default when it is absent. */
-	config: { stream: string; group: string; url: string; field?: string };
-}
-
-/** Where a directory entry says to publish: its own broker, stream and field. */
-export interface PublishEndpoint {
-	transport: string;
-	url: string;
-	stream: string;
-	field: string;
-}
-
 /**
- * Read the publish endpoint out of a directory entry.
- *
- * The entry's own `transport`, `config.url`, `config.stream` and `config.field` are used as
- * advertised: a session may live on another broker, and a peer is expected to reach it there. A
- * caller that cannot speak `transport` must say so rather than fall back to its own broker.
+ * One live registration, as discovery sees it: **a channel** — the one a session opened under its own
+ * sender name. There is no second kind of entity and no second name: `channel` *is* that session's
+ * sender, and `target` is nothing but this string.
  */
-export function publishEndpointOf(entry: RegistryEntry, defaultField = "message"): PublishEndpoint {
-	return {
-		transport: entry.channel.transport,
-		url: entry.channel.config.url,
-		stream: entry.channel.config.stream,
-		field: entry.channel.config.field ?? defaultField,
-	};
-}
-
-/** One live registration, as discovery sees it. */
 export interface RegistryEntry {
-	member: string;
-	channel: RegistryChannel;
+	/** The uploaded channel name (= the session's sender name). */
+	channel: string;
+	/** What the channel says about where it runs. Self-reported: shown, never trusted. */
+	description: string;
 	/** ZSet score: the instant this registration stops being discoverable. */
 	expiresAt: number;
 }
 
 /**
- * The registry as the runtime needs it: a presence index with expiry, the channel payload, and one
- * stream per session. `transport/redis-agent-registry.ts` implements it against Redis; tests
- * implement it in memory.
+ * The directory as the runtime needs it: a presence index with expiry, and one stream per live
+ * channel. `transport/redis-agent-registry.ts` implements it against Redis; tests implement it in
+ * memory.
  */
 export interface AgentRegistryStore {
 	/** Create this session's stream and group when absent; idempotent. */
 	ensureStream(stream: string, group: string): Promise<void>;
-	put(member: string, channel: RegistryChannel, expiresAt: number): Promise<void>;
+	put(channel: string, description: string, expiresAt: number): Promise<void>;
 	/** Extend the expiry without rewriting the entry. */
-	refresh(member: string, expiresAt: number): Promise<void>;
-	remove(member: string): Promise<void>;
+	refresh(channel: string, expiresAt: number): Promise<void>;
+	remove(channel: string): Promise<void>;
 	/** Drop the session's stream: nothing can be addressed to a closed session. */
 	dropStream(stream: string): Promise<void>;
-	/** Live entries, expired members pruned on the way. */
+	/** Live entries, expired channels pruned on the way. */
 	list(now: number): Promise<RegistryEntry[]>;
 	close(): Promise<void>;
 }
 
-/** What one session needs to register: who it is, where it runs, which broker it talks to. */
+/**
+ * What one session needs to register: the name it answers to, and enough to describe where it runs.
+ * The sender name is computed by the host (it owns `username`, the namespace and the session id) —
+ * the registry only publishes what it is handed.
+ */
 export interface AgentRegistration {
+	/** This session's sender name, which is also the channel it registers. */
+	sender: string;
 	/** Coding agent this session runs in, e.g. `oh-my-pi`, `pi`, `codex`. */
 	codingAgent: string;
 	agentVersion?: string;
-	/** Full session id; the member is built from it. */
+	/** Session the description belongs to; shown as a short label. */
 	sessionId: string;
 	cwd: string;
-	/** Broker of the session's own stream; what peers are told to publish to. */
-	url: string;
 }
 
 export interface AgentRegistryOptions {
 	store: AgentRegistryStore;
-	prefix?: string;
+	/** Namespace this server owns; keys live under it. Defaults to `ace`. */
+	namespace?: string;
 	ttlMs?: number;
 	refreshMs?: number;
 	now?: () => number;
 	setTimer?: (callback: () => void, ms: number) => { cancel: () => void };
 	logger?: AceLogger;
-	/** Registry problems must never take a session down; they are reported here. */
+	/** Directory problems must never take a session down; they are reported here. */
 	onError?: (error: unknown) => void;
 }
 
-/** Where this session is reachable: the registered view of one registration. */
+/** What one registration produced — everything else is derived from the channel name. */
 export interface Registration {
-	member: string;
+	/** The channel that was registered; equals the session's sender name. */
+	channel: string;
+	/** Stream key that carries the channel's events (`<ns>:ch:<channel>`). */
 	stream: string;
+	/** The group this session reads its own channel in. **Equals the channel name.** */
 	group: string;
-	channel: RegistryChannel;
 }
 
 /**
- * Registers one session in the shared agent directory (RFC §22 item 1 — not part of ACE 0.1).
+ * Registers one session's channel in the shared directory (RFC §22 item 1 — not part of ACE 0.1).
  *
- * The registry answers what configuration cannot: *which sessions are online right now*, and *where
- * to send to each of them*. Presence is the ZSet score (an expiry the heartbeat refreshes), the
- * address is the session's own stream, and a clean shutdown removes both the entry and the stream.
+ * The directory answers what configuration cannot: *which channels are live right now*, and *what to
+ * call them when publishing*. Presence is the ZSet score (an expiry the heartbeat refreshes), the
+ * address is derived from the name, and a clean shutdown removes both the entry and the stream.
  */
 export class AgentRegistry {
 	private readonly store: AgentRegistryStore;
-	private readonly prefix: string;
+	private readonly namespace: string;
 	private readonly ttlMs: number;
 	private readonly refreshMs: number;
 	private readonly now: () => number;
@@ -156,7 +102,7 @@ export class AgentRegistry {
 
 	constructor(options: AgentRegistryOptions) {
 		this.store = options.store;
-		this.prefix = options.prefix ?? REGISTRY_DEFAULTS.prefix;
+		this.namespace = options.namespace ?? NAMESPACE_DEFAULT;
 		this.ttlMs = options.ttlMs ?? REGISTRY_DEFAULTS.ttlMs;
 		this.refreshMs = options.refreshMs ?? REGISTRY_DEFAULTS.refreshMs;
 		this.now = options.now ?? (() => Date.now());
@@ -171,27 +117,22 @@ export class AgentRegistry {
 		this.onError = options.onError ?? (() => {});
 	}
 
-	/** Publish this session's stream, then keep it discoverable until {@link unregister}. */
+	/** Open this session's channel, then keep it discoverable until {@link unregister}. */
 	async register(registration: AgentRegistration): Promise<Registration> {
-		const member = registryMember(registration.codingAgent, registration.sessionId);
-		const stream = registryStream(this.prefix, member);
-		const group = registryGroup(member);
-		const channel = registryChannel({
-			member,
-			stream,
-			group,
-			url: registration.url,
-			description: describeLocation(hostFacts({ ...registration, sessionId: registration.sessionId })),
-		});
+		const channel = registration.sender;
+		const stream = channelStreamKey(this.namespace, channel);
+		// The group is the channel name: unique per session, and it never leaves this machine's reader.
+		const group = channel;
+		const description = describeLocation(hostFacts(registration));
 
 		await this.store.ensureStream(stream, group);
-		await this.store.put(member, channel, this.now() + this.ttlMs);
-		const registered: Registration = { member, stream, group, channel };
+		await this.store.put(channel, description, this.now() + this.ttlMs);
+		const registered: Registration = { channel, stream, group };
 		this.registration = registered;
-		this.logger?.info?.(`[ACE] registered ${member} stream=${stream} ttl=${this.ttlMs}ms`);
+		this.logger?.info?.(`[ACE] registered ${channel} stream=${stream} ttl=${this.ttlMs}ms`);
 		if (this.refreshMs > 0) {
 			const tick = () => {
-				void this.beat(member);
+				void this.beat(channel);
 				this.timer = this.setTimer(tick, this.refreshMs);
 			};
 			this.timer = this.setTimer(tick, this.refreshMs);
@@ -206,9 +147,9 @@ export class AgentRegistry {
 		this.timer?.cancel();
 		this.timer = undefined;
 		if (registered === undefined) return;
-		await this.store.remove(registered.member);
+		await this.store.remove(registered.channel);
 		await this.store.dropStream(registered.stream);
-		this.logger?.info?.(`[ACE] unregistered ${registered.member}`);
+		this.logger?.info?.(`[ACE] unregistered ${registered.channel}`);
 	}
 
 	/** Live registrations, expired ones pruned on the way. */
@@ -223,48 +164,14 @@ export class AgentRegistry {
 	}
 
 	/** Extend the expiry; a failure is reported and the next beat retries. */
-	private async beat(member: string): Promise<void> {
+	private async beat(channel: string): Promise<void> {
 		try {
-			await this.store.refresh(member, this.now() + this.ttlMs);
+			await this.store.refresh(channel, this.now() + this.ttlMs);
 		} catch (error) {
 			this.onError(error);
 		}
 	}
 }
-
-/** `<coding-agent>:<sessionId>` — what a peer passes as `target` and what the ZSet indexes. */
-export function registryMember(codingAgent: string, sessionId: string): string {
-	return `${codingAgent}:${sessionId}`;
-}
-
-/** Each session gets its own stream; nothing is shared between sessions. */
-export function registryStream(prefix: string, member: string): string {
-	return `${prefix}:events:${member}`;
-}
-
-/** The consumer group the session itself reads its stream in. */
-export function registryGroup(member: string): string {
-	return `ace:${member}`;
-}
-
-/** The stored channel entry: the member, the session's stream, and where this agent runs. */
-export function registryChannel(options: {
-	member: string;
-	stream: string;
-	group: string;
-	url: string;
-	description: string;
-}): RegistryChannel {
-	return {
-		name: options.member,
-		transport: "redis-streams",
-		description: options.description,
-		config: { stream: options.stream, group: options.group, url: options.url },
-	};
-}
-
-/** What the channel's own description text starts with, before the host details. */
-export const REGISTRY_CHANNEL_NOTE = "direct messages addressed to me";
 
 export interface HostFacts {
 	codingAgent: string;
@@ -308,7 +215,7 @@ function primaryIpv4(): string | undefined {
 	return undefined;
 }
 
-/** `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…` — what a sender says about itself. */
+/** `agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…` — what a channel says about itself. */
 export function describeSender(facts: HostFacts): string {
 	return [
 		`agent=${facts.agentVersion === undefined ? facts.codingAgent : `${facts.codingAgent} ${facts.agentVersion}`}`,
@@ -326,27 +233,30 @@ export function describeLocation(facts: HostFacts): string {
 	return [REGISTRY_CHANNEL_NOTE, describeSender(facts)].join(" | ");
 }
 
-/** How a member resolves for publishing: exact member, or a prefix that matches exactly one. */
+/** What the channel's own description text starts with, before the host details. */
+export const REGISTRY_CHANNEL_NOTE = "direct messages addressed to me";
+
+/** How a target resolves: an exact channel name, or a prefix that matches exactly one. */
 export type TargetResolution =
 	| { ok: true; entry: RegistryEntry }
 	| { ok: false; reason: "not-found" | "ambiguous"; candidates: string[] };
 
 /**
- * Resolve a `target` against the live registrations.
+ * Resolve a `target` against the live channels.
  *
- * A prefix is accepted only when it matches exactly one session: guessing between two sessions would
- * send an event to the wrong agent, and the caller can always ask for the full member.
+ * A prefix is accepted only when it matches exactly one channel: guessing between two sessions would
+ * send an event to the wrong agent, and the caller can always ask for the full name.
  */
 export function resolveTarget(entries: readonly RegistryEntry[], target: string): TargetResolution {
-	const exact = entries.find((entry) => entry.member === target);
+	const exact = entries.find((entry) => entry.channel === target);
 	if (exact) return { ok: true, entry: exact };
 
-	// Any prefix that selects exactly one session: typing a 36-character member is tedious, and
-	// narrowing by the agent name or the first hex digits of the session is unambiguous enough.
-	const matches = entries.filter((entry) => entry.member.startsWith(target));
+	// Any prefix that selects exactly one channel: typing a full name is tedious, and narrowing by the
+	// agent name or the first hex digits of the session is unambiguous enough.
+	const matches = entries.filter((entry) => entry.channel.startsWith(target));
 	if (matches.length === 1 && matches[0]) return { ok: true, entry: matches[0] };
 	if (matches.length > 1) {
-		return { ok: false, reason: "ambiguous", candidates: matches.map((entry) => entry.member).sort() };
+		return { ok: false, reason: "ambiguous", candidates: matches.map((entry) => entry.channel).sort() };
 	}
-	return { ok: false, reason: "not-found", candidates: entries.map((entry) => entry.member).sort() };
+	return { ok: false, reason: "not-found", candidates: entries.map((entry) => entry.channel).sort() };
 }

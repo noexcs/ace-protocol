@@ -2,20 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentRegistry,
 	type AgentRegistryStore,
-	publishEndpointOf,
 	REGISTRY_CHANNEL_NOTE,
-	type RegistryChannel,
 	type RegistryEntry,
-	registryGroup,
-	registryMember,
-	registryStream,
 	resolveTarget,
 } from "../../src/runtime/agent-registry.ts";
+import { channelStreamKey, NAMESPACE_DEFAULT } from "../../src/runtime/naming.ts";
 
 /** In-memory stand-in for the Redis store; records what the registry asked for. */
 class FakeStore implements AgentRegistryStore {
 	readonly ensured: Array<{ stream: string; group: string }> = [];
-	readonly entries = new Map<string, { channel: RegistryChannel; expiresAt: number }>();
+	readonly entries = new Map<string, { description: string; expiresAt: number }>();
 	readonly dropped: string[] = [];
 	closed = false;
 
@@ -23,18 +19,18 @@ class FakeStore implements AgentRegistryStore {
 		this.ensured.push({ stream, group });
 	}
 
-	async put(member: string, channel: RegistryChannel, expiresAt: number): Promise<void> {
-		this.entries.set(member, { channel, expiresAt });
+	async put(channel: string, description: string, expiresAt: number): Promise<void> {
+		this.entries.set(channel, { description, expiresAt });
 	}
 
-	async refresh(member: string, expiresAt: number): Promise<void> {
-		const entry = this.entries.get(member);
-		if (!entry) throw new Error(`unknown member ${member}`);
+	async refresh(channel: string, expiresAt: number): Promise<void> {
+		const entry = this.entries.get(channel);
+		if (!entry) throw new Error(`unknown channel ${channel}`);
 		entry.expiresAt = expiresAt;
 	}
 
-	async remove(member: string): Promise<void> {
-		this.entries.delete(member);
+	async remove(channel: string): Promise<void> {
+		this.entries.delete(channel);
 	}
 
 	async dropStream(stream: string): Promise<void> {
@@ -44,7 +40,7 @@ class FakeStore implements AgentRegistryStore {
 	async list(now: number): Promise<RegistryEntry[]> {
 		return [...this.entries]
 			.filter(([, entry]) => entry.expiresAt > now)
-			.map(([member, entry]) => ({ member, channel: entry.channel, expiresAt: entry.expiresAt }));
+			.map(([channel, entry]) => ({ channel, description: entry.description, expiresAt: entry.expiresAt }));
 	}
 
 	async close(): Promise<void> {
@@ -77,7 +73,7 @@ class ManualTimer {
 	}
 }
 
-function setup(options: { refreshMs?: number; onError?: (error: unknown) => void } = {}) {
+function setup(options: { namespace?: string; refreshMs?: number; onError?: (error: unknown) => void } = {}) {
 	const store = new FakeStore();
 	const timer = new ManualTimer();
 	let now = 1_000;
@@ -87,6 +83,7 @@ function setup(options: { refreshMs?: number; onError?: (error: unknown) => void
 		refreshMs: options.refreshMs ?? 30_000,
 		now: () => now,
 		setTimer: timer.setTimer,
+		...(options.namespace === undefined ? {} : { namespace: options.namespace }),
 		...(options.onError === undefined ? {} : { onError: options.onError }),
 	});
 	return {
@@ -100,55 +97,38 @@ function setup(options: { refreshMs?: number; onError?: (error: unknown) => void
 }
 
 const sessionId = "01a102b6-9dac-75b6-80ca-21cbbf58e914";
+/** The sender name *is* the channel name; the host computes it (it owns `username` and the namespace). */
+const sender = `${NAMESPACE_DEFAULT}:noexcs:oh-my-pi:${sessionId}`;
+const stream = channelStreamKey(NAMESPACE_DEFAULT, sender);
 const registration = {
+	sender,
 	codingAgent: "oh-my-pi",
 	sessionId,
 	cwd: "/Users/noexcs/Projects/ace-protocol",
-	url: "redis://127.0.0.1:6379",
 };
 
-describe("registry key layout", () => {
-	it("names the member, the session stream and its group after the coding agent and the session", () => {
-		expect(registryMember("oh-my-pi", sessionId)).toBe(`oh-my-pi:${sessionId}`);
-		expect(registryStream("ace:agents", `oh-my-pi:${sessionId}`)).toBe(`ace:agents:events:oh-my-pi:${sessionId}`);
-		expect(registryGroup(`oh-my-pi:${sessionId}`)).toBe(`ace:oh-my-pi:${sessionId}`);
-	});
-});
-
 describe("AgentRegistry", () => {
-	it("creates the session's own stream before publishing the entry", async () => {
+	it("creates the channel's stream before publishing the entry", async () => {
 		const { store, registry } = setup();
 
 		const registered = await registry.register(registration);
 
-		expect(store.ensured).toEqual([
-			{ stream: `ace:agents:events:oh-my-pi:${sessionId}`, group: `ace:oh-my-pi:${sessionId}` },
-		]);
-		expect(registered.member).toBe(`oh-my-pi:${sessionId}`);
-		expect(registered.stream).toBe(`ace:agents:events:oh-my-pi:${sessionId}`);
+		expect(store.ensured).toEqual([{ stream, group: sender }]);
+		expect(registered).toEqual({ channel: sender, stream, group: sender });
 	});
 
-	it("stores the channel entry peers read back, with the location in its description", async () => {
+	it("stores what the channel says about itself, and nothing the name already carries", async () => {
 		const { store, registry } = setup();
 
 		await registry.register(registration);
 
-		const stored = store.entries.get(`oh-my-pi:${sessionId}`);
+		const stored = store.entries.get(sender);
 		expect(stored?.expiresAt).toBe(1_000 + 90_000);
-		expect(stored?.channel).toEqual({
-			name: `oh-my-pi:${sessionId}`,
-			transport: "redis-streams",
-			description: expect.stringContaining(
-				`${REGISTRY_CHANNEL_NOTE} | agent=oh-my-pi | session=${sessionId.slice(-6)} | cwd=/Users/noexcs/Projects/ace-protocol | host=`,
-			),
-			config: {
-				stream: `ace:agents:events:oh-my-pi:${sessionId}`,
-				group: `ace:oh-my-pi:${sessionId}`,
-				url: "redis://127.0.0.1:6379",
-			},
-		});
-		expect(stored?.channel.description).toContain("platform=");
-		expect(stored?.channel.description).toContain(`pid=${process.pid}`);
+		expect(stored?.description).toContain(
+			`${REGISTRY_CHANNEL_NOTE} | agent=oh-my-pi | session=${sessionId.slice(-6)} | cwd=/Users/noexcs/Projects/ace-protocol | host=`,
+		);
+		expect(stored?.description).toContain("platform=");
+		expect(stored?.description).toContain(`pid=${process.pid}`);
 	});
 
 	it("extends the expiry on every heartbeat", async () => {
@@ -158,7 +138,7 @@ describe("AgentRegistry", () => {
 		advance(30_000);
 		await timer.fire();
 
-		expect(store.entries.get(`oh-my-pi:${sessionId}`)?.expiresAt).toBe(31_000 + 90_000);
+		expect(store.entries.get(sender)?.expiresAt).toBe(31_000 + 90_000);
 	});
 
 	it("reports a heartbeat that cannot extend the entry", async () => {
@@ -172,14 +152,14 @@ describe("AgentRegistry", () => {
 		expect(errors).toHaveLength(1);
 	});
 
-	it("removes the entry and the session's stream on a clean shutdown", async () => {
+	it("removes the entry and the channel's stream on a clean shutdown", async () => {
 		const { store, timer, registry } = setup();
 		await registry.register(registration);
 
 		await registry.unregister();
 
 		expect(store.entries.size).toBe(0);
-		expect(store.dropped).toEqual([`ace:agents:events:oh-my-pi:${sessionId}`]);
+		expect(store.dropped).toEqual([stream]);
 		expect(timer.armed).toBe(0);
 	});
 
@@ -191,6 +171,14 @@ describe("AgentRegistry", () => {
 		advance(90_001);
 
 		expect(await registry.list()).toEqual([]);
+	});
+
+	it("honours a namespace the server asked for", async () => {
+		const { store, registry } = setup({ namespace: "lan" });
+
+		await registry.register(registration);
+
+		expect(store.ensured[0]?.stream).toBe(`lan:ch:${sender}`);
 	});
 
 	it("closes the store on shutdown", async () => {
@@ -205,112 +193,52 @@ describe("AgentRegistry", () => {
 
 describe("resolveTarget", () => {
 	const entries: RegistryEntry[] = [
-		{
-			member: `oh-my-pi:${sessionId}`,
-			channel: {
-				name: `oh-my-pi:${sessionId}`,
-				transport: "redis-streams",
-				description: "…",
-				config: { stream: "s1", group: "g1", url: "redis://x" },
-			},
-			expiresAt: 5,
-		},
-		{
-			member: "pi:01a102b8-f016-75ab-87eb-63551c257fda",
-			channel: {
-				name: "pi:…",
-				transport: "redis-streams",
-				description: "…",
-				config: { stream: "s2", group: "g2", url: "redis://x" },
-			},
-			expiresAt: 9,
-		},
-		{
-			member: "pi:01a102b9-f016-75ab-87eb-63551c257fdb",
-			channel: {
-				name: "pi:…",
-				transport: "redis-streams",
-				description: "…",
-				config: { stream: "s3", group: "g3", url: "redis://x" },
-			},
-			expiresAt: 7,
-		},
+		{ channel: `ace:noexcs:oh-my-pi:${sessionId}`, description: "…", expiresAt: 5 },
+		{ channel: "ace:noexcs:pi:01a102b8-f016-75ab-87eb-63551c257fda", description: "…", expiresAt: 9 },
+		{ channel: "ace:noexcs:pi:01a102b9-f016-75ab-87eb-63551c257fdb", description: "…", expiresAt: 7 },
 	];
 
-	it("matches an exact member", () => {
-		expect(resolveTarget(entries, `oh-my-pi:${sessionId}`)).toMatchObject({
+	it("matches an exact channel", () => {
+		expect(resolveTarget(entries, `ace:noexcs:oh-my-pi:${sessionId}`)).toMatchObject({
 			ok: true,
-			entry: { member: `oh-my-pi:${sessionId}` },
+			entry: { channel: `ace:noexcs:oh-my-pi:${sessionId}` },
 		});
 	});
 
-	it("matches a prefix that selects exactly one session", () => {
-		expect(resolveTarget(entries, "oh-my-pi")).toMatchObject({
+	it("matches a prefix that selects exactly one channel", () => {
+		expect(resolveTarget(entries, "ace:noexcs:oh-my-pi")).toMatchObject({
 			ok: true,
-			entry: { member: `oh-my-pi:${sessionId}` },
+			entry: { channel: `ace:noexcs:oh-my-pi:${sessionId}` },
 		});
 	});
 
-	it("refuses to guess between several sessions and names them", () => {
-		const resolution = resolveTarget(entries, "pi");
-		expect(resolution.ok).toBe(false);
+	it("refuses to guess between several channels and names them", () => {
+		const resolution = resolveTarget(entries, "ace:noexcs:pi");
+
 		expect(resolution).toMatchObject({
+			ok: false,
 			reason: "ambiguous",
-			candidates: ["pi:01a102b8-f016-75ab-87eb-63551c257fda", "pi:01a102b9-f016-75ab-87eb-63551c257fdb"],
+			candidates: [
+				"ace:noexcs:pi:01a102b8-f016-75ab-87eb-63551c257fda",
+				"ace:noexcs:pi:01a102b9-f016-75ab-87eb-63551c257fdb",
+			],
 		});
 	});
 
 	it("reports what is live when nothing matches", () => {
-		expect(resolveTarget(entries, "codex")).toEqual({
+		expect(resolveTarget(entries, "ace:noexcs:codex")).toEqual({
 			ok: false,
 			reason: "not-found",
 			candidates: [
-				"oh-my-pi:01a102b6-9dac-75b6-80ca-21cbbf58e914",
-				"pi:01a102b8-f016-75ab-87eb-63551c257fda",
-				"pi:01a102b9-f016-75ab-87eb-63551c257fdb",
+				`ace:noexcs:oh-my-pi:${sessionId}`,
+				"ace:noexcs:pi:01a102b8-f016-75ab-87eb-63551c257fda",
+				"ace:noexcs:pi:01a102b9-f016-75ab-87eb-63551c257fdb",
 			],
 		});
 	});
 
 	it("does not treat a partial session id as a prefix of another agent", () => {
-		expect(resolveTarget(entries, "oh-my-pi:01a102b6").ok).toBe(true);
-		expect(resolveTarget(entries, "oh-my-pi:zzz")).toMatchObject({ ok: false, reason: "not-found" });
-	});
-});
-
-describe("publishEndpointOf", () => {
-	const entry: RegistryEntry = {
-		member: "pi:01a102b8-f016-75ab-87eb-63551c257fda",
-		expiresAt: 5,
-		channel: {
-			name: "pi:01a102b8-f016-75ab-87eb-63551c257fda",
-			transport: "redis-streams",
-			description: "…",
-			config: { stream: "ace:elsewhere:events", group: "ace:pi:…", url: "redis://other-broker:6379" },
-		},
-	};
-
-	it("publishes where the entry says, not where this runtime happens to talk", () => {
-		expect(publishEndpointOf(entry)).toEqual({
-			transport: "redis-streams",
-			url: "redis://other-broker:6379",
-			stream: "ace:elsewhere:events",
-			field: "message",
-		});
-	});
-
-	it("honours a field the entry carries", () => {
-		const withField: RegistryEntry = {
-			...entry,
-			channel: { ...entry.channel, config: { ...entry.channel.config, field: "ace" } },
-		};
-
-		expect(publishEndpointOf(withField).field).toBe("ace");
-	});
-
-	it("keeps the transport as advertised, so a caller can refuse one it cannot speak", () => {
-		const kafkaEntry: RegistryEntry = { ...entry, channel: { ...entry.channel, transport: "kafka" } };
-
-		expect(publishEndpointOf(kafkaEntry).transport).toBe("kafka");
+		expect(resolveTarget(entries, `ace:noexcs:oh-my-pi:01a102b6`).ok).toBe(true);
+		expect(resolveTarget(entries, "ace:noexcs:oh-my-pi:zzz")).toMatchObject({ ok: false, reason: "not-found" });
 	});
 });

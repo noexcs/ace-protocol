@@ -1,18 +1,18 @@
 import type { ResolvedAceConfig } from "../runtime/ace-config.ts";
 import type { RegistryEntry } from "../runtime/agent-registry.ts";
-import { SESSION_INBOX } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 import { endpointAddress } from "../runtime/endpoint-config.ts";
+import { SESSION_INBOX } from "../runtime/naming.ts";
 
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export function addressOf(endpoint: EndpointConfig): string {
 	return `${endpoint.transport} ${endpointAddress(endpoint) ?? "(no address)"}`;
 }
 
-/** One directory row: the member to address, what it says about itself (never shortened), and how fresh it is. */
+/** One directory row: the channel to address, what it says about itself (never shortened), and how fresh it is. */
 export function describeDiscovered(entry: RegistryEntry): string {
 	const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
-	return `${entry.member} — ${entry.channel.description} (renews in ${renewsIn}s)`;
+	return `${entry.channel} — ${entry.description} (renews in ${renewsIn}s)`;
 }
 
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
