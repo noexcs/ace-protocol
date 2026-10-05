@@ -44,6 +44,9 @@ export interface OutboundResult {
 /**
  * transport 接缝：broker ⇄ 信封。分帧、寻址、确认、重投、重连都在实现里。
  *
+ * 注意词汇：**这一层的 "broker" 指的是承载本身（Redis）**，即模型里的一个 `Server`；而 `brokerId`
+ * 是**承载自己的写入标识**（stream id、offset…），不是 `ServerName`。
+ *
  * **目标形状 vs 现状**：这里是目标形状（显式 `InboundEvent.ack()`）。当前 Pi/oh-my-pi 实现用的是
  * `Transport.start(handler)` + `stop()`，确认由"handler 的 promise 在**观察到之后**才 resolve、
  * transport 随后 ack"隐式达成（`packages/ace-runtime/src/transport/transport.ts`）。
@@ -107,16 +110,17 @@ export interface ParticipantView {
 	lastSeen?: EpochMillis;
 	/** 不续期即过期的时间点。 */
 	expiresAt: EpochMillis;
-	/** 可寻址时的落点：目录条目自报的收件箱（broker 实例 + 寻址）。 */
-	inbox?: { broker: BrokerId; dispatch: Dispatch };
+	/** 可寻址时的落点：它在哪台 server 上，以及它的 member 全名（收件箱流由约定派生）。 */
+	inbox?: { server: ServerName; member: string };
 }
 
-/** 本会话接的一条 channel，即模型/UI 看到的视图：不含 broker 凭据，按需才带计数器。 */
+/** 本会话接的一条 channel，即模型/UI 看到的视图：不含连接凭据，按需才带计数器。 */
 export interface ChannelView {
+	/** 展示用的全名：多 server 时带 `<server>:` 前缀，单 server 不带。 */
 	name: string;
 	direction: "in" | "out";
-	/** 在哪台 Broker 上（模型据此决定往哪发）。 */
-	broker: BrokerId;
+	/** 在哪台 server 上（模型据此决定往哪发）。 */
+	server: ServerName;
 	description?: string;
 	/** 仅订阅侧：本接收方固定的激活方式。 */
 	activation?: Activation;
@@ -127,18 +131,31 @@ export interface ChannelView {
 	address?: string;
 }
 
-// ─────────────── 三、Broker 与频道记录（目标形态） ───────────────
-
-/** 本地配置里给一个 Broker **实例**起的名字（如 `local-redis`）；频道记录用它引用。 */
-export type BrokerId = string;
+// ─────────────── 三、Server 与频道记录（模型） ───────────────
 
 /**
- * Broker **种类**。现在**只支持** `redis-streams`。
+ * 一个 **Server** = Redis 承载 + 成员目录 + 频道之家，三者同一个**凭据域**。
  *
- * 候选（`nats-jetstream` / `kafka` / `mqtt` / 入站类 `http` / `file`）留在 §六 的短名单里，代码里不出现；
- * 将来加第二种时，把 `Dispatch` / `Consume` 与两个 override 改成按 kind 判别的联合即可，其余形状不变。
+ * 为什么不存在「registry」与「brokers[]」的分裂：目录条目的作用就是告诉别人"往哪投递"，而"往哪投递"
+ * 就是承载的地址与凭据 —— 把它们拆开就会出现"能发现你、却到不了你的 broker"，而且会把解析后的 URL
+ * （可能含密码 ✗）广播给每个目录读者。历史痕迹（现已删除的路径）：`publishEndpointOf()`、
+ * `member "…" advertises transport "…", which this runtime cannot publish to`。
+ *
+ * **只支持 Redis** ✓：所以描述符里没有 `kind` ✗ —— 那是给多承载准备的字段，现在没有第二种，
+ * 它是纯噪音；真要加第二种，那时再加一个字段也不迟。
+ *
+ * 「谁能看见你」因此等价于「谁和你在同一台 server 上」 ✓ —— 这既是限制也是天然的信任边界。
  */
-export type BrokerKind = "redis-streams";
+
+/**
+ * 本地配置里给一台 server 起的名字（map 的 key）。**只作用于本地**：server 自己不知道它，
+ * 协议里不传、**不上传** ✗，也不要求唯一（你和同事各自把一台叫 `lan` 没问题）。
+ * **不含冒号** —— 它是全名的第一段，冒号是分隔符。
+ */
+export type ServerName = string;
+
+/** 起点。Redis 上映射到 **XGROUP CREATE 的起始 ID**：`latest` = `$`（组建立前的事件不投递）、`earliest` = `0`。默认 `latest`。 */
+export type StartFrom = "latest" | "earliest";
 
 /** Redis Streams 的写侧修剪策略，直接对应 node-redis `XAddOptions.TRIM`。 */
 export interface TrimPolicy {
@@ -149,180 +166,167 @@ export interface TrimPolicy {
 }
 
 /**
- * Broker 级别的**频道默认值**：写在这里的值对所有频道生效（`address` 除外 —— 地址永远按
- * `addressPrefix + 频道名` 派生，写死一个字面地址对每个频道都成立才怪）。
+ * 本地 ACE 文件里的一个 Server 条目：**连接信息 + 命名空间**，就这两样。
  *
- * 优先级：**内建默认 < `BrokerDescriptor.defaults` < 单条频道的覆盖值**
- * （`ChannelDraft.dispatch` / `ChannelDraft.consume` / `ace_channel` 的入参）。
+ * `url` 支持 `${ENV}` 插值 —— 凭据（ACL 用户名/密码、`rediss://` 的 TLS）随 URL 走，
+ * **只留在本地文件里，永不被广播**。连接池参数等真需要时再加。
  */
-export interface BrokerChannelDefaults {
-	dispatch?: Omit<DispatchOverride, "address">;
-	consume?: Omit<ConsumeOverride, "address">;
-}
-
-/**
- * 一个 Broker 实例（写在**本地** ACE 文件里）：端点与凭据属于部署信息，不进注册中心。
- *
- * 频道记录只引用它的 `id`，因此 `dispatch` / `consume` 里不含 url —— 这正是它们能跨 broker 统一的原因。
- *
- * 这条分工不是我们发明的，是四家客户端库的共同形状：连接设置（`kafka({brokers})` / `connect(url)` /
- * `jsm = jetstreamManager(nc)`）、写侧（`producer.send({topic,key})` / `js.publish(subject)` /
- * `publish(topic, msg, {qos, retain})` / `xAdd(key, id, {field}, {TRIM})`）、读侧（`consumer({groupId})` +
- * `subscribe({topics, fromBeginning})` / `jsm.consumers.add(stream, {durable_name})` /
- * `subscribe(topic, {qos})` / `xReadGroup(group, consumer, {COUNT, BLOCK, CLAIM})`）、控制面
- * （`admin.createTopics` / `jsm.streams.add({name, subjects})` / `xGroupCreate(key, group, id, {MKSTREAM})`）
- * —— 四块分别对应 `BrokerDescriptor` / `Dispatch` / `Consume` / provisioning。
- */
-export interface BrokerDescriptor {
-	id: BrokerId;
-	kind: BrokerKind;
-	/** 端点；支持 `${ENV}` 插值，凭据不进仓库。默认 `redis://127.0.0.1:6379`。 */
-	url?: string;
-	/** 频道名 → stream 键的前缀。默认 `ace:`（共享实例上应换成带归属的前缀，如 `noexcs:ace:`）。 */
-	addressPrefix?: string;
-	/** 本实例的频道/订阅默认值（保留策略、消费者调优、默认组名等）。 */
-	defaults?: BrokerChannelDefaults;
-	/** kind 专属连接设置，由该 kind 的实现校验。 */
-	options?: Record<string, unknown>;
-	description?: string;
-}
-
-/**
- * 本地 ACE 文件（目标形态）：**一个注册中心 + 多个 Broker**。
- * Channel 与订阅关系不在这里 —— 它们在注册中心（见 §六）。
- */
-export interface LocalAceConfig {
-	registry: { url: string; prefix?: string };
-	brokers: BrokerDescriptor[];
-}
-
-/**
- * 起点。Redis 上映射到 **XGROUP CREATE 的起始 ID**：`latest` = `$`（组建立前的事件不投递）、
- * `earliest` = `0`（补投历史）。默认 `latest`。
- */
-export type StartFrom = "latest" | "earliest";
-
-/**
- * 投递侧：只回答"往哪写"。Redis Streams 上就是一次 `XADD`。
- *
- * 每个字段都有默认值（见表），**AI 通常只需要写频道名**。
- */
-export interface Dispatch {
-	kind: "redis-streams";
-	/** 目标 stream 键。默认 `ace:<频道名>`。 */
-	address: string;
+export interface ServerDescriptor {
+	/** Redis 连接信息：`redis://user:${PASS}@host:6379`、`rediss://…`，支持 `${ENV}` 插值。 */
+	url: string;
 	/**
-	 * 信封 JSON 写在 stream entry 的**哪个字段**里。默认 `message`。
+	 * 这台 server 的**命名空间**：它拥有的键都落在其下 —— 成员目录、频道、每会话流。默认 `ace`。
+	 * **不含冒号**（全名的第二段）。
 	 *
-	 * Redis Stream 的每条 entry 是一张 field→value 表（`XADD key * f1 v1 f2 v2 …`），我们把整个 ACE
-	 * 信封 JSON 放进**一个**字段，字段名就是它。所以：
-	 *
-	 * - **dispatch 与 consume 的 `field` 必须一致** —— 不一致时订阅侧读到的是"entry 缺该字段"，
-	 *   既有实现会记一条 notice 然后 **ack**（消息被丢掉，不会重投），这是静默丢事件的坑；
-	 * - 它的存在只为**互操作**：同一条流里可以和别的写入者共存，或改名以避开别人的约定；
-	 * - 它是**传输配置**、不是 ACE 协议字段（代码注释里明确写了这一点），AI 不必碰它。
+	 * 键布局：`<ns>:agents`（成员 ZSet）、`<ns>:entry`（条目 hash）、`<ns>:events:<member>`（会话收件箱流）、
+	 * `<ns>:ch:<name>`（频道流）。**地址由约定派生**，所以频道记录里没有地址字段。
 	 */
-	field?: string;
-	/** `XADD` 的 TRIM 写侧修剪。默认 `{ maxlen, approx, 10000 }`；显式 `null` = 不修剪（流会无限增长）。 */
-	trim?: TrimPolicy | null;
-}
-
-/**
- * 消费侧：`XREADGROUP` + 组创建。每一项都有默认值（见下表），AI 一般只写 `action` + `name`。
- *
- * **`group` 就是交付语义**:默认取**本 participant 名** ⇒ 每个订阅者一个独立组 = 广播；
- * 显式给同一个组名 ⇒ 组内瓜分（竞争消费）。`from` 只在**组首次创建**时生效。
- */
-export interface Consume {
-	kind: "redis-streams";
-	/** 默认 `ace:<频道名>`（与 dispatch 相同）。 */
-	address: string;
-	/** 默认 = 本 participant 名。 */
-	group?: string;
-	/** 默认 `latest`。 */
-	from?: StartFrom;
-	/** 从 stream entry 的哪个字段读信封。默认 `message`；**必须与 `dispatch.field` 一致**。 */
-	field?: string;
-	/** 组内消费者名。默认 `ace-<pid>`。 */
-	consumer?: string;
-	/** `XREADGROUP COUNT`，默认 16。 */
-	count?: number;
-	/** `XREADGROUP BLOCK` 毫秒，默认 1000。 */
-	blockMs?: number;
-	/** PEL 认领空闲阈值毫秒，默认 60000。 */
-	reclaimIdleMs?: number;
-	/** PEL 认领次数上限，默认 3。 */
-	reclaimAttempts?: number;
-	/** 重试退避起始毫秒，默认 200。 */
-	retryDelayMs?: number;
-	/** 重试退避上限毫秒，默认 5000。 */
-	maxRetryDelayMs?: number;
-}
-
-/**
- * AI 在 `create` / `subscribe` 里能覆盖的部分：与记录同形，但 `kind` 与全部默认值都不用写。
- * 加第二种 kind 时，这两个类型要改成按 kind 判别的联合。
- */
-export type DispatchOverride = Partial<Omit<Dispatch, "kind">>;
-export type ConsumeOverride = Partial<Omit<Consume, "kind">>;
-
-/** `create` / `subscribe` 真正要写的东西：只有 `name` 必需。 */
-export interface ChannelDraft {
-	/** 频道名。既是 stream 键（`ace:<name>`）与默认组名的来源，也是 `subscribe` 的匹配目标。 */
-	name: string;
+	namespace?: string;
 	description?: string;
-	dispatch?: DispatchOverride;
-	consume?: ConsumeOverride;
 }
 
-/*
- * ## Redis Streams 默认值表（**内建默认 < Broker 项 `defaults` < 频道覆盖**；实现里已有同名常量）
+/**
+ * 本地 ACE 文件：**一个 map，key 就是 server name**，外加一个 `username`。
  *
- * | 字段 | 默认 | 理由 |
- * |---|---|---|
- * | `addressPrefix` | `ace:` | 由它 + 频道名派生出 `address`（配置里可按实例换前缀） |
- * | `dispatch.address` / `consume.address` | `ace:<频道名>` | 唯一寻址来源；公共前缀避免与别人的键相撞 |
- * | `dispatch.field` / `consume.field` | `message` | 传输配置（信封放哪个 stream 字段），两侧必须一致 |
- * | `dispatch.trim` | `{ maxlen, approx, 10000 }` | 防流无限增长；要无限保留就显式写 `trim: null` |
- * | `consume.group` | 本 participant 名 | = 每订阅者独立组 = 广播（默认交付语义） |
- * | `consume.from` | `latest` | 等价 `$`：组建立前的事件不投递（既有约定） |
- * | `consume.consumer` | `ace-<pid>` | 组内消费者名 |
- * | `consume.count` / `blockMs` | 16 / 1000 | `XREADGROUP` 的 COUNT / BLOCK |
- * | `consume.reclaimIdleMs` / `reclaimAttempts` | 60000 / 3 | PEL 重投 |
- * | `consume.retryDelayMs` / `maxRetryDelayMs` | 200 / 5000 | 退避 |
- * | `BrokerDescriptor.url` | `redis://127.0.0.1:6379` | 本机默认 |
+ * `username` 是**真实用户的名字或昵称**，衡量"这台 server 上谁在说话"：共享同一台 server 的多个用户
+ * 因此不会撞名。它**只作用于本地**：不写进任何远端字段、**不单独存储** —— 零代价的实现方式就是
+ * **拼到名字前面**，于是 Namespace > Username > 主体（sender / channel）成为**命名层级**。
  *
- * 只有一台 Broker 时（现状：配置里只有 redis），`ChannelRecord.broker` 也默认取它。
+ * ### 全名约定（本地形式 vs 上传形式）
  *
- * 配置示例（唯一一台 Broker 上收紧保留、并让默认订阅退回共享组）：
+ * ```
+ * <server>:<ns>:<username>:<name>     ← 本地全名（多 server 时用；第一段只在本地区分）
+ *         <ns>:<username>:<name>      ← 上传 / 存储名（server 段不在这里）
+ * ```
+ *
+ * 前三段（server、ns、username）**不含冒号**；最后一段（sender 名 / channel 名）**允许冒号** ——
+ * 于是"按前 3 个冒号切开（本地形式）／前 2 个（上传形式），余下全是名字"是无歧义的
+ * （sender 名本身形如 `<agent>:<sessionId>`）。
+ *
+ * ```
+ * lan:ace:noexcs:oh-my-pi:01a10a…   ↔   ace:noexcs:oh-my-pi:01a10a…
+ * lan:ace:noexcs:ci-failures        ↔   ace:noexcs:ci-failures
+ * ```
+ *
+ * 代价可接受：`ns` 既是键前缀、又在名字里出现一次（键形如 `ace:events:ace:noexcs:…`），
+ * 换来"看到名字就知道归属"。
+ *
+ * ### `username` 的取值顺序（已定）
+ *
+ * 本文件写了就用 ✓ → 没写则**继承全局文件**的 ✓ → 全局也没有则取 `$USER` ✓ → 三者皆无则报错 ✓。
+ * 这是"不合并"的一条明确例外：**只继承这一个字段** ✓（其它字段仍是整份覆盖 ✓）。
+ *
+ * ### 名字解析（已定）
+ *
+ * - **短名自动补全**：模型或人说 `ci-failures` → 本地解析为 `<ns>:<username>:ci-failures` ✓
+ *   （多 server 时再带上 `<server>:` 前缀 ✓）；工具输出始终显示全名，归属始终看得见 ✓。
+ * - **冲突硬报错**：候选在多处出现（多 server 同名，或默认 server 上没有而别处有）→ **报错并列出候选** ✓，
+ *   绝不静默挑一个 ✓。
+ *
  * ```jsonc
- * { "registry": { "url": "redis://127.0.0.1:6379" },
- *   "brokers": [{ "id": "local-redis", "kind": "redis-streams", "addressPrefix": "noexcs:ace:",
- *                 "defaults": { "dispatch": { "trim": { "strategy": "maxlen", "modifier": "approx", "threshold": 1000 } },
- *                               "consume":  { "blockMs": 2000, "group": "workers" } } }] }
+ * { "username": "noexcs",
+ *   "servers": { "lan": { "url": "redis://127.0.0.1:6379", "namespace": "lan" } } }
  * ```
  */
-
-/** 投递一个信封所需的两样东西：端点（来自 `BrokerDescriptor`）与寻址（来自 `dispatch`）。 */
-export interface PublishTarget {
-	broker: BrokerDescriptor;
-	dispatch: Dispatch;
+export interface ServerConfigFile {
+	username: string;
+	servers: Record<ServerName, ServerDescriptor>;
 }
 
 /**
- * 注册中心里的一条频道记录（取代本地配置里的"通道条目"）；`ace_channel` 的 `create` 写的就是它。
+ * 一个会话在**一台** server 上的身份：同一个 member 名在多台 server 上各有一条条目，
+ * 各自心跳、各自 TTL。
  *
- * `owner` 与"能否覆盖同名"属于待定项（见 §六）。
+ * `member` 的上传形式是 **`<ns>:<username>:<codingAgent>:<sessionId>`**（如 `ace:noexcs:oh-my-pi:01a10a…`，
+ * 最后一段允许冒号）；它**不含 server 段**（不上传）。多 server 时，本地区分与工具输出用
+ * `lan:ace:noexcs:oh-my-pi:01a10a…`。
  */
-export interface ChannelRecord {
+export interface ServerMembership {
+	server: ServerName;
+	member: string;
+	/** 本会话在该 server 上的收件箱流与组：由 server 侧创建，随会话生命周期收放。 */
+	stream: string;
+	group: string;
+}
+
+/**
+ * 注册中心里的一条频道记录：**没有 broker、也没有地址** —— 它在 `server` 上，地址由约定派生。只剩策略与元数据。
+ */
+export interface ServerChannelRecord {
+	server: ServerName;
+	/** 上传形式的名字：**`<ns>:<username>:<name>`**（如 `ace:noexcs:ci-failures`；最后一段允许冒号）。 */
 	name: string;
-	broker: BrokerId;
-	dispatch: Dispatch;
-	/** 供订阅者取用的默认消费设置；订阅者可以覆盖 `group` / `from`。 */
-	consume: Consume;
+	/** 写侧：修剪策略（不写 = 流无限增长）。 */
+	publish?: { trim?: TrimPolicy | null };
+	/** 读侧：组（有无 = 瓜分/广播）、起点。 */
+	consume?: { group?: string; from?: StartFrom };
 	description?: string;
 	owner?: string;
 }
+
+/** 投递一个事件所需的全部：那一台 server，以及目标（频道全名或 member 全名）。 */
+export interface PublishTarget {
+	server: ServerName;
+	target: string;
+}
+
+/** `ace_channel` 的 `create` 真正要写的东西：名字必需，其余用默认值。 */
+export interface ChannelDraft {
+	/** 频道名（不含 ns/username —— 它们由本地的 server 与配置补上）。 */
+	name: string;
+	description?: string;
+	publish?: { trim?: TrimPolicy | null };
+	consume?: { group?: string; from?: StartFrom };
+}
+
+/*
+ * ## 默认值表（内建默认 < Server 项 defaults ✗未定 < 频道覆盖）
+ *
+ * | 字段 | 默认 | 理由 |
+ * |---|---|---|
+ * | `namespace` | `ace` | 键前缀，也是上传名的一部分 |
+ * | 频道地址 | `<ns>:ch:<ns>:<username>:<name>`（派生） | 唯一寻址来源；无字段可写 |
+ * | 信封字段名 `field` | `message` | 传输配置：信封写在 stream entry 的哪个字段，两侧必须一致 |
+ * | `publish.trim` | `{ maxlen, approx, 10000 }` | 防流无限增长；要全留就显式 `trim: null` |
+ * | `consume.group` | 本 participant 名 | = 每订阅者独立组 = 广播（默认交付语义） |
+ * | `consume.from` | `latest` | 等价 `$`：组建立前的事件不投递（既有约定） |
+ * | consumer / count / blockMs / reclaim* / retry* | `ace-<pid>` / 16 / 1000 / 60000 / 3 / 200 / 5000 | 与既有实现一致 |
+ *
+ * ## 删掉的东西（这次改动的价值，净减法）
+ *
+ *   - `publishEndpointOf()` 与"member 自报 broker"的整条投递路径 ✗；
+ *   - `TOOL_ERROR_TEXT.transportUnsupported` ✗；
+ *   - `BrokerDescriptor` / `BrokerId` / `BrokerKind` / `BrokerChannelDefaults`、`ChannelRecord.broker` ✗；
+ *   - `Dispatch` / `Consume`（带 `address` 的那两个联合）✗ —— 只剩 `publish.trim` / `consume.group|from`；
+ *   - 多承载的 `kind` 字段 ✗（只支持 Redis）。
+ *
+ * ## 改名与迁移（实现时一次改齐）
+ *
+ *   - `BrokerId` / `ServerId` → **`ServerName`**；`prefix` → **`namespace`**（代码里 `RegistryDefaults.prefix`、
+ *     配置键、文档、两个宿主 README 全改）；
+ *   - 默认命名空间由 `ace:agents` 改为 **`ace`**（覆盖目录 + 频道 + 会话流），键布局随之变为
+ *     `<ns>:agents` / `<ns>:entry` / `<ns>:events:<member>` / `<ns>:ch:<name>` —— 现存部署是一次键名迁移；
+ *   - **member / sender 加 ns 与 username 前缀**：`<codingAgent>:<sessionId>` →
+ *     `<ns>:<username>:<codingAgent>:<sessionId>`（**线上可见**的变化，两个宿主的 vendored 核心一起同步）；
+ *     频道名同理 `<ns>:<username>:<name>`；
+ *   - 配置文件由 `registry` + `brokers[]` → `username` + `servers{}`；
+ *   - **描述符归位（已定）**：`ChannelDescriptor` / `ParticipantDescriptor` / `Subscription` 从协议文件
+ *     （`ace-contracts.ts`）移到本文件 —— 信封里本来就没有 channel 字段，它们都是运行时/配置概念 ✓。
+ *     其中 `Subscription` **不再作为配置描述符存在**：订阅是**运行时派生**的（本会话在频道流上建自己的组），
+ *     配置里只声明"订阅哪些名字" ✓；
+ *   - **收件箱生命周期（已定）**：每会话新建收件箱流，会话结束即删；崩溃时靠条目 TTL 过期 + 清扫回收 ✓。
+ *     "同 agent 继承旧收件箱"（真正的持久收件箱）**不做** ✗（它需要 claim/所有权语义 ✓）。
+ *
+ * ## 仍未定（见 §六 待拍板）
+ *
+ *   1. 跨 server：只支持"同在多个 server"，还是将来做 relay？
+ *   2. 短名解析：模型说 `ci-failures` 时自动补成 `<ns>:<username>:ci-failures`，还是要求写全？
+ *   3. 持久收件箱：新会话继承同一 agent 的旧收件箱，还是每次新建、旧的按 TTL 回收？
+ *   4. 某台 server 不可达：跳过并告警，还是拒绝启动？
+ *   5. `username` 的继承：项目 `.ace.json` 未写 `username` 时，是从全局文件继承，还是每个文件都必须写？
+ *   6. `ChannelDescriptor` / `ParticipantDescriptor` / `Subscription` 留在协议文件，还是挪到本文件
+ *      （协议只留信封）？
+ */
 
 // ─────────────────────────── 四、工具契约 ───────────────────────────
 
@@ -356,8 +360,8 @@ export type ChannelAction = "list" | "subscribe" | "unsubscribe" | "create";
  * - `list`：列出可见频道（默认可订阅/已订阅的集合），支持 `name`（正则）过滤；
  * - `subscribe` / `unsubscribe`：按 `name` 增删自己的订阅；**`name` 允许正则**，因此
  *   `dryRun: true` 时必须先回报**将要命中/取消的集合与数量**，再由调用方决定是否真做；
- * - `create`：创建一条频道（要求**精确名**，不接受正则）。**只有 `name` 必需** —— `broker` 默认取配置里
- *   唯一的 Broker，`dispatch` / `consume` 的每一项都有默认值（见 §三 默认值表），AI 想改才写覆盖值。
+ * - `create`：创建一条频道（要求**精确名**，不接受正则）。**只有 `name` 必需** —— `server` 默认取配置里
+ *   唯一（或默认）那台，`publish` / `consume` 的每一项都有默认值（见 §三 默认值表），AI 想改才写覆盖值。
  *
  * 待定（见文件末"待定项"）：正则的默认开关与命中上限、`create` 的所有权/覆盖规则、冷启动没有
  * 订阅时的行为。
@@ -370,10 +374,13 @@ export interface AceChannelTool {
 		name?: string;
 		/** 只回报将发生什么，不改任何状态。`subscribe` / `unsubscribe` / `create` 都支持。 */
 		dryRun?: boolean;
-		/** `create` 的投递覆盖值；不写就用 Broker 项 `defaults.dispatch` → 内建默认。 */
-		dispatch?: DispatchOverride;
-		/** `create` 的消费覆盖值；不写就用 Broker 项 `defaults.consume` → 内建默认。 */
-		consume?: ConsumeOverride;
+		/** `create`：写到哪台 server；不写就是配置里唯一（或默认）那台。 */
+		server?: ServerName;
+		/** `create` 的写侧覆盖值；不写就用内建默认（见 §三 默认值表）。 */
+		publish?: ChannelDraft["publish"];
+		/** `create` 的读侧覆盖值；不写就用内建默认。 */
+		consume?: ChannelDraft["consume"];
+		/** `create` 的说明。 */
 		description?: string;
 	};
 	output: {
@@ -401,47 +408,49 @@ export interface AceChannelTool {
  * 2. **信封字段**：删除 `sessionId`（协议与 RFC 已删；代码、`schema/ace-message-0.1.schema.json`、
  *    三个宿主待改；注册表**内部**的 `sessionId` 保留 —— 它用来拼 member 名与收件箱流名）。
  * 3. **载荷类型**：实现里是 `body: string`，契约是不透明的 `Body`（`unknown`）。
- * 4. **通道配置**：实现里是 `.ace.json` 的 `config`；目标是频道记录（`ChannelRecord`，含 `broker` /
- *    `dispatch` / `consume`）住进注册中心，本地文件只剩 `registry` + `brokers[]`（`LocalAceConfig`）。
+ * 4. **通道配置**：实现里是 `.ace.json` 的 `config`；目标是频道记录（`ServerChannelRecord`，只有
+ *    `publish`/`consume` 策略与元数据）住进 server，本地文件只剩 `username` + `servers{}`
+ *    （`ServerConfigFile`）。
  * 5. **出站接缝**：`WireAdapter.inbound()` / `InboundEvent.ack()` 是目标形状，现状见上文。
  * 6. **Codex 宿主**：桥实现了入站驱动（ACE → 回合、忙时 steer、FIFO 持有），但**未注册 ACE 工具面**
- *    （Codex 会话目前不能 `ace_publish`）——待定项。
- * 7. **配置退化**：`.ace.json` 只保留注册中心连接（及其前缀）与 Broker 列表；Channel 与订阅关系改由注册
- *    中心承载，同时 Broker 层要从"启动时按配置建好"变成**可热插拔**（按订阅动态 start/stop，去重窗口、
- *    指标、pending、派生视图跟着订阅生命周期走）。
- * 8. **改名 `Transport` → `Broker`**：概念与标识（`BrokerId` = 本地实例名、`BrokerKind` = 种类）在契约里已
- *    统一；代码与文档里仍是 `Transport` / `transport` 键（`src/transport/*`、`.ace.json` 的 `transport`、
- *    四处工具文本、`docs/` 与两个宿主的 README）——一次改齐，别留两套词。
+ *    （Codex 会话目前不能 `ace_publish`）——见 `docs/ace-plan.md` §4（宿主侧工作暂停）。
+ * 7. **配置退化**：`.ace.json` 只保留 `username` + server 列表；Channel 与订阅关系改由 server 承载，
+ *    同时承载层要从"启动时按配置建好"变成**可热插拔**（按订阅动态 start/stop，去重窗口、指标、pending、
+ *    派生视图跟着订阅生命周期走）。
+ * 8. **词汇统一（一次改齐，别留两套词）**：`Transport` → **`Server`**、`transport` 键 → server 概念、
+ *    `prefix` → **`namespace`**、本地实例名 → **`ServerName`**；涉及 `src/transport/*`、`.ace.json` 的键、
+ *    工具文本、`docs/`、两个宿主 README —— 与 §三 的"改名与迁移"清单合并执行。
  */
 
-// ─────────────── 六、注册中心承载的内容（目标形态） ───────────────
+// ─────────────── 六、Server 承载的内容（模型） ───────────────
 
 /**
- * 注册中心（今天的 Redis）承载三样东西，它们是这套模型里唯一的**拓扑真值来源**：
+ * 一台 **Server**（今天的 Redis）承载三样东西，它们是这套模型里唯一的**拓扑真值来源**：
  *
- * 1. **Participant 目录**：成员、TTL、心跳、自报收件箱（`ParticipantView` 的来源）；
- * 2. **Channel 目录**：`ChannelRecord`（`broker` + `dispatch` / `consume` + `description` / `owner`）；
- * 3. **订阅关系**：`Subscription`（participant ↔ channel，含 `activation` / `enabled`）。
+ * 1. **成员目录**：member、TTL、心跳（`ParticipantView` 的来源），键 `<ns>:agents` / `<ns>:entry`；
+ * 2. **频道目录**：`ServerChannelRecord`（只有策略与元数据 —— 地址由约定派生，没有端点字段）；
+ * 3. **会话流与频道流**：`<ns>:events:<member>`（每会话收件箱）与 `<ns>:ch:<name>`。
  *
- * 本地文件（`LocalAceConfig`）只留**部署信息**：一个注册中心连接 + 多个 `BrokerDescriptor`（端点与凭据）。
- * 端点不进注册中心、寻址不进本地文件 —— 这条分工是 dispatch/consume 能跨 kind 统一的前提。
+ * 本地文件（`ServerConfigFile`）只留**部署信息**：`username` + 每个 server 的连接与命名空间。
+ * 端点与凭据**永不进 server** ✗ —— 这正是本期改动的核心：目录条目再也不会广播别人的连接信息。
  *
- * 决策记录、实施批次与默认值表见 `docs/ace-plan.md`（**当前仅计划，未实施**）。
+ * 决策记录与实施批次见 `docs/ace-plan.md`；本节只列**当前仍未拍板**的条目。
  *
- * ## 待你拍板（这三条会直接改变实现，我没有替你定）
+ * ## 已定（本轮）
  *
- * - **正则的边界**：正则订阅一个过宽的表达式（如 `.*`）会瞬间订阅海量流。建议：默认只允许**精确名/前缀**
- *   匹配，正则需显式开启，并且 `subscribe`/`unsubscribe` 在正则下**强制先 dryRun**（先看命中数量与集合），
- *   再加一个命中上限。
- * - **冷启动**：注册中心不可达、或本会话从未订阅过时，可订阅集为空。要么允许本地留一份"上次订阅集"快照，
- *   要么接受"重启后需重新订阅（或由模型再订一次）"。你倾向哪个？
- * - **所有权与权限**：谁能 `create`、能否覆盖同名频道、谁能删、`create` 出来的频道归谁（建议 `owner` +
- *   不可覆盖 + 审计字段）。在没有任何认证的现状下，这些都是**软约束**，需要明确写下来。
- * - **Broker 范围（已定）**：本轮**只支持 `redis-streams`**，其余候选（`nats-jetstream` / `kafka` / `mqtt` /
- *   入站类 `http` / `file`）不进实现、不进类型；`BrokerKind` 单成员即此意。将来扩第二家时，把
- *   `Dispatch` / `Consume` 与两个 override 改成按 kind 判别的联合即可。`amqp` 因两段式寻址
- *   （exchange + routingKey）与统一写法不兼容，即便扩也不优先。
- * - **默认值**：§三 的默认值表是本轮定的（`ace:<name>` / `message` / `latest` / participant 名建组 /
- *   默认 trim 10000）。**其中 `trim` 是唯一有破坏性的默认**（会丢弃旧事件）：若你不接受，改成
- *   `trim: null` 为默认，或干脆不默认修剪，一句话即可。
+ * 1. **`username` 取值顺序**：本文件 → 全局文件 → `$USER` → 报错 ✓（只继承这一个字段，其余仍整份覆盖 ✓）；
+ * 2. **短名解析**：自动补 `<ns>:<username>:` ✓；工具输出显示全名；**冲突硬报错**并列出候选 ✓；
+ * 3. **描述符归位**：`ChannelDescriptor` / `ParticipantDescriptor` / `Subscription` 移入本文件（协议只留信封 ✓）；
+ *    其中 `Subscription` 不再作为配置描述符 —— 订阅由运行时派生 ✓；
+ * 4. **收件箱**：每会话新建、结束即删、崩溃靠 TTL 回收 ✓（**不做**持久收件箱 ✗）；
+ * 5. **不可达 server**：**跳过并告警**，其余照常 ✓（状态在启动日志与 `/ace list` 里明确标出 ✓）；
+ * 6. **跨 server**：只支持"同在多个 server" ✓，不做 relay ✗。
+ *
+ * ## 不阻塞、实现中后期再定
+ *
+ * - **正则订阅的边界**：建议默认只允许**精确名/前缀**，正则需显式开启，且正则下**强制先 dryRun**，并设命中上限；
+ * - **`create` 的所有权/覆盖/删除**：`owner` 是否强制、能否覆盖同名、谁能删（同 server 即同凭据域 ✓，
+ *   权限可以更多交给 Redis ACL ✓，我们只需写清软约束）；
+ * - **`trim` 的破坏性默认**：默认修剪 10000（会丢旧事件）还是默认不修剪（流会无限增长）；
+ * - **冷启动**：注册中心不可达、或本会话从未订阅过时的可订阅集来源。
  */

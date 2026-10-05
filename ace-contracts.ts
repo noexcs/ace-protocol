@@ -80,56 +80,19 @@ export interface AceEnvelope {
 	extensions?: Record<string, unknown>;
 }
 
-// ─────────────────────── 二、Channel 描述符 ───────────────────────
+// ─────────────── 二、运行时/配置描述符 —— 不属于协议 ───────────────
 
-/** 投递侧配置。**形状由对应 transport 的实现定义并校验**（不变量 6）。 */
-export type Dispatch = unknown;
-
-/** 消费侧配置。**形状由对应 transport 的实现定义并校验**（不变量 6）。 */
-export type Consume = unknown;
-
-/**
- * Channel：一条有名字的管道。**只有配置** —— 不带订阅者、不带计数器、不带实时状态。
+/*
+ * 信封里**没有** channel 字段（只有可选的 `fromChannel` 声明），所以 Channel、Participant、Subscription
+ * 三个描述符**不属于协议**，已移到运行时契约（见 `runtime-contracts.ts` §三）：
  *
- * `name` 既是模型可见标识符，也是发布目标名。
+ *   - Channel      → `ServerChannelRecord`（server 上的频道记录：策略 + 元数据，地址由约定派生）
+ *                    与 `ChannelDraft`（`ace_channel create` 真正要写的东西）；
+ *   - Participant  → `ServerMembership`（一个会话在一台 server 上的身份：member / stream / group）
+ *                    加上配置里的身份约定 `<ns>:<username>:<codingAgent>:<sessionId>`；
+ *   - Subscription → **不再是描述符**：订阅由运行时派生（本会话在频道流上建自己的组），
+ *                    配置里只声明"订阅哪些名字"。
+ *
+ * 协议这一层只保留：**信封**（上文）与它的不变量。
  */
-export interface ChannelDescriptor {
-	name: string;
-	/** broker 种类，决定谁来校验 `dispatch` / `consume`（如 `redis-streams`）。 */
-	transport: string;
-	description?: string;
-	enabled?: boolean;
-	/** 投递侧配置。 */
-	dispatch: Dispatch;
-	/** 原样透传给客户端库的选项；不校验、不解释。 */
-	options?: Record<string, unknown>;
-}
 
-// ───────────────────── 三、Participant 描述符 ─────────────────────
-
-/** Participant：能收发 ACE 事件的参与者。**只有配置**（身份 + 自述 + 订阅）。 */
-export interface ParticipantDescriptor {
-	/**
-	 * 身份，即 `sender` 的取值。约定 `<coding-agent>:<sessionId>`：名称承载会话含义（RFC §5.4），
-	 * 因此新会话是新名称，会话恢复沿用同一名称。
-	 */
-	name: string;
-	/** 参与者自述（对应信封的 `senderDescription`）。 */
-	description?: string;
-	/** 订阅关系：这一侧唯一的声明处。 */
-	subscribe: Subscription[];
-}
-
-// ─────────────────────── 四、Subscription 描述符 ───────────────────────
-
-/** Participant ↔ Channel。**这条关系只在每个 Participant 的 `subscribe[]` 里声明**。 */
-export interface Subscription {
-	/** 订阅的 `Channel.name`。 */
-	channel: string;
-	/** 消费侧配置。 */
-	consume: Consume;
-	/** 接收方固定的激活方式（RFC §8）；不写表示由消息自己决定。 */
-	activation?: Activation;
-	/** 关闭这一侧的订阅，不影响 channel 本身。 */
-	enabled?: boolean;
-}
