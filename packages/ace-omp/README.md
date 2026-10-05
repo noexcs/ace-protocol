@@ -287,8 +287,7 @@ adds on top of the system-prompt policy; the norm for each is in
 
 **`ace_publish`** — the description is assembled per session (`buildPublishToolText`): the paragraph below,
 then the session's identity (its sender name is also its own channel), the servers it is on and the channels
-it subscribes to, how delivery works, the `<ace_event>` shape a peer sees, and that activation defaults to
-`next_turn`.
+it subscribes to, and that activation defaults to `next_turn`.
 
 > Publish an ACE 0.1 event to a peer agent or service. The recipient's agent receives the body as an external
 > event and decides what to do with it (its own policy may need its user's approval of the sender first), so

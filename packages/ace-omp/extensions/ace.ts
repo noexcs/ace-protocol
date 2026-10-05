@@ -217,14 +217,25 @@ function truncate(text: string, limit = 60): string {
  * locations, so they belong to the host that implements them. Keeping them out of the core is what
  * stops one host's implementation from leaking into every host's prompt — and from rotting there when
  * this host's version changes.
+ *
+ * It is two unrelated paragraphs, and each tool gets only the ones it needs: the config-resolution
+ * paragraph answers "where does `.ace.json` come from" and belongs to every tool that reads it, while
+ * the `manual` retention store is only explained where `manual` activation is (the publish tool).
  */
-const OMP_HOST_SPECIFICS =
+const OMP_CONFIG_SPECIFICS =
 	"The config file is resolved from `$ACE_CONFIG`, then the project `.ace.json`, then this host's " +
 	"global file (`~/.omp/agent/ace.json`, or under `$XDG_CONFIG_HOME/omp` when `omp config init-xdg` was " +
 	"used) — the first that exists wins — and the file that won and the global one it shadowed are both " +
-	"printed at session start. A `manual` event here is held in an in-memory pending store — 100 events " +
+	"printed at session start.";
+
+/** The `manual` retention store: the publish tool's business only (see {@link OMP_CONFIG_SPECIFICS}). */
+const OMP_MANUAL_SPECIFICS =
+	"A `manual` event here is held in an in-memory pending store — 100 events " +
 	"and 24h by default, spooled to `.ace/spool/manual-<subscription>.jsonl` — which this host's user " +
 	"inspects and activates with `/ace pending` and `/ace activate <sender> <id>`.";
+
+/** The publish tool is where `manual` is explained, so it carries both paragraphs. */
+const OMP_PUBLISH_SPECIFICS = `${OMP_CONFIG_SPECIFICS} ${OMP_MANUAL_SPECIFICS}`;
 
 /** Wrong or missing arguments get this, the way `/mcp` answers with its own usage line. */
 const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats";
@@ -456,7 +467,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.channels,
 			label: "ACE Channels",
-			description: channelsToolText({ hostSpecifics: OMP_HOST_SPECIFICS }),
+			description: channelsToolText({ hostSpecifics: OMP_CONFIG_SPECIFICS }),
 			promptGuidelines: [...TOOL_TEXT.channels.guidelines],
 			parameters: CHANNELS_PARAMETERS,
 			async execute(_toolCallId, params) {
@@ -579,7 +590,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.publish,
 			label: "ACE Publish",
-			...buildPublishToolText(config, sessionId, activeServers[0]?.sender ?? "", OMP_HOST_SPECIFICS),
+			...buildPublishToolText(config, sessionId, activeServers[0]?.sender ?? "", OMP_PUBLISH_SPECIFICS),
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {

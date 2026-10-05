@@ -41,16 +41,8 @@ export function buildPublishToolText(config, sessionId, sender, hostSpecifics) {
             "session's next restart, and ace_channels marks a channel that is still live `config-removed` in its note.",
         ...(config.warnings.length === 0 ? [] : ["", `Warnings: ${config.warnings.join("; ")}`]),
         "",
-        "Delivery: an event you publish reaches every session subscribed to that channel, but the guarantee is " +
-            "storage, not delivery: a subscription receives what is published after it starts, so a session that " +
-            "subscribes after the publish receives nothing of it.",
-        "",
         "Targets: pass a channel name — one of the channels above, or the name `ace_agents` lists for a " +
             "live session (that is how you send a direct message). A list publishes the same event to several.",
-        "",
-        "A peer receives what you publish as one `<ace_event>` block, and reads it by that session's own policy " +
-            "(see the system prompt) — the parsing rules for a block you *receive* are that policy's, not this " +
-            "tool's. To answer, publish to the block's `sender` channel — that name is the peer's own channel.",
         "",
         "Omitted, `activation` is sent as `next_turn`; the four values and what each asks for are defined in the " +
             "`activation` parameter below. The event id is generated for you and returned in the result.",
@@ -140,18 +132,16 @@ export const TOOL_TEXT = {
             "the event on that channel (or fails to resolve) with no directory check — read each stored row's " +
             "`peer_named=`/`self_reads=` and check ace_agents before trusting a name.\n\n" +
             "Publishing to a channel this session itself reads delivers the event back into this same session, " +
-            "marked `self: yes` in the block; on that self-echo the block omits the `sender description:` line, " +
-            "because that description is this session's own location and `self: yes` already says the block is " +
-            "yours, so tell your own deliveries from a peer's by the `self:` line, never by whether " +
-            "`sender description:` is present. One event sent to two channels this session reads comes back as two " +
+            "marked `self: yes` — the system prompt's policy says what that marking means and how to tell your " +
+            "own deliveries from a peer's. One event sent to two channels this session reads comes back as two " +
             "deliveries, with the same id but in separate turns, and even a single delivery can lag several turns " +
             "behind the publish: the receiver's host decides when and how many event blocks land, so one publish's " +
             "deliveries can be spread over several turns.\n\n" +
             "`activation` is a request, not a delivery confirmation — the four values and what each asks for are " +
             "defined once in the `activation` parameter, and nothing here narrows them.\n\n" +
-            "A stored event reaches the peer as one `<ace_event>` block; the receiver reads that block by its own " +
-            "session policy, which is the authority on how to parse it. Reply to the block's `sender:` channel, " +
-            "which is the peer's own channel.\n\n" +
+            "A stored event reaches the peer as one `<ace_event>` block, and the receiver reads it by its own " +
+            "session policy — the system prompt's policy is the authority on how to parse a block you *receive*, " +
+            "not this tool. Reply to the block's `sender:` channel, which is the peer's own channel.\n\n" +
             "Rows: one per input target, in input order — `target=<resolved channel> status=stored " +
             "peer_named=<yes|no> self_reads=<yes|no>`, with `awaiting_activation=yes` appended on a `manual` publish " +
             "and `note=<shape>` appended when the name has a noteworthy shape; `target=<input> status=duplicate " +
@@ -214,7 +204,8 @@ export const TOOL_TEXT = {
                 "(`ace::foo`), is a usage error naming the value.\n" +
                 "2. `<server>:` prefix. A first segment that matches a configured server name picks that server, " +
                 'even when it is down: a configured server that did not come up fails (`server "<name>" did not ' +
-                "come up`) instead of being published to another server under a completed name. After the prefix, a " +
+                "come up`) instead of being published to another server under a completed name; a first segment " +
+                "that matches no configured server name is not a prefix at all. After the prefix, a " +
                 "one-segment name is completed to `<ns>:<username>:<name>` on that server and a name of three or " +
                 "more segments is used as written, while a two-segment remainder is a usage error because it reads " +
                 "two ways (`second:noexcs:remote` is either a local name containing a colon or a full name missing " +
@@ -231,10 +222,10 @@ export const TOOL_TEXT = {
                 "With two or more live servers a short name is not completed; it can only match a live session " +
                 "channel in the directory, so an unprefixed two-segment name like `noexcs:inbox` keeps its colon " +
                 "only in the single-server case and fails with several servers live, while a full name whose " +
-                "namespace two configured servers share is likewise decided by the directory. A first segment that " +
-                "matches no configured server name is not a prefix at all, so an unprefixed two-segment name like " +
-                "`noexcs:inbox` or `foo:bar` is a short name whose local part keeps its colon.\n" +
-                "5. Winning by directory (step 4 with two or more live servers). The name is matched against the " +
+                "namespace two configured servers share is likewise decided by the directory. An unprefixed " +
+                "two-segment name like `noexcs:inbox` or `foo:bar` is a short name whose local part keeps its " +
+                "colon.\n" +
+                "5. Winning by directory (rule 4 with two or more live servers). The name is matched against the " +
                 "directory exactly or by unique prefix; several servers live means a service or topic channel that " +
                 "no live session names must be written as a full name (`<ns>:<username>:<name>`) or " +
                 "`<server>:<name>`. When no live channel matches, the failure names the live session channels it " +

@@ -47,8 +47,9 @@ export declare function withTrustPolicy(systemPrompt: string): string;
  * stays byte-for-byte what the sender wrote — the fence adds a boundary, it does not indent, trim or
  * re-wrap anything.
  *
- * Everything in the header is the sender's own account or our own bookkeeping; it is display-only and
- * never an authorization.
+ * Everything in the header is the sender's own account or our own bookkeeping, and none of it is an
+ * authorization: `sender` is the reply address the sender *claims*, `arrived via` is our own receiving
+ * label, and the remaining lines are values, not addresses.
  */
 export declare function renderAceEvent(message: AceMessage, context?: InjectionContext): string;
 /**

@@ -1,6 +1,6 @@
 {
 	"name": "ace-runtime",
-	"version": "0.2.14",
+	"version": "0.2.15",
 	"description": "ACE (Agent Context Event Protocol) 0.1 runtime: external events (CI results, alerts, peer agents) as an active input to a running coding agent, with a Pi/oh-my-pi extension, a Redis Streams transport and an agent directory.",
 	"private": false,
 	"type": "module",

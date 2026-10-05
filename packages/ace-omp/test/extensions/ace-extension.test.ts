@@ -338,3 +338,26 @@ describe("file-transfer tools", () => {
 		).rejects.toThrow('ace_get_file does not take "server"; it takes `token`');
 	});
 });
+
+describe("host specifics", () => {
+	it("gives ace_channels the config paragraph only, and ace_publish both", () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		const channels = tools.find((entry) => entry.name === "ace_channels");
+		const publish = tools.find((entry) => entry.name === "ace_publish");
+		if (channels === undefined || publish === undefined) throw new Error("the ACE tools were not registered");
+
+		// Where `.ace.json` comes from is a fact about the configuration every tool reads, so it is here.
+		expect(channels.description).toContain("$ACE_CONFIG");
+		// The `manual` retention store has nothing to do with listing channels: it is the publish tool's,
+		// where `manual` activation is explained, so it must not be injected into the channels description.
+		expect(channels.description).not.toContain("/ace pending");
+		expect(channels.description).not.toContain("manual-<subscription>.jsonl");
+
+		// Publish carries both paragraphs, and the host paragraph is injected once, not per constant.
+		expect(publish.description).toContain("$ACE_CONFIG");
+		expect(publish.description).toContain("manual-<subscription>.jsonl");
+		expect((publish.description ?? "").split("Host specifics:").length - 1).toBe(1);
+	});
+});

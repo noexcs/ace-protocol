@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ACE_TRUST_POLICY, renderAceEvent } from "../../src/agent/event-rendering.ts";
-import { RESULT_LINE_GRAMMAR, TOOL_TEXT } from "../../src/tools/spec.ts";
+import type { ResolvedAceConfig, ResolvedServer } from "../../src/runtime/ace-config.ts";
+import { buildPublishToolText, RESULT_LINE_GRAMMAR, TOOL_TEXT } from "../../src/tools/spec.ts";
 
 /**
  * Four surfaces teach a model about ACE: the system-prompt policy, the three tool texts, and the injected
@@ -64,5 +65,54 @@ describe("model-facing text", () => {
 		// block is included unchanged in both descriptions; this pins that it cannot drift in one only.
 		expect(TOOL_TEXT.storeFile.description).toContain(RESULT_LINE_GRAMMAR);
 		expect(TOOL_TEXT.getFile.description).toContain(RESULT_LINE_GRAMMAR);
+	});
+});
+
+/** The session shape a host assembles the publish description from — one live server, one subscription. */
+const publishServer: ResolvedServer = { name: "local", url: "redis://127.0.0.1:6379", namespace: "ace" };
+const publishConfig: ResolvedAceConfig = {
+	username: "ana",
+	servers: [publishServer],
+	subscriptions: [{ server: publishServer, channel: "ace:ana:in.a", name: "ace:ana:in.a" }],
+	manual: {},
+	warnings: [],
+	source: "/tmp/.ace.json",
+};
+const publishHostSpecifics =
+	"The config file is resolved from `$ACE_CONFIG`, then the project `.ace.json`, then this host's " +
+	"global file — the first that exists wins. A `manual` event here is held in an in-memory pending " +
+	"store for this host's user to inspect and activate with `/ace pending` and `/ace activate <sender> <id>`.";
+
+/**
+ * The description a host actually shows is not the static intro alone: `buildPublishToolText` appends the
+ * session's own lines. 0.2.14 shipped both halves stating the same rules again — the storage-not-delivery
+ * rule and the `<ace_event>`-block/reply rule — so a model read each of them twice. Each fact now has one
+ * owner, and this counts the canonical sentences in the assembled text: a later edit that pastes a rule
+ * back into both halves fails here.
+ */
+describe("assembled publish description", () => {
+	const canonical = [
+		"The guarantee is storage, not delivery",
+		"receives what is published after it starts",
+		"one `<ace_event>` block",
+		"Reply to the block's `sender:` channel",
+	];
+
+	it("states each canonical sentence exactly once", () => {
+		const { description } = buildPublishToolText(
+			publishConfig,
+			"01a102b6-9dac-75b6-80ca-21cbbf58e914",
+			"ace:ana:oh-my-pi:01a102b6-9dac-75b6-80ca-21cbbf58e914",
+			publishHostSpecifics,
+		);
+
+		// Guard the fixture itself: without the session-specific lines this would prove nothing.
+		expect(description).toContain('You are "ace:ana:oh-my-pi:01a102b6-9dac-75b6-80ca-21cbbf58e914"');
+		expect(description).toContain("Servers this session is on:");
+		expect(description.split("Host specifics:").length - 1).toBe(1);
+
+		for (const sentence of canonical) {
+			expect(description.split(sentence).length - 1, sentence).toBe(1);
+		}
 	});
 });
