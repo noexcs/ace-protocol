@@ -62,13 +62,23 @@
 
 ## 3. 实施批次（依赖顺序）
 
-1. **两个宿主收口**：`ClaudeRegister`（Claude Code 注册）、`CodexRegister`（Codex 工具面）；随后补一次
-   **Codex 桥评审**（`CodexBridgeReview` 已 abort，评审从未落地）。
+1. ~~**两个宿主收口**~~ —— **已完成（2026-10-05）**：两个宿主都接上了 agent directory 自注册；各过一轮
+   独立评审（Codex 2 major + 5 minor、Claude 2 major + 3 minor），缺陷全修并带回归测试；门禁与 live smoke
+   全绿，已提交。**各自的现状与缺口记在包内文档**（本轮追加）：
+   `packages/ace-claude-code/README.md`、`packages/ace-codex/README.md` 的
+   **"Current state and open gaps"** 两节 —— Claude：清单缺 `mcpServers` 声明（channel 不注册时工具可能一起消失）；
+   Codex：无工具面，且 app-server 协议形状待与官方文档对齐。
 2. **拆包**：核心下沉 + `ace-pi` / `ace-omp`（在干净边界上做后面的改动）。
 3. **动态频道模型**：registry 承载频道目录与订阅关系；`ace_channel` 四动作；`Transport` → **可热插拔**
    （按订阅动态 start/stop，去重窗口、指标、pending、派生视图跟着订阅生命周期走）。
 4. **工具 spec 下沉 + 跨宿主一致性测试**：工具名/参数 schema/文本/返回形状归核心，宿主只负责绑定注册
    （现状：`ace-claude-code/src/tools.ts` 抄了一份核心文本，会随本次下沉消除）。
+   **绑定的硬事实（已取证）**：`oh-my-pi`/pi 有**原生工具 API**（`pi.registerTool`）；**Claude Code 与 Codex
+   都没有原生工具扩展点** —— Claude 插件的组件全集（skills / commands / agents / hooks / mcpServers /
+   lspServers / outputStyles / workflows / themes·monitors·evals / settings / channels）里只有 `mcpServers`
+   能加"模型可调用的工具"；Codex 插件 = skills / app integrations / MCP servers（hooks 可拦 MCP 工具调用）。
+   因此这两个宿主的工具面**只能**是 MCP。另需始终分清：**工具（出站）与 Channel（入站）是两条正交的轴** ——
+   Claude 上两者恰好同源（同一个 MCP server），Codex 上则是 MCP 工具 + app-server 两套。
 5. **迁移项**（`runtime-contracts.ts` §五）：删 `sessionId`、`ace_agents` → `ace_participants`、
    `config` → `dispatch`/`consume`、`body` 不透明化、**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、
    工具文本、docs、两个宿主 README 一次改齐）。

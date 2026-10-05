@@ -206,6 +206,37 @@ bun run smoke    # live (skips cleanly when codex is absent)
 bun run check    # biome check --error-on-warnings . && tsc --noEmit
 ```
 
+## Current state and open gaps (2026-10-05)
+
+**Inbound only.** The bridge drives a real session through Codex's **app-server** (`turn/start`,
+`turn/steer`) — an officially documented interface (`developers.openai.com/codex/app-server`) whose
+CLI subcommand is marked `[experimental]`. The bridge spawns `codex app-server` itself and reads
+`.ace.json` from `--cwd`; `codex mcp` plays no part in this path.
+
+**No tool surface yet.** A Codex session cannot call `ace_publish`: the bridge registers no tools at
+all, and the host offers **no native tool extension point** — Codex plugins bundle skills, app
+integrations and MCP servers, and hooks may intercept MCP tool calls — so the tool surface has to be
+an **MCP server** (the host supports `codex mcp add`). Until it exists, this host only *receives*.
+
+**Open gaps**
+
+1. **Add the MCP tool surface**, sharing the runtime's tool spec instead of copying it. Codex's shared
+   local app-server daemon (`codex agents`) makes a single-process shape plausible: one MCP server
+   that both exposes the tools and connects to the daemon to inject events.
+2. **Reconcile the protocol shape with the official reference.** This package's notes describe
+   newline-delimited JSON with no `jsonrpc` field, while the published app-server reference describes
+   JSON-RPC 2.0. The bridge speaks `codex-cli 0.153.0` correctly (verified live), but this difference
+   is the most likely breakage point on a version bump.
+3. **The subcommand is experimental**, so the wire protocol may change without notice: pin the tested
+   version, and fail loudly on a shape we do not recognize.
+
+**Verified on 0.153.0 + local Redis**: biome/tsc clean; vitest 40/40; `scripts/smoke.ts` green with
+the live registry half. Also verified by hand: the bridge registered as `codex:<threadId>` with the
+right stream/group/url in the directory, an `XADD` to the member stream was received, injected as a
+`next_turn`, and acknowledged after the observation (the PEL emptied). **Not verified**: registration
+failure and stop-while-register-in-flight against a real broker — both covered by in-memory unit
+tests only.
+
 ## Not verified here
 
 - The `ws` / `unix` listeners are exercised only by the live smoke when a `codex` binary is present; the unit tests

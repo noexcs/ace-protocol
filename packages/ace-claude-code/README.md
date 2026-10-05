@@ -290,19 +290,22 @@ typing — that is what lets it tell an ACE event apart from a real prompt.
 
 The gates for this package (`npm run check`, `npm test`, `npm run smoke`):
 
-- `biome check --error-on-warnings .` — 15 files, 0 diagnostics.
+- `biome check --error-on-warnings .` — 16 files, 0 diagnostics, no warnings.
 - `tsc --noEmit` — clean.
-- `vitest --run` — **32/32 pass**, no host or broker: the event→notification mapping, the ack trail
+- `vitest --run` — **41/41 pass**, no host or broker: the event→notification mapping, the ack trail
   (extract/append/read/cap), the `ChannelObserver` substring matching (wrapped, batched, no-match,
-  released, and the `</ace_event>`-in-body edge), the engine's observe/timeout/release logic, tool
-  behavior, and config resolution over the shipped example.
+  released, and the `</ace_event>`-in-body edge), the engine's observe/timeout/release logic, the
+  agent-directory wiring (register args, the derived `session-inbox`, the stop→unregister→close order,
+  no-registry no-op, registration failure, and the name-collision degrade), tool behavior, and config
+  resolution over the shipped example.
 - `bun run scripts/smoke.ts` — drives the **real** server over an MCP stdio handshake (the SDK `Client`
   the host uses), verifies the `claude/channel` capability, the four tools, the `instructions`, inert
   `ace_channels`, the hook→trail path, and `claude plugin validate`. The resolved-`ace_channels` half
   needs a live broker (the runtime's `start()` awaits the subscribe transport's `connect()`), so the
   smoke probes the example config's Redis URL and **skips that half with a reason** when no broker is
-  up; the live channel is likewise gated, printing the exact command when the host cannot load custom
-  channels.
+  up; the live channel is likewise gated: it probes whether the host **accepts** the development flag
+  (both channel flags are hidden from `--help`, so the probe parses instead of grepping) and prints the
+  exact command either way.
 
 Run it:
 
@@ -316,12 +319,50 @@ bun run scripts/smoke.ts                                      # smoke
 
 The live end-to-end — publish an ACE event to the `ace:inbox:claude-code` stream and watch it appear in
 a running session as a `<channel … ace="event">` block that starts a turn — needs a channel-capable
-Claude Code (the development flag or an allowlist entry) and Anthropic auth. The *broker* half of the
-path was exercised for real: with a Redis running at the example config's URL, the smoke started the
-runtime over it and `ace_channels` reported the resolved subscribe/publish channels. The *host* half —
-the channel actually injecting the block into a session and starting a turn — was not performed
-`[UNVERIFIED]`, because this machine's `claude` (2.1.263) has no `--dangerously-load-development-channels`
-and no Anthropic auth; the smoke prints the exact command for it.
+Claude Code (the development flag, or an allowlist entry) and Anthropic auth. Both halves of the
+*broker* side were exercised for real: the smoke starts the runtime over a live Redis (including the
+agent-directory half: registration, a direct delivery, the ack, and the shutdown cleanup). The *host*
+half — the channel actually injecting the block and starting a turn — was not performed
+`[UNVERIFIED]`, because it needs Anthropic auth, and this plugin is not on the approved channel
+allowlist. Note the earlier version of this section claimed the development flag was missing here:
+that came from grepping `--help`, which **hides** both channel flags. Probed by parsing, Claude Code
+2.1.289 on this machine accepts them.
+
+## Current state and open gaps (2026-10-05)
+
+**What the tools are.** MCP tools served by one stdio MCP server (`src/server.ts`,
+`@modelcontextprotocol/sdk`): `ace_publish`, `ace_channels`, `ace_participants`, plus `ace_pending` /
+`ace_activate` for `manual` events. The host offers **no native tool extension point** — a plugin may
+contribute `skills`, `commands`, `agents`, `hooks`, `mcpServers`, `lspServers`, `outputStyles`,
+`workflows`, themes/monitors/evals, `settings` and `channels`, and only `mcpServers` can add a
+model-callable tool. MCP is therefore not a preference here, it is the only mechanism.
+
+**What the channel is.** An orthogonal, separate mechanism: a channel is *an MCP server that pushes
+events into a running session* (research preview). This plugin binds it via
+`"channels": [{ "server": "ace", "displayName": "ACE" }]`. Tools and channel happen to live in the
+same server, but they are two independent surfaces — the channel is never a substitute for the tools,
+and the tools never deliver events.
+
+**Open gaps**
+
+1. **The manifest declares `channels` but not `mcpServers`.** Today the `ace` server is reachable
+   only through the channel path, so on a build where the channel does not register (not on the
+   approved allowlist and started without the development flag, or an organization that has not
+   enabled channels) the tools most likely disappear with it. Adding an `mcpServers` entry should make
+   the tool surface independent of the channel gate. Unverified: whether one server name may appear in
+   both `channels` and `mcpServers`, and how the host merges them — one real run settles it.
+2. **The tool text is copied, not shared.** The texts duplicate the runtime's tool spec; the
+   core-spec subduction batch in `docs/ace-plan.md` removes that.
+3. **The host does not acknowledge channel notifications** ("fire-and-forget"), so the broker ack is
+   reconstructed from the `UserPromptSubmit` hook observation — see [Acknowledgement](#acknowledgement).
+
+**Verified on 2.1.289**: `claude --plugin-dir <pkg> plugin list` → `ace-claude-code@inline`,
+`Status: ✔ loaded`; biome/tsc clean; vitest 41/41; `scripts/smoke.ts` green including the live
+registry half (registration, direct delivery, ack, shutdown cleanup). Both
+`--dangerously-load-development-channels` and `--channels` **parse** on this build — they are hidden
+from `--help`, which is why the smoke probes by parsing rather than grepping the help text.
+**Not verified**: a host-driven turn (needs Anthropic auth plus the development flag) and the host
+injecting `CLAUDE_CODE_SESSION_ID` under a real spawn.
 
 ## What is and is not modified
 
