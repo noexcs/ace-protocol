@@ -94,7 +94,8 @@
    Codex：无工具面，且 app-server 协议形状待与官方文档对齐。
 2. ~~**拆包**~~ —— **已完成（2026-10-05）**：Pi / oh-my-pi 宿主插件拆成 `packages/ace-omp`（`extensions/ace.ts` +
    `extensions/ace-manager.ts` + 宿主侧测试与 `scripts/verify-omp.ts`），核心 `packages/ace-runtime` 保持
-   host-neutral（边界测试仍守着"Pi 只能出现在 `src/agent/pi-adapter.ts`"）。扩展改为**只经 `ace-runtime`
+   host-neutral（边界测试守着"核心 src 里不得出现任何 Pi import"；原 `src/agent/pi-adapter.ts` 已删除——
+   无宿主执行它，omp 扩展实例化的是 `PiExtensionAdapter`）。扩展改为**只经 `ace-runtime`
    公共入口**消费核心（ace-omp 新增 `test/architecture/package-boundary.test.ts` 守这条）。CI 的 `hosts`
    矩阵加上 `ace-omp`，`verify:omp` 步骤随之迁移。
    命名只用一个包（`ace-omp`）覆盖 Pi 与 oh-my-pi——两者共用同一扩展；将来若宿主分化再拆 `ace-pi`。
@@ -126,7 +127,7 @@
 | 宿主 | 剩余事项 | 状态 |
 |---|---|---|
 | `ace-claude-code` | **工具 spec 引用**：已改为从 `ace-runtime` 取名字/描述/schema（`src/tools.ts` 只剩 `ace_pending`/`ace_activate` 的宿主专属文本）✓；跨宿主一致性测试 `test/tool-text-unity.test.ts`（含"源码里不得出现共享文本的字面量"）✓ | **已完成** |
-| `ace-claude-code` | **解绑核心入口里的 Pi 适配器**：核心 `index` 仍 `export * from "./agent/pi-adapter.js"` → 消费者（claude/codex）被迫安装 Pi SDK ✗。正解：核心加子路径导出（如 `ace-runtime/pi-adapter`），入口不再导出它，omp 插件改从子路径取 | 待做 |
+| `ace-claude-code` | **解绑核心入口里的 Pi 适配器**：~~核心 `index` 仍 `export * from "./agent/pi-adapter.js"` → 消费者（claude/codex）被迫安装 Pi SDK~~ —— **已解决（2026-10-06）**：死掉的 `PiAdapter` 与 `QueuedEvent` 已删除，核心入口不再导出任何 Pi 适配器；承重的渲染/策略助手移到 `src/agent/event-rendering.ts`，`PiExtensionAdapter` 结构化地只依赖 `sendUserMessage` | **已完成** |
 | `ace-claude-code` | 工具**结果与错误**的文案也归核心（`TOOL_ERROR_TEXT`、`formatPublishResult`、`deliveredChannel`/`deliveredMember`/`failedTarget`、`formatDiscoveredSessions`）；claude 侧的 `ace_pending`/`ace_activate`/`ace_channels`/`ace_publish` 结果文案仍是自己一份 ✗ → 改为引用 | 待做 |
 | `ace-claude-code` | 清单加 `mcpServers` 条目（channel 不注册时工具仍可用）+ 真机验证同名 server 同时出现在两处 | 待做 |
 | `ace-codex` | 补 **MCP 工具面**（现在无工具面，只能入站）；并**按官方参考对齐 app-server envelope**（我们记的形状与公开文档的 JSON-RPC 2.0 有出入） | 待做 |

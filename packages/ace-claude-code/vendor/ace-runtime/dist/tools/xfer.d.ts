@@ -104,7 +104,7 @@ export interface XferSetCommand {
  * The narrow Redis surface the transfer needs: a non-destructive read and one pipelined multi-`SET`.
  *
  * Kept deliberately small so tests run without a broker; the host adapts the `redis` package to it.
- * A peer reads with `GET`, never `GETDEL` — the same pickup code stays readable by anyone until the
+ * A peer reads with `GET`, never `GETDEL` — the same token stays readable by anyone until the
  * TTL expires.
  */
 export interface XferClient {
@@ -168,7 +168,7 @@ export interface StoreInput {
 }
 /** Validate the raw `ace_store_file` arguments; throws a usage error naming the offending value. */
 export declare function validateStoreInput(params: Record<string, unknown>): StoreInput;
-/** The checked `ace_get_file` arguments: the pickup code. */
+/** The checked `ace_get_file` arguments: the token. */
 export interface GetInput {
     /** The token, lowercased so a relay that changed its case still finds the keys. */
     token: string;
@@ -197,7 +197,7 @@ export declare function formatSendResult(options: {
 /**
  * The `ace_get_file` result: the quarantine path the bytes landed at, the hash computed here, the
  * size, the name they were written under, the server they came from, and the blob's own
- * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the pickup token
+ * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the token
  * expires without a second fetch. The hash is reported, never adjudicated — the caller compares it
  * with the sender's and with the metadata's.
  */

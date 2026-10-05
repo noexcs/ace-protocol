@@ -45,7 +45,7 @@ export declare function compareDiscoveredSessions(a: {
  *
  * ```
  * ace 0.1 channels count=<channel rows> self=<rows marked self=yes> unavailable=<unavailable lines>
- * channel=… transport=… activation=… self=… note=…
+ * channel=… activation=… self=… note=…
  * unavailable: …
  * ```
  *
@@ -55,15 +55,20 @@ export declare function compareDiscoveredSessions(a: {
  * reliably than prose; the legend that used to precede them lives in the tool description now.
  *
  * `channel`  the addressable name — what a peer publishes to (the only field that matters to another session)
- * `transport` the transport kind
  * `activation` the activation this receiver forces, or `default` to let the message decide
  * `self`     `yes` for a channel this session's own sender names on one of its servers — one per live
  *            server — because publishing there is how a peer reaches this session
- * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none;
- *            this is not the peer's self-description (`ace_agents` carries that)
+ * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none.
+ *            When there is more than one remark it is a comma-joined list in a fixed order: the
+ *            configured description first, then `config-removed` for a channel a live subscription still
+ *            reads that the current configuration no longer lists. This is not the peer's self-description
+ *            (`ace_agents` carries that).
  *
  * A channel is a shared topic, not a private mailbox: everyone subscribed reads every event published to
  * it. The local subscription label is a host detail, so it is not here; `/ace list` shows it.
+ *
+ * Rows carry no `transport=` field: the transport kind is a deployment detail, and a channel row is
+ * about the channel, not about what carries it.
  */
 export declare function formatChannelListing(subscriptions: readonly EndpointConfig[], options?: {
     /**
@@ -87,6 +92,12 @@ export declare function formatChannelListing(subscriptions: readonly EndpointCon
         server: string;
         address: string;
     }[];
+    /**
+     * Channel names a live subscription still reads that the current configuration file no longer
+     * lists ({@link configRemovedChannels}). Their rows carry `config-removed` in `note`, so a channel
+     * removed since session start — and therefore still read until restart — is visible as stale.
+     */
+    configRemoved?: readonly string[];
 }): string;
 /**
  * The inputs every channel surface lists: the channels this session subscribes to, plus the inboxes the

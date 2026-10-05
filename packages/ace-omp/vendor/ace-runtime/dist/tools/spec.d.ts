@@ -3,8 +3,13 @@ import type { ResolvedAceConfig } from "../runtime/ace-config.ts";
 /**
  * The tool text carries the channel directory, so the agent knows who it can talk to and where its
  * events land without reading `.ace.json` itself.
+ *
+ * `hostSpecifics` is where a host appends what only it knows — its own commands for a `manual` event,
+ * its pending-store limits and spool paths, the config file's resolution order and global candidate,
+ * and so on. Core text states protocol semantics only: a host detail written into the core rots with
+ * the host's version and leaks one host's implementation into every host's prompt.
  */
-export declare function buildPublishToolText(config?: ResolvedAceConfig, sessionId?: string, sender?: string): {
+export declare function buildPublishToolText(config?: ResolvedAceConfig, sessionId?: string, sender?: string, hostSpecifics?: string): {
     description: string;
     promptGuidelines: string[];
 };
@@ -45,13 +50,19 @@ export declare const ACE_TOOL_NAMES: {
     readonly getFile: "ace_get_file";
 };
 /**
+ * The result-line grammar `ace_store_file` and `ace_get_file` share, verbatim, so a reader of either
+ * alone learns the same syntax — including how whitespace is quoted — and the two cannot drift.
+ * `test/tools/prompt-consistency.test.ts` pins that both descriptions carry it unchanged.
+ */
+export declare const RESULT_LINE_GRAMMAR: string;
+/**
  * The tool text the model sees, in one place: the tool definitions read it from here, and
  * `test/extensions/tool-text-docs.test.ts` fails when the contracts document stops quoting it verbatim.
  */
 export declare const TOOL_TEXT: {
     readonly publish: {
         readonly intro: string;
-        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Each target in a list is attempted on its own, so a mixed list is non-atomic: the targets that resolve are stored even when others fail, every failure is a `target=… status=failed error=…` row on the result, and the call fails (throws) only when nothing was stored, and that failure text is the same field list (`stored=0` with one `status=failed` row per input), not a prose sentence. A partly good list therefore returns a *successful* result whose header counts `stored=`, `duplicates=` and `failed=`; read those rows, because catching errors alone reads a mistyped target as a full success. That per-target path is for an entry that is *valid but unresolvable*; an invalid `channel` (empty, whitespace, a control character, an empty segment, the wrong type) or an unknown argument rejects the whole call before anything is sent, so nothing is published.", "Call ace_agents for the channels that are live right now, then pass one of them as `channel`.", string, string, "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, string];
+        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", string, "Call ace_agents for the channels that are live right now, then pass one of them as `channel`.", string, string, string, string];
         readonly params: {
             readonly body: string;
             readonly activation: string;
@@ -96,10 +107,12 @@ export declare const TOOL_TEXT: {
 /**
  * The `ace_channels` description for a host. The tail pointing at `ace_agents` belongs only to hosts
  * that register that tool, so a host without it passes `{ agentsTool: false }` and drops the pointer
- * instead of rewording the shared text.
+ * instead of rewording the shared text. `hostSpecifics` is the same host-supplied paragraph
+ * {@link buildPublishToolText} takes (see there for why).
  */
 export declare function channelsToolText(options?: {
     agentsTool?: boolean;
+    hostSpecifics?: string;
 }): string;
 /**
  * Parameters of the publish tool: all three are declared optional and none declares a type, and the

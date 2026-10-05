@@ -65,18 +65,6 @@ describe("deliveredChannel", () => {
 		});
 	});
 
-	it("names a stream-key target without refusing it", () => {
-		expect(
-			deliveredChannel("ace:ch:ace:noexcs:inbox", { peerNamed: false, selfReads: false }, { streamKey: true }),
-		).toEqual({
-			target: "ace:ch:ace:noexcs:inbox",
-			status: "stored",
-			peerNamed: false,
-			selfReads: false,
-			note: "stream-key",
-		});
-	});
-
 	it("names a target the runtime completed from a short name", () => {
 		expect(
 			deliveredChannel(
@@ -90,22 +78,6 @@ describe("deliveredChannel", () => {
 			peerNamed: false,
 			selfReads: false,
 			note: "completed-short-name",
-		});
-	});
-
-	it("joins both notes into one comma-separated field, completed-short-name first", () => {
-		expect(
-			deliveredChannel(
-				"ace:ch:ace:noexcs:inbox",
-				{ peerNamed: false, selfReads: false },
-				{ streamKey: true, completedShortName: true },
-			),
-		).toEqual({
-			target: "ace:ch:ace:noexcs:inbox",
-			status: "stored",
-			peerNamed: false,
-			selfReads: false,
-			note: "completed-short-name,stream-key",
 		});
 	});
 });
@@ -141,20 +113,7 @@ describe("formatPublishResult", () => {
 		expect(text).not.toContain("readers=");
 	});
 
-	it("names a stream-key target in the row without refusing it", () => {
-		const text = formatPublishResult({
-			...base,
-			rows: [
-				deliveredChannel("ace:ch:ace:noexcs:inbox", { peerNamed: false, selfReads: false }, { streamKey: true }),
-			],
-		});
-
-		expect(text).toContain(
-			"target=ace:ch:ace:noexcs:inbox status=stored peer_named=no self_reads=no note=stream-key",
-		);
-	});
-
-	it("names a completed short name and both notes in one field", () => {
+	it("names a completed short name in the row", () => {
 		const text = formatPublishResult({
 			...base,
 			rows: [
@@ -165,19 +124,11 @@ describe("formatPublishResult", () => {
 						completedShortName: true,
 					},
 				),
-				deliveredChannel(
-					"ace:ch:ace:noexcs:inbox",
-					{ peerNamed: false, selfReads: false },
-					{ streamKey: true, completedShortName: true },
-				),
 			],
 		});
 
 		expect(text).toContain(
 			"target=ace:noexcs:noexcs:inbox status=stored peer_named=no self_reads=no note=completed-short-name",
-		);
-		expect(text).toContain(
-			"target=ace:ch:ace:noexcs:inbox status=stored peer_named=no self_reads=no note=completed-short-name,stream-key",
 		);
 	});
 
@@ -188,7 +139,13 @@ describe("formatPublishResult", () => {
 			activation: "manual",
 			rows: [
 				deliveredChannel("ace:ana:peer", { peerNamed: true, selfReads: false }),
-				deliveredChannel("ace:ch:ace:noexcs:inbox", { peerNamed: false, selfReads: false }, { streamKey: true }),
+				deliveredChannel(
+					"ace:noexcs:noexcs:inbox",
+					{ peerNamed: false, selfReads: false },
+					{
+						completedShortName: true,
+					},
+				),
 			],
 		});
 
@@ -197,7 +154,7 @@ describe("formatPublishResult", () => {
 		);
 		expect(text).toContain("target=ace:ana:peer status=stored peer_named=yes self_reads=no awaiting_activation=yes");
 		expect(text).toContain(
-			"target=ace:ch:ace:noexcs:inbox status=stored peer_named=no self_reads=no awaiting_activation=yes note=stream-key",
+			"target=ace:noexcs:noexcs:inbox status=stored peer_named=no self_reads=no awaiting_activation=yes note=completed-short-name",
 		);
 	});
 

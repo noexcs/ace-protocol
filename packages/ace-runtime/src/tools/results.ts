@@ -11,12 +11,10 @@ import { describeValue } from "../utils.ts";
  */
 
 /**
- * A stored row's `note`, naming the target's shape: `stream-key` when the target is the transport's own
- * stream key rather than an address (`isStreamKeyShaped`, `tools/publish.ts`), `completed-short-name`
- * when the target was a short name the runtime auto-completed (`noexcs:inbox` →
- * `ace:noexcs:noexcs:inbox`). Both together share one field, comma-separated in that order.
+ * A stored row's `note`, naming the target's shape: `completed-short-name` when the target was a short
+ * name the runtime auto-completed (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`).
  */
-export type PublishNote = "stream-key" | "completed-short-name" | "completed-short-name,stream-key";
+export type PublishNote = "completed-short-name";
 
 /**
  * One row of the `ace_publish` result: one input target and what happened to it. The result is a field
@@ -53,24 +51,21 @@ export type PublishTargetRow =
  * channel is a name, not a mailbox) but it is what a typo looks like. What each field means is
  * spelled out once in the tool description, not per result.
  *
- * `streamKey` marks a target whose channel has the transport's key shape; `completedShortName` marks a
- * target the runtime auto-completed from a short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`),
- * so the caller sees the name that was actually stored. Neither is refused; both are named.
+ * `completedShortName` marks a target the runtime auto-completed from a short name (`noexcs:inbox` →
+ * `ace:noexcs:noexcs:inbox`), so the caller sees the name that was actually stored. It is not refused;
+ * it is named.
  */
 export function deliveredChannel(
 	target: string,
 	facts: ReaderFacts,
-	options: { streamKey?: boolean; completedShortName?: boolean } = {},
+	options: { completedShortName?: boolean } = {},
 ): PublishTargetRow {
-	const notes: ("completed-short-name" | "stream-key")[] = [];
-	if (options.completedShortName === true) notes.push("completed-short-name");
-	if (options.streamKey === true) notes.push("stream-key");
 	return {
 		target,
 		status: "stored",
 		peerNamed: facts.peerNamed,
 		selfReads: facts.selfReads,
-		...(notes.length === 0 ? {} : { note: notes.join(",") as PublishNote }),
+		...(options.completedShortName === true ? { note: "completed-short-name" as PublishNote } : {}),
 	};
 }
 

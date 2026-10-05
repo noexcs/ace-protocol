@@ -63,7 +63,7 @@ export function compareDiscoveredSessions(a, b) {
  *
  * ```
  * ace 0.1 channels count=<channel rows> self=<rows marked self=yes> unavailable=<unavailable lines>
- * channel=… transport=… activation=… self=… note=…
+ * channel=… activation=… self=… note=…
  * unavailable: …
  * ```
  *
@@ -73,28 +73,39 @@ export function compareDiscoveredSessions(a, b) {
  * reliably than prose; the legend that used to precede them lives in the tool description now.
  *
  * `channel`  the addressable name — what a peer publishes to (the only field that matters to another session)
- * `transport` the transport kind
  * `activation` the activation this receiver forces, or `default` to let the message decide
  * `self`     `yes` for a channel this session's own sender names on one of its servers — one per live
  *            server — because publishing there is how a peer reaches this session
- * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none;
- *            this is not the peer's self-description (`ace_agents` carries that)
+ * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none.
+ *            When there is more than one remark it is a comma-joined list in a fixed order: the
+ *            configured description first, then `config-removed` for a channel a live subscription still
+ *            reads that the current configuration no longer lists. This is not the peer's self-description
+ *            (`ace_agents` carries that).
  *
  * A channel is a shared topic, not a private mailbox: everyone subscribed reads every event published to
  * it. The local subscription label is a host detail, so it is not here; `/ace list` shows it.
+ *
+ * Rows carry no `transport=` field: the transport kind is a deployment detail, and a channel row is
+ * about the channel, not about what carries it.
  */
 export function formatChannelListing(subscriptions, options = {}) {
     const isSelf = (name) => options.selfChannels?.includes(name) === true;
+    const configRemoved = new Set(options.configRemoved ?? []);
     const line = (endpoint) => {
         const name = endpoint.channel ?? endpoint.name;
+        // `note` is a comma-joined list of remarks, in a fixed order: the configured description first,
+        // then `config-removed`. Both are the unquoted tail of the row, so a whitespace split never breaks.
+        const note = [
+            ...(endpoint.description === undefined ? [] : [endpoint.description]),
+            ...(configRemoved.has(name) ? ["config-removed"] : []),
+        ].join(", ");
         return [
             `channel=${name}`,
-            `transport=${endpoint.transport}`,
             `activation=${endpoint.activation ?? "default"}`,
             `self=${isSelf(name) ? "yes" : "no"}`,
             // The note is the unquoted tail of the row: everything after `note=` is the note verbatim, so
             // a whitespace split never breaks and an empty note is simply `note=` at the end of the line.
-            `note=${endpoint.description ?? ""}`,
+            `note=${note}`,
         ].join(" ");
     };
     // The server-level problem comes first (it is the cause), then each subscription it dropped.

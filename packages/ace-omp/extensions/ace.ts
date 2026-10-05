@@ -68,6 +68,7 @@ import {
 	channelsToolText,
 	codingAgentOf,
 	compareDiscoveredSessions,
+	configRemovedChannels,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
 	createRedisXferClient,
@@ -89,7 +90,6 @@ import {
 	formatSessionLabel,
 	GET_FILE_PARAMETERS,
 	hostFacts,
-	isStreamKeyShaped,
 	NO_SESSION_LABEL,
 	PiExtensionAdapter,
 	PUBLISH_PARAMETERS,
@@ -210,6 +210,22 @@ function truncate(text: string, limit = 60): string {
 	return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
+/**
+ * What only this host knows, appended to the tool descriptions as a `Host specifics:` paragraph.
+ *
+ * The core tool text states protocol semantics; these are oh-my-pi's own commands, limits and file
+ * locations, so they belong to the host that implements them. Keeping them out of the core is what
+ * stops one host's implementation from leaking into every host's prompt — and from rotting there when
+ * this host's version changes.
+ */
+const OMP_HOST_SPECIFICS =
+	"The config file is resolved from `$ACE_CONFIG`, then the project `.ace.json`, then this host's " +
+	"global file (`~/.omp/agent/ace.json`, or under `$XDG_CONFIG_HOME/omp` when `omp config init-xdg` was " +
+	"used) — the first that exists wins — and the file that won and the global one it shadowed are both " +
+	"printed at session start. A `manual` event here is held in an in-memory pending store — 100 events " +
+	"and 24h by default, spooled to `.ace/spool/manual-<subscription>.jsonl` — which this host's user " +
+	"inspects and activates with `/ace pending` and `/ace activate <sender> <id>`.";
+
 /** Wrong or missing arguments get this, the way `/mcp` answers with its own usage line. */
 const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats";
 
@@ -312,6 +328,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		pi,
 		isIdle: () => sessionContext?.isIdle() ?? true,
 		host,
+		// Runtime log lines go to stderr (see `createLogger`); a suppressed duplicate is reported here so a
+		// host can tell adapter-level duplication from render-level duplication.
+		logger: { info: (line) => console.error(line) },
 		...(delivery ? { observeDelivery: delivery } : {}),
 	});
 
@@ -437,7 +456,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.channels,
 			label: "ACE Channels",
-			description: channelsToolText(),
+			description: channelsToolText({ hostSpecifics: OMP_HOST_SPECIFICS }),
 			promptGuidelines: [...TOOL_TEXT.channels.guidelines],
 			parameters: CHANNELS_PARAMETERS,
 			async execute(_toolCallId, params) {
@@ -449,6 +468,17 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					throw new Error(TOOL_ERROR_TEXT.notRunning);
 				}
 				const listing = channelListingInput(subscriptions, sessionInboxes);
+				// `.ace.json` was read once at session start, so a channel removed since then is still read
+				// until restart. Re-resolve the current file here (best-effort) and mark those rows.
+				const removed =
+					resolvedConfig === undefined
+						? []
+						: configRemovedChannels({
+								subscriptions: resolvedConfig.subscriptions,
+								cwd: sessionContext?.cwd ?? process.cwd(),
+								env: process.env,
+								globalConfigPaths: [ompGlobalConfigPath(process.env)],
+							});
 				return {
 					content: [
 						{
@@ -457,6 +487,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 								...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
 								unavailable: unavailableSubscriptions,
 								deadServers: unavailableServers,
+								...(removed.length === 0 ? {} : { configRemoved: removed }),
 							}),
 						},
 					],
@@ -493,7 +524,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Store a local file on every live server and hand back the pickup code. Nothing is published:
+	 * Store a local file on every live server and hand back the token. Nothing is published:
 	 * the model relays the result line itself, so the tool's whole job is the store and the report.
 	 */
 	function storeFileTool(): ToolDefinition<typeof STORE_FILE_PARAMETERS> {
@@ -548,7 +579,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.publish,
 			label: "ACE Publish",
-			...buildPublishToolText(config, sessionId, activeServers[0]?.sender ?? ""),
+			...buildPublishToolText(config, sessionId, activeServers[0]?.sender ?? "", OMP_HOST_SPECIFICS),
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {
@@ -598,9 +629,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							// one's own inbox would see that entry and report a `peer` that is this very session.
 							own: activeServers.map((active) => active.sender),
 						});
-						// A channel whose name is the transport's key shape is legal, but it is a copied stream
-						// key rather than an address; naming it keeps it from looking like a working target.
-						const streamKey = isStreamKeyShaped(target.channel);
 						// A resolved channel that differs from the input name means the runtime completed a
 						// short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`); a full name is stored as
 						// written, so the caller sees which name the event actually landed on.
@@ -617,7 +645,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							body: input.body,
 						});
 						await publishToChannel(target, message);
-						rows.push(deliveredChannel(target.channel, facts, { streamKey, completedShortName }));
+						rows.push(deliveredChannel(target.channel, facts, { completedShortName }));
 					} catch (error) {
 						rows.push(failedTarget(outcome.name, describeError(error)));
 					}

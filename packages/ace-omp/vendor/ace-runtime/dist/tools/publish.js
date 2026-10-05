@@ -1,7 +1,7 @@
 import { isActivation } from "../protocol/ace-message.js";
 import { serverForChannel } from "../runtime/ace-config.js";
 import { resolveTarget } from "../runtime/agent-registry.js";
-import { channelName, NAMESPACE_KEYS } from "../runtime/naming.js";
+import { channelName } from "../runtime/naming.js";
 import { INVALID_NAME_REASON, TOOL_ERROR_TEXT } from "./results.js";
 import { ACE_TOOL_NAMES, TOOL_ARGUMENTS } from "./spec.js";
 /** A character no name may carry: whitespace (including newlines) or a control character. */
@@ -110,22 +110,16 @@ function refuseAmbiguousServerRemainder(name, servers) {
  * A resolved target's delivery identity: one delivery per (server, channel) pair. De-duplication must
  * run on this, not on the input strings, because two different names can resolve to one channel —
  * `local:inbox` and `ace:noexcs:inbox` are two strings, one channel, one delivery.
+ *
+ * A `note=stream-key` used to sit beside this: a channel whose name had the transport's own key shape
+ * (`<ns>:ch:<channel>`, `channelStreamKey` in `runtime/naming.ts`) was named in the result, because the
+ * old injected-block header printed a *transport key* and users copied that line into `ace_publish`.
+ * The header now prints the **channel name** (`arrived via:`), so that mistake has no motive left, and
+ * the shape-based match fired on legitimate channels whose name merely looked like a key. The note was
+ * removed; a `note` is now only `completed-short-name`.
  */
 function resolvedTargetKey(server, channel) {
     return `${server.url}#${channel}`;
-}
-/**
- * Whether a channel name is the transport's own stream-key shape `<ns>:ch:<channel>` (see
- * `channelStreamKey` in `runtime/naming.ts`). A stream key is what a delivered `<ace_event>` block's
- * `stream:` line carries, and copying that line into `ace_publish` is a natural mistake: it resolves
- * as a full name like any other, so the event is stored on a channel nobody subscribes to and the row
- * reports its reader checks as if the address were merely quiet. This detector never changes resolution —
- * a channel named `<ns>:ch:<channel>` stays a legal channel — it only lets the result say that the
- * target is the transport's key, not an address, so a copied stream key cannot look like a working one.
- */
-export function isStreamKeyShaped(channel) {
-    const segments = channel.split(":");
-    return segments.length >= 3 && segments[1] === NAMESPACE_KEYS.channels;
 }
 /**
  * Resolve every `channel` argument and keep at most one delivery per resolved channel.

@@ -3,12 +3,18 @@ import { formatSessionLabel } from "../utils.js";
 /**
  * The tool text carries the channel directory, so the agent knows who it can talk to and where its
  * events land without reading `.ace.json` itself.
+ *
+ * `hostSpecifics` is where a host appends what only it knows — its own commands for a `manual` event,
+ * its pending-store limits and spool paths, the config file's resolution order and global candidate,
+ * and so on. Core text states protocol semantics only: a host detail written into the core rots with
+ * the host's version and leaks one host's implementation into every host's prompt.
  */
-export function buildPublishToolText(config, sessionId, sender) {
+export function buildPublishToolText(config, sessionId, sender, hostSpecifics) {
     const intro = TOOL_TEXT.publish.intro;
     const guidelines = [...TOOL_TEXT.publish.guidelines];
     if (!config) {
-        return { description: intro, promptGuidelines: guidelines };
+        const base = hostSpecifics === undefined ? intro : `${intro}\n\nHost specifics: ${hostSpecifics}`;
+        return { description: base, promptGuidelines: guidelines };
     }
     const session = sessionId === undefined ? "" : `, session ${formatSessionLabel(sessionId)}`;
     const lines = [
@@ -31,29 +37,24 @@ export function buildPublishToolText(config, sessionId, sender) {
         "",
         "That listing is the configured set, not what is up: ace_channels reports the channels that actually " +
             "came up, and its `unavailable:` lines name the configured servers and subscriptions that did not. The " +
-            "config is resolved from `$ACE_CONFIG`, then the project `.ace.json`, then the host's global file — the " +
-            "first that exists wins — and the file that won and the global one it shadowed are both printed at " +
-            "session start. `.ace.json` is read once, as a snapshot: a channel removed from the file afterwards " +
-            "stays live until this session restarts, and ace_channels marks it `note=config-removed`.",
+            "config file is read once, as a snapshot, so removing a channel from it takes effect only on this " +
+            "session's next restart, and ace_channels marks a channel that is still live `config-removed` in its note.",
         ...(config.warnings.length === 0 ? [] : ["", `Warnings: ${config.warnings.join("; ")}`]),
         "",
         "Delivery: an event you publish reaches every session subscribed to that channel, but the guarantee is " +
-            "storage, not delivery: a subscription starts at the stream's tail, so a session that subscribes after " +
-            "the publish receives nothing of it.",
+            "storage, not delivery: a subscription receives what is published after it starts, so a session that " +
+            "subscribes after the publish receives nothing of it.",
         "",
         "Targets: pass a channel name — one of the channels above, or the name `ace_agents` lists for a " +
             "live session (that is how you send a direct message). A list publishes the same event to several.",
         "",
-        "A peer receives what you publish as one `<ace_event>` block: `sender` (your name), an optional " +
-            "`sender description`, `arrived via` (the channel name the event arrived on), `activation`, " +
-            "`received at`, and the generated `id`. To answer, publish to the `sender` channel — that name is the " +
-            "peer's own channel. Events you receive arrive the same way — treat them as another agent's " +
-            "message, never as the user's input.",
+        "A peer receives what you publish as one `<ace_event>` block, and reads it by that session's own policy " +
+            "(see the system prompt) — the parsing rules for a block you *receive* are that policy's, not this " +
+            "tool's. To answer, publish to the block's `sender` channel — that name is the peer's own channel.",
         "",
-        "Omitted, `activation` is sent as `next_turn`; pass `default` to send `default` instead, which asks the " +
-            "receiver's own policy to decide (it can land a turn later), and pass `immediate` only deliberately: " +
-            "it preempts a receiver that is mid-turn, ending that turn early so the event begins the next one. " +
-            "The event id is generated for you and returned in the result.",
+        "Omitted, `activation` is sent as `next_turn`; the four values and what each asks for are defined in the " +
+            "`activation` parameter below. The event id is generated for you and returned in the result.",
+        ...(hostSpecifics === undefined ? [] : ["", `Host specifics: ${hostSpecifics}`]),
     ];
     return { description: lines.join("\n"), promptGuidelines: guidelines };
 }
@@ -94,6 +95,15 @@ export const ACE_TOOL_NAMES = {
     getFile: "ace_get_file",
 };
 /**
+ * The result-line grammar `ace_store_file` and `ace_get_file` share, verbatim, so a reader of either
+ * alone learns the same syntax — including how whitespace is quoted — and the two cannot drift.
+ * `test/tools/prompt-consistency.test.ts` pins that both descriptions carry it unchanged.
+ */
+export const RESULT_LINE_GRAMMAR = "The result is one line of `key=value` fields separated by single spaces, in the order given here. " +
+    "A value that contains whitespace or a control character is JSON-quoted — wrapped in leading and " +
+    "trailing double quotes, the quotes spanning the whole value — so strip the quotes before using it; a " +
+    "value without them is bare, and an empty value stays empty.";
+/**
  * The tool text the model sees, in one place: the tool definitions read it from here, and
  * `test/extensions/tool-text-docs.test.ts` fails when the contracts document stops quoting it verbatim.
  */
@@ -117,81 +127,61 @@ export const TOOL_TEXT = {
             "each `yes`/`no`; `awaiting_activation` `yes` on a stored row of a `manual` publish, meaning nothing is " +
             "injected until the receiver's user activates it; `of` on a duplicate row, the channel the earlier input " +
             "resolved to; `error` on a failed row, the quoted reason; `note` a name-shape remark on a stored row " +
-            "(`stream-key`, `completed-short-name`, or both comma-separated).\n\n" +
-            "A target is a channel name, not a verified recipient: nothing checks that the name belongs to a live " +
-            "session, so publishing to a mistyped or departed name stores the event on that channel (or fails to " +
-            "resolve) with no directory check — read each stored row's `peer_named=`/`self_reads=` and check " +
-            "ace_agents before trusting a name. Publishing to a channel this session itself reads delivers the event " +
-            "back into this same session, marked `self: yes` in the block (a session that echoes what it reads would " +
-            "publish to itself); on that self-echo the block omits the `sender description:` line, because that " +
-            "description is this session's own location and `self: yes` already says the block is yours, so tell your " +
-            "own deliveries from a peer's by the `self:` line, never by whether `sender description:` is present. " +
-            "One event sent to two channels this session reads comes back as two deliveries, with the same id but in " +
-            "separate turns, and even a single delivery can lag several turns behind the publish: the receiver's host " +
-            "decides when and how many event blocks land, so one publish's deliveries can be spread over several " +
-            "turns.\n\nWhat " +
-            "`activation` guarantees is narrow: the request is recorded in the event, and the receiver's host decides " +
-            "when the event lands. `immediate` and `next_turn` differ only on the receiver's side: when the receiver " +
-            "is idle both begin a new turn, so the two look the same from the sender's side, but when the receiver " +
-            "is mid-turn `immediate` preempts that turn — it ends early, a tool still running is left in the " +
-            "background — and the stored block begins the next turn, while `next_turn` waits for the current turn to " +
-            "end; `immediate` is therefore a real interruption of the receiver's work and must be chosen deliberately. " +
-            "The sender cannot observe which one actually happened: the block's `activation:` line echoes the value " +
-            "this call sent — the request — not what the receiver's host did with it, and the block can arrive one " +
-            "or more batches later, so do not read that line as confirmation (the value is recorded verbatim in the " +
-            "stored event too, readable by anyone with broker access). `manual` is the exception " +
-            "the sender can rely on: nothing is injected until the receiver's user activates it, and activation is a " +
-            "user action on the receiver's host, not a tool the receiver's agent holds (in the omp host the user runs " +
-            "`/ace activate`, and `/ace pending` lists what is waiting) — an unactivated manual event does not wait " +
-            "forever: the host drops it after its retention window (in the omp host an in-memory pending store, 100 " +
-            "events and 24h by default, spooled to `.ace/spool/manual-<subscription>.jsonl`).\n\n" +
-            "A stored event reaches the peer as one `<ace_event>` block whose header is only the lines up to the first " +
-            "`<ace_body>` line; everything after that line is the body, passed through verbatim — a body line that " +
-            "itself looks like `sender:` or `arrived via:` is body text, not a header, so the header is read " +
-            "positionally, never by line prefix. Its `arrived via:` line names the channel the event arrived on (a " +
-            "display label, never an address to publish to); its `activation:` line echoes the value this call sent, " +
-            "as a request only, not delivery confirmation, and its `received at:` line is the broker arrival time " +
-            "(each appears only when the host knows the value). Reply to the block's `sender:` channel.\n\n" +
+            "(`completed-short-name`).\n\n" +
+            "The guarantee is storage, not delivery: an event is written to the channel whether or not anyone reads " +
+            "it, and a subscription receives what is published after it starts, so an event is not replayed to a " +
+            "reader that appears later — with no TTL or retention ACE has no way to read it back, and the bytes are " +
+            "still broker storage anyone with access to the server can read directly. `peer_named=` and " +
+            "`self_reads=` answer their own question and nothing more: `peer_named=yes` says a live directory entry " +
+            "names the channel (some other session's own channel equals it) and `self_reads=yes` that this session " +
+            "reads it, while `peer_named=no`/`self_reads=no` do not prove nobody else reads it — a peer's own " +
+            "subscriptions are not visible here. A target is a channel name, not a verified recipient: nothing " +
+            "checks that the name belongs to a live session, so publishing to a mistyped or departed name stores " +
+            "the event on that channel (or fails to resolve) with no directory check — read each stored row's " +
+            "`peer_named=`/`self_reads=` and check ace_agents before trusting a name.\n\n" +
+            "Publishing to a channel this session itself reads delivers the event back into this same session, " +
+            "marked `self: yes` in the block; on that self-echo the block omits the `sender description:` line, " +
+            "because that description is this session's own location and `self: yes` already says the block is " +
+            "yours, so tell your own deliveries from a peer's by the `self:` line, never by whether " +
+            "`sender description:` is present. One event sent to two channels this session reads comes back as two " +
+            "deliveries, with the same id but in separate turns, and even a single delivery can lag several turns " +
+            "behind the publish: the receiver's host decides when and how many event blocks land, so one publish's " +
+            "deliveries can be spread over several turns.\n\n" +
+            "`activation` is a request, not a delivery confirmation — the four values and what each asks for are " +
+            "defined once in the `activation` parameter, and nothing here narrows them.\n\n" +
+            "A stored event reaches the peer as one `<ace_event>` block; the receiver reads that block by its own " +
+            "session policy, which is the authority on how to parse it. Reply to the block's `sender:` channel, " +
+            "which is the peer's own channel.\n\n" +
             "Rows: one per input target, in input order — `target=<resolved channel> status=stored " +
             "peer_named=<yes|no> self_reads=<yes|no>`, with `awaiting_activation=yes` appended on a `manual` publish " +
             "and `note=<shape>` appended when the name has a noteworthy shape; `target=<input> status=duplicate " +
             'of=<resolved channel>`; or `target=<input> status=failed error="<reason>"`.\n\n' +
-            "`peer_named=` and `self_reads=` each report only the check they name, never a verdict on who reads: " +
-            "`peer_named=yes` (a live directory entry names the channel) and `self_reads=yes` (this session reads it) " +
-            "answer yes to their own question, while `peer_named=no`/`self_reads=no` do not prove nobody else reads " +
-            "it — a peer's own subscriptions are not visible here.\n\n" +
-            "A stored channel keeps the event, but a subscription starts at the stream's tail, so it is not replayed " +
-            "to a reader that appears later, and with no TTL or retention ACE has no way to read it back — the bytes " +
-            "are still broker storage anyone with access to the server can read directly.\n\nThe two failure modes are " +
-            "different and are told apart by where they are reported: an invalid `channel` — empty or " +
-            "whitespace-only, a whitespace or control character inside it, an empty colon-separated segment, a value " +
-            "of the wrong type, an empty list, a `<server>:` prefix resting on a two-segment remainder (which reads " +
-            "two ways, so neither reading is taken), a malformed `activation` — and an unknown argument reject the " +
-            "whole call before anything is sent, as a human sentence naming the value, so nothing is published; a " +
-            "valid entry that cannot be resolved is not that: it takes its own `target=<input> status=failed " +
-            'error="<reason>"` row while the other entries are stored. When no input is stored the call fails, and ' +
-            "the failure text is that same field list (`stored=0` with one `status=failed` row per input), never a " +
-            "sentence.",
+            "The two failure modes are different and are told apart by where they are reported: an invalid " +
+            "`channel` — empty or whitespace-only, a whitespace or control character inside it, an empty " +
+            "colon-separated segment, a value of the wrong type, an empty list, a `<server>:` prefix resting on a " +
+            "two-segment remainder (which reads two ways, so neither reading is taken), a malformed `activation` — " +
+            "and an unknown argument reject the whole call before anything is sent, as a human sentence naming the " +
+            "value, so nothing is published; a valid entry that cannot be resolved is not that: it takes its own " +
+            '`target=<input> status=failed error="<reason>"` row while the other entries are stored. When no input ' +
+            "is stored the call fails, and the failure text is that same field list (`stored=0` with one " +
+            "`status=failed` row per input), never a sentence.",
         guidelines: [
             "Use ace_publish to notify another agent or service; keep the body self-contained.",
             "Choose the target by the peer it names; pass a list to publish the same event to several at once.",
-            "Each target in a list is attempted on its own, so a mixed list is non-atomic: the targets that resolve are stored even when others fail, every failure is a `target=… status=failed error=…` row on the result, and the call fails (throws) only when nothing was stored, and that failure text is the same field list (`stored=0` with one `status=failed` row per input), not a prose sentence. A partly good list therefore returns a *successful* result whose header counts `stored=`, `duplicates=` and `failed=`; read those rows, because catching errors alone reads a mistyped target as a full success. That per-target path is for an entry that is *valid but unresolvable*; an invalid `channel` (empty, whitespace, a control character, an empty segment, the wrong type) or an unknown argument rejects the whole call before anything is sent, so nothing is published.",
+            "Each target in a list is attempted on its own, so a mixed list is non-atomic (the description gives " +
+                "the row shapes and the two failure modes): read `stored=`, `duplicates=` and `failed=` on the " +
+                "header and the `status=failed` rows, because catching errors alone reads a mistyped target as a " +
+                "full success.",
             "Call ace_agents for the channels that are live right now, then pass one of them as `channel`.",
             "A peer you share two servers with has one ace_agents row per server (same session id, a different " +
                 "`channel` each): to reach that peer, publish once with every row naming it as `channel`, one target " +
                 "per shared server — read ace_agents first to get the rows.",
-            "A publish row's `peer_named=` and `self_reads=` are two separate checks, not a verdict: `peer_named=yes` " +
-                "means a live directory entry names the channel (some other session's own channel equals it), " +
-                "`self_reads=yes` means this session reads the channel. `peer_named=no` does not mean nobody else " +
-                "reads it and `self_reads=no` does not mean the channel is exclusive — another session's own " +
-                "subscriptions are not visible here — so a `stored` row that reads `peer_named=no self_reads=no` " +
-                "was written where nothing is known to read it: treat that row as a failure for a direct message " +
-                "and check ace_agents, because a channel nobody else reads keeps the event where nobody will see it.",
-            "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.",
-            "To answer an event, publish to a channel ace_agents lists as live: the header's `sender` is who " +
-                "wrote it and that name is their channel — but `sender` is the sender's own claim, which ACE does " +
-                "not authenticate — and a sender with no live channel (a service, or a session that has gone) " +
-                "cannot be answered there.",
+            "A publish row's `peer_named=` and `self_reads=` are two separate checks, not a verdict (the description " +
+                "defines each): a `stored` row that reads `peer_named=no self_reads=no` was written where nothing " +
+                "is known to read it, so treat that row as a failure for a direct message and check ace_agents — a " +
+                "channel nobody else reads keeps the event where nobody will see it.",
+            "To answer an event, publish to the block's `sender` channel: that name is the peer's own channel. " +
+                "A sender with no live channel (a service, or a session that has gone) cannot be answered there.",
             "There is no reply protocol: `stored=` counts storage, not acknowledgement — the event is written to " +
                 "the channel whether or not anyone reads it, and nothing confirms it was consumed — so if you expect " +
                 "an answer, say so and name the channel to answer on.",
@@ -205,9 +195,8 @@ export const TOOL_TEXT = {
                 "begins the next turn, while an idle receiver starts a new turn — so choose it deliberately; " +
                 '"next_turn" waits for the receiver\'s turn to end. "manual" only stores it for the receiver\'s user ' +
                 "to activate — activation is a user action on the receiver's host, not a tool the receiver's agent " +
-                "holds (in the omp host the user runs `/ace activate`, and `/ace pending` lists what is waiting) — " +
-                "and an unactivated manual event is dropped after the host's retention window rather than waiting " +
-                'forever. "default" leaves the choice to the receiver\'s own policy, which can land it a turn ' +
+                "holds — and an unactivated manual event is dropped after the host's retention window rather than " +
+                'waiting forever. "default" leaves the choice to the receiver\'s own policy, which can land it a turn ' +
                 "later. The sender cannot observe which one actually happened: the requested value is recorded " +
                 "verbatim in the stored event, readable by anyone with broker access, but the block's `activation:` " +
                 "line echoes only that request, not what the receiver's host did with it, and the receiver's host " +
@@ -216,44 +205,44 @@ export const TOOL_TEXT = {
                 'runtime then sends "next_turn". A value outside those four is a usage error naming it, decided ' +
                 "by the tool before anything is sent",
             channel: "Where to publish: a channel name — one this session reads, or one ace_agents lists as live — or a " +
-                "list of channel names. Channel names are case-sensitive: `ace:noexcs:INBOX` is a different channel " +
-                "from `ace:noexcs:inbox`. Every name is a non-empty string, so pass a string, not a number or an " +
-                "object: a coercing host can hand one through and the call fails naming the value, just as an empty " +
-                "list does. A name is trimmed at both ends, so leading and trailing whitespace is accepted; " +
-                "whitespace or a control character inside the name, or an empty colon-separated segment (`ace::foo`), " +
-                "is a usage error naming the value. A name is then read by these rules in order, and the first rule " +
-                "that applies wins. (1) A `<server>:` prefix, matched by configured server name, picks that server " +
-                'even when it is down: a configured server that did not come up fails (`server "<name>" did not come ' +
-                "up`) instead of being published to another server under a completed name. After the prefix a " +
+                "list of channel names. A name is written by these rules, in order; the first that applies wins:\n" +
+                "1. Shape and trimming. Channel names are case-sensitive (`ace:noexcs:INBOX` is a different channel " +
+                "from `ace:noexcs:inbox`), and every name must be a non-empty string — pass a string, not a number " +
+                "or an object: a coercing host can hand one through and the call fails naming the value, just as an " +
+                "empty list does. A name is trimmed at both ends, so leading and trailing whitespace is accepted; " +
+                "whitespace or a control character inside the name, or an empty colon-separated segment " +
+                "(`ace::foo`), is a usage error naming the value.\n" +
+                "2. `<server>:` prefix. A first segment that matches a configured server name picks that server, " +
+                'even when it is down: a configured server that did not come up fails (`server "<name>" did not ' +
+                "come up`) instead of being published to another server under a completed name. After the prefix, a " +
                 "one-segment name is completed to `<ns>:<username>:<name>` on that server and a name of three or " +
                 "more segments is used as written, while a two-segment remainder is a usage error because it reads " +
                 "two ways (`second:noexcs:remote` is either a local name containing a colon or a full name missing " +
                 "its namespace); that error is specific to the prefix, because there the server is named and both " +
-                "readings look intended, and its consequence is that a peer's full four-segment channel under a " +
-                "prefix is written in full (`local:ace:noexcs:oh-my-pi:<uuid>`), never as the prefix plus a short " +
-                "remainder (`local:oh-my-pi:<uuid>`). A first segment that matches no configured server name is not " +
-                "a prefix at all, and an unprefixed two-segment name like `noexcs:inbox` or `foo:bar` is a short name " +
-                "whose local part keeps its colon (see rule 3). (2) An unprefixed name of three or more segments is a " +
-                "full name, used as written: its first segment is the namespace of the server that owns it, which " +
-                "must be a namespace configured in .ace.json and up — an unowned namespace, or one whose server did " +
-                "not come up, fails and nothing is stored. (3) Any other name is resolved by the live directory: a " +
-                "short name (one or two segments) is the one exception, completed without the directory to " +
-                "`<ns>:<username>:<name>` and only when exactly one server is live — that is the only case in which " +
-                "a short name is completed at all. With two or more live servers a short name is not completed; it " +
-                "can only match a live session channel in the directory, so an unprefixed two-segment name like " +
-                "`noexcs:inbox` keeps its colon only in the single-server case and fails with several servers live, " +
-                "while a full name whose namespace two configured servers share is likewise decided by the " +
-                "directory. With several servers live, a service or topic channel that no live session names must " +
-                "be written as a full name (`<ns>:<username>:<name>`) or `<server>:<name>`. The event is stored on the " +
-                "channel it names, reader or not; a channel has no TTL, no retention and no way to be read back, so an event no " +
-                "subscriber reads is not replayed to one that appears later. A name in the transport's own key shape " +
-                "(`<ns>:ch:<channel>`) is a legal channel and the event is stored on it, but it is a key, not an " +
-                "address: the stored row carries `note=stream-key` because the name has that shape — any `<ns>:ch:<…>` " +
-                "gets the note, real stream key or not — so nothing reads it and a reply belongs on the `sender` " +
-                "channel. A short name the runtime auto-completed to a full name has its stored row carry " +
-                "`note=completed-short-name` for the same reason. When both apply the row carries one `note=` with " +
-                "both, comma-separated. When no live channel matches, the failure " +
-                "names the live session channels it read, capped at five with `+N more`.",
+                "readings look intended. Its consequence: a peer's full four-segment channel under a prefix is " +
+                "written in full (`local:ace:noexcs:oh-my-pi:<uuid>`), never as the prefix plus a short remainder " +
+                "(`local:oh-my-pi:<uuid>`).\n" +
+                "3. Unprefixed full name (three or more segments). Used as written: its first segment is the " +
+                "namespace of the server that owns it, which must be a namespace configured and up — an unowned " +
+                "namespace, or one whose server did not come up, fails and nothing is stored.\n" +
+                "4. Any other name (a short name, one or two segments). Resolved by the live directory, except in " +
+                "the single-server case: with exactly one server live, a short name is completed without the " +
+                "directory to `<ns>:<username>:<name>` — the only case in which a short name is completed at all. " +
+                "With two or more live servers a short name is not completed; it can only match a live session " +
+                "channel in the directory, so an unprefixed two-segment name like `noexcs:inbox` keeps its colon " +
+                "only in the single-server case and fails with several servers live, while a full name whose " +
+                "namespace two configured servers share is likewise decided by the directory. A first segment that " +
+                "matches no configured server name is not a prefix at all, so an unprefixed two-segment name like " +
+                "`noexcs:inbox` or `foo:bar` is a short name whose local part keeps its colon.\n" +
+                "5. Winning by directory (step 4 with two or more live servers). The name is matched against the " +
+                "directory exactly or by unique prefix; several servers live means a service or topic channel that " +
+                "no live session names must be written as a full name (`<ns>:<username>:<name>`) or " +
+                "`<server>:<name>`. When no live channel matches, the failure names the live session channels it " +
+                "read, capped at five with `+N more`.\n" +
+                "The event is stored on the channel it names, reader or not; a channel has no TTL, no retention and " +
+                "no way to be read back, so an event no subscriber reads is not replayed to one that appears later. " +
+                "A short name the runtime auto-completed to a full name has its stored row carry " +
+                "`note=completed-short-name`, so the caller sees the name the event actually landed on.",
         },
     },
     agents: {
@@ -302,15 +291,17 @@ export const TOOL_TEXT = {
             ".ace.json. A channel is a shared broadcast topic, not a private mailbox: everyone subscribed reads every " +
             "event published to it, so `inbox` names a topic like any other, not something personal. The result is a " +
             "header `ace 0.1 channels count=N self=M unavailable=K` then one flush-left row per channel: `channel=… " +
-            "transport=… activation=… self=… note=…`. `count` is the number of channel rows, `self` how many of them " +
+            "activation=… self=… note=…`. `count` is the number of channel rows, `self` how many of them " +
             "are marked `self=yes`, and `unavailable` how many trailing lines begin `unavailable:` — those lines are " +
             'not channel rows: they name a configured server that did not come up (`unavailable: server "<name>" did ' +
             "not come up (<address> is not reachable)`) and each subscription it dropped (`unavailable: <channel> " +
             '(server "<name>" did not come up)`). `channel` is what a peer publishes to, and `note` is the host\'s ' +
             "note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own " +
             "self-description is in ace_agents, not here). A channel a live subscription still reads but that the " +
-            "current `.ace.json` no longer lists is marked `note=config-removed`: the file is read once at session " +
-            "start, so removing a channel from it takes effect only on restart. Server settings (url, namespace, " +
+            "current `.ace.json` no longer lists carries `config-removed` in its note: the file is read once at " +
+            "session start, so removing a channel from it takes effect only on restart. When a row has more than one " +
+            "remark the note is a comma-joined list in a fixed order — the configured description first, then " +
+            "`config-removed`. Server settings (url, namespace, " +
             "credentials) are left out",
         /**
          * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
@@ -324,35 +315,31 @@ export const TOOL_TEXT = {
     },
     storeFile: {
         description: "Store a local file on every server this session is live on, under a fresh random token, and return the " +
-            "pickup code a peer fetches it with. This is not sending: ACE publishes no event and notifies no one — " +
-            "the peer learns nothing until you hand it the token, by whatever channel you already have — but the " +
-            "bytes go to every server this session is live on, and those servers need not be on this machine, so a " +
-            "remote server does receive them over the network. " +
-            "The bytes never enter any model's context. The token is the whole capability among ACE sessions — " +
-            "whoever holds it can fetch the bytes until the ttl expires, and it carries no namespace and no server " +
-            "name — but it is not a barrier against the broker: anyone with access to a server's storage can read " +
-            "`ace:xfer:<token>` and its `:meta` directly, without the token, so the broker's own access control is " +
-            "all that protects the bytes. Treat the token as a secret and hand it only to the intended peer. Storing " +
-            "needs SET permission on each server and " +
-            "fetching needs GET; a copy that did not land is simply absent from `stored_on=`, so the permission on " +
-            "that server is the thing to check. One call stores the same token on every live server, in configuration " +
-            "order, and defines no success/failure semantics: `stored_on=` names exactly the servers the copy landed " +
-            "on and is empty when none did, so relay only when it names at least one server. The size limit is per " +
-            "copy (8 MiB by default, 64 MiB at most, and 512 MiB or more is refused outright — the Redis single-value " +
+            "token a peer fetches it with. This is not sending: ACE publishes no event and notifies no one — the " +
+            "peer learns nothing until you hand it the token, by whatever channel you already have — but the bytes " +
+            "go to every server this session is live on, and those servers need not be on this machine, so a remote " +
+            "server does receive them over the network. The bytes never enter any model's context. The token is the " +
+            "whole capability among ACE sessions — whoever holds it can fetch the bytes until the ttl expires, and " +
+            "it carries no namespace and no server name — but it is not a barrier against the broker: anyone with " +
+            "access to a server's storage can read `ace:xfer:<token>` and its `:meta` directly, without the token, " +
+            "so the broker's own access control is all that protects the bytes. Treat the token as a secret and hand " +
+            "it only to the intended peer. Storing needs SET permission on each server and fetching needs GET; a " +
+            "copy that did not land is simply absent from `stored_on=`, so the permission on that server is the " +
+            "thing to check. One call stores the same token on every live server, in configuration order, and " +
+            "defines no success/failure semantics: `stored_on=` names exactly the servers the copy landed on and is " +
+            "empty when none did, so relay only when it names at least one server. The size limit is per copy " +
+            "(8 MiB by default, 64 MiB at most, and 512 MiB or more is refused outright — the Redis single-value " +
             "ceiling), so N servers cost N times the file size. No caller chooses where a receiver writes: fetched " +
-            "bytes land only under the receiver's own quarantine directory. The result is one line: `pickup=<token> " +
-            "size=<bytes> sha256=<hex> name=<effective name> ttl=<ISO 8601 duration> stored_at=<UTC ISO 8601 with ms> " +
-            "expires_at=<UTC ISO 8601 with ms> stored_on=<server,server>`. `pickup=` is the token; `name=` is the " +
-            "**effective** file name after the `name` argument's basename is taken and control characters are " +
-            "stripped, so a relayed line shows the name the receiver will actually see; `ttl=` echoes the ttl you " +
-            "requested as an ISO 8601 duration such as `PT2S` immediately after a store that asked for two seconds — " +
-            "it is not a remaining time and not a countdown; `stored_at=` is when the bytes were stored (the instant " +
-            "the token's life began, UTC with milliseconds and a `Z`) and `expires_at=` when the token will lapse; " +
-            "`stored_on=` names exactly the servers the copy landed on. A value in this line that contains whitespace " +
-            "is JSON-quoted, wrapped in leading and trailing double quotes, and the quotes span the whole value, so " +
-            'with two servers where the first is named `my host` the field reads `stored_on="my host,second"` — ' +
-            "strip the quotes before splitting on the comma; a value without whitespace is bare, and an empty value " +
-            "stays empty.",
+            "bytes land only under the receiver's own quarantine directory. " +
+            `${RESULT_LINE_GRAMMAR} The fields are: \`pickup=<token> size=<bytes> sha256=<hex> ` +
+            "name=<effective name> ttl=<ISO 8601 duration> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 " +
+            "with ms> stored_on=<server,server>`. `pickup=` is the token; `name=` is the **effective** file name " +
+            "after the `name` argument's basename is taken and control characters are stripped, so a relayed line " +
+            "shows the name the receiver will actually see; `ttl=` echoes the ttl you requested as an ISO 8601 " +
+            "duration such as `PT2S` immediately after a store that asked for two seconds — it is not a remaining " +
+            "time and not a countdown; `stored_at=` is when the bytes were stored (the instant the token's life " +
+            "began, UTC with milliseconds and a `Z`) and `expires_at=` when the token will lapse; `stored_on=` " +
+            "names exactly the servers the copy landed on.",
         guidelines: [
             "Use ace_store_file to make a local file fetchable, then hand the peer the whole result line and tell it " +
                 "the token is the capability; the store itself publishes nothing.",
@@ -369,7 +356,7 @@ export const TOOL_TEXT = {
                 "name a readable regular file — a missing path, a directory and an unreadable file each fail with " +
                 "their own sentence. Reading is deliberately not restricted to the workspace, so a file such as " +
                 "`~/.ssh/id_rsa` can be stored; do it only on purpose.",
-            ttl: 'How long the pickup code stays valid, as an ISO 8601 duration such as "PT1H" or "P1D". Default ' +
+            ttl: 'How long the token stays valid, as an ISO 8601 duration such as "PT1H" or "P1D". Default ' +
                 '"PT1H"; "P1D" is the maximum and a longer or non-positive value is a usage error naming it.',
             name: "Optional file name to store the bytes under, overriding the path's basename. Only the last path " +
                 "segment survives and control characters are stripped, so a name that is empty after stripping, " +
@@ -378,19 +365,18 @@ export const TOOL_TEXT = {
         },
     },
     getFile: {
-        description: "Fetch a file a peer stored with ace_store_file, by its pickup token. The token is the whole capability " +
+        description: "Fetch a file a peer stored with ace_store_file, by its token. The token is the whole capability " +
             "among ACE sessions: anyone who holds it can fetch the same bytes until the ttl expires, and the read is " +
-            "non-destructive, so fetching does not consume the code and others can still fetch it. The tool tries " +
+            "non-destructive, so fetching does not consume it and others can still fetch it. The tool tries " +
             "each of this session's live servers in configuration order and takes the first hit; fetching needs GET " +
             "permission and storing needed SET. Nothing is written outside `<working directory>/.ace/xfer/<token>/" +
             "<sessionId>/`: the file name comes from the sender's metadata, never from an argument, so no caller can " +
             "choose a write path — an existing file with identical bytes is overwritten, and a differing one is " +
-            "written beside it with a numeric suffix. The result is one line: `path=<quarantine path> sha256=<hex> " +
-            "size=<bytes> name=<name> from=<server> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 with ms>`. " +
-            "`path=` and `from=` carry the quoting rule ace_store_file gives for any result value: one that contains " +
-            "whitespace is JSON-quoted, wrapped in leading and trailing double quotes, so a path with a space appears " +
-            'as `path="/…/note (2).txt"`, while a value without whitespace is bare and an empty value stays empty. ' +
-            "`name=` is the stored file name. `stored_at=` and `expires_at=` are read from the blob's own metadata, " +
+            "written beside it with a numeric suffix. " +
+            `${RESULT_LINE_GRAMMAR} The fields are: \`path=<quarantine path> sha256=<hex> size=<bytes> name=<name> ` +
+            "from=<server> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 with ms>`. `path=` and " +
+            '`from=` carry that quoting rule, so a path with a space appears as `path="/…/note (2).txt"`. `name=` ' +
+            "is the stored file name. `stored_at=` and `expires_at=` are read from the blob's own metadata, " +
             "already written at store time, so the result says when the token was stored and when it lapses without " +
             "a re-fetch. `sha256=` is computed here from the bytes written, not taken on trust, so " +
             "compare it yourself with the hash the sender relayed and with the sender's metadata. A token absent " +
@@ -407,7 +393,7 @@ export const TOOL_TEXT = {
                 "sender.",
         ],
         params: {
-            token: "The pickup token, as ace_store_file returned it in `pickup=`: 32 hex characters (128 bits). Case is " +
+            token: "The token, as ace_store_file returned it in `pickup=`: 32 hex characters (128 bits). Case is " +
                 "not significant — a relayed token that changed case is normalised — but the shape is checked, so a " +
                 "truncated or non-hex value is a usage error naming it. The token carries no namespace and no server " +
                 "name: it is looked up on this session's own servers.",
@@ -417,12 +403,14 @@ export const TOOL_TEXT = {
 /**
  * The `ace_channels` description for a host. The tail pointing at `ace_agents` belongs only to hosts
  * that register that tool, so a host without it passes `{ agentsTool: false }` and drops the pointer
- * instead of rewording the shared text.
+ * instead of rewording the shared text. `hostSpecifics` is the same host-supplied paragraph
+ * {@link buildPublishToolText} takes (see there for why).
  */
 export function channelsToolText(options = {}) {
-    return options.agentsTool === false
+    const base = options.agentsTool === false
         ? TOOL_TEXT.channels.description
         : `${TOOL_TEXT.channels.description} ${TOOL_TEXT.channels.agentsPointer}`;
+    return options.hostSpecifics === undefined ? base : `${base}\n\nHost specifics: ${options.hostSpecifics}`;
 }
 /**
  * Parameters of the publish tool: all three are declared optional and none declares a type, and the

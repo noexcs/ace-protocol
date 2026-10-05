@@ -47,7 +47,7 @@ so the echo follows the same activation rule as any other delivery. See
 [the contracts](docs/ace-runtime-contracts.md).
 
 A file moves between sessions without entering any model's context: `ace_store_file` stores a local file on
-every server the session is live on, under a random pickup token and a TTL, and reports only where the copy
+every server the session is live on, under a random token and a TTL, and reports only where the copy
 landed (`stored_on=`) plus the effective `name=`, the requested `ttl=`, and the `stored_at=`/`expires_at=`
 instants; `ace_get_file` fetches it by that token from the first of its own servers that has it, returns
 `name=` and the same `stored_at=`/`expires_at=` from the blob's metadata, and writes it into a quarantine

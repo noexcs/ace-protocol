@@ -24,9 +24,9 @@
    工具**只返回**一行可原样转达的取件信息，不发布任何事件：
    `pickup=<token> size=… sha256=… name=<effective name> ttl=<ISO 8601 duration> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 with ms> stored_on=<server,server>`
 2. 转达：由**模型自行**把这行信息告知目标 agent（走既有的 `ace_publish` 或任何渠道）。
-   取件码就是 **token**（不含 namespace、不含 server 名 —— 短、不易传错）。
+   token 就是**取件能力**（不含 namespace、不含 server 名 —— 短、不易传错）。
 3. 接收方：`ace_get_file(token=…)` → 在**自己的**每个活跃 server 上按 `<自己的 ns>:xfer:<token>` 找 →
-   第一台命中的即取（`GET`，**非破坏性** ✓：同一取件码在 TTL 内**任何人可取** ✓，只有过期才取不到 ✓）→
+   第一台命中的即取（`GET`，**非破坏性** ✓：同一 token 在 TTL 内**任何人可取** ✓，只有过期才取不到 ✓）→
    连同一并取回 `:meta` → 写入**隔离目录** `.ace/xfer/<token>/<sessionId>/<name>`
    → 由 agent/用户决定之后怎么用。
    **工具不做校验裁决** ✓：它**算出并返回** `sha256=`、写入路径与取自哪台 server ✓，
@@ -50,7 +50,7 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 
 - 不是通用文件同步 ✗：无分块、无断点续传（>512 MiB 需分块键 `xfer:<id>:0..N` 或换对象存储）；
 - **不加密** ✗：同一 broker 上的他人可读明文；要私密需自带 AES-GCM 且密钥另路传递（v0.2 议题）；
-- 取件码只防**猜** ✓，不防**有 Redis 权限的人** ✓ —— 与现有 channel 的安全模型一致；
+- token 只防**猜** ✓，不防**有 Redis 权限的人** ✓ —— 与现有 channel 的安全模型一致；
 - 不是 ack/回执机制 ✗（回执是另一件事，见 v0.2 讨论）；
 - **取消** ✗：不做 —— 键靠 TTL 自然过期；
 - **计数/统计** ✗：不做。
@@ -59,7 +59,7 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 
 1. **blob 落在哪台 server**：**在每个活跃 server 上各存一份**（发送方自己的配置）。
    接收方**不需要 namespace 指令**：它只按 token，在**自己的** server 上找。
-2. **多人取件**：同一取件码在 TTL 内**任何人都可取**（`GET` 非破坏性，不用 `GETDEL`）。
+2. **多人取件**：同一 token 在 TTL 内**任何人都可取**（`GET` 非破坏性，不用 `GETDEL`）。
 3. **`<name>` 净化**：见上（只取 basename、剥分隔符与控制字符、拒绝 `..`）。
 4. **`send` 读取范围**：暂不限制（风险已记录）。
 5. **双工具**：`ace_store_file` / `ace_get_file`（一动词一工具）。
@@ -70,11 +70,11 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 10. **`get` 不校验哈希**：只负责取件与落盘，并返回它算出的 `sha256`（以及 `:meta` 里的那份）供 agent 比对。
 11. **取消 / 计数**：不做。
 12. **`get` 永不自己发起**：取件永远是显式调用。
-13. **取件码就是 token**（不含 namespace、不含 server 名）。
+13. **token 就是取件能力**（不含 namespace、不含 server 名）。
 14. **落盘路径带会话 id**：`.ace/xfer/<token>/<sessionId>/<name>`（同机多会话不撞车）。
 15. **`send` 没有"给谁"参数**：由模型转达。
 16. **元数据旁键**：`<ns>:xfer:<token>:meta` = `{name, size, sha256, storedAt, expiresAt}`，接收方据此可自行核对、并直接看出 token 何时失效（不必再取一次）。
-    - **改名记录（2026-10-05）**：`storedAt` 原为 `createdAt`（对应结果行的 `created_at=` 改为 `stored_at=`）。理由：它记的是**存入**时刻（pickup token 生命开始的那一刻），不是文件创建时刻——一个去年创建、刚刚存入的文件会让 `createdAt` 点错事件；`storedAt` 与 `expiresAt` 成对，也呼应 publish 头里的 `stored=` 动词。这是**干净切换**：`:meta` 里找不到 `storedAt` 即视为元数据不合法，**不读旧键**。
+    - **改名记录（2026-10-05）**：`storedAt` 原为 `createdAt`（对应结果行的 `created_at=` 改为 `stored_at=`）。理由：它记的是**存入**时刻（token 生命开始的那一刻），不是文件创建时刻——一个去年创建、刚刚存入的文件会让 `createdAt` 点错事件；`storedAt` 与 `expiresAt` 成对，也呼应 publish 头里的 `stored=` 动词。这是**干净切换**：`:meta` 里找不到 `storedAt` 即视为元数据不合法，**不读旧键**。
 17. **不定义成功/失败语义**：`send` 只在结果里**写明在哪些 server 上保存成功**（`stored_on=`）；
    由 agent 自行判断"够不够"。
 18. **`server` 参数取消**：`ace_store_file(path=…, ttl=…)`，永远是"所有活跃 server 各存一份"。
@@ -98,6 +98,6 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 ## 验收计划
 
 两个真实会话互传真实文件（中文 + 二进制各一），断言：接收方隔离目录里的字节与源文件一致 ✓、
-**两个会话用同一取件码都能取到** ✓、`get` 返回的 `sha256` 与 `:meta`／发送方给的一致 ✓（比对由 agent 做 ✓）、
+**两个会话用同一 token 都能取到** ✓、`get` 返回的 `sha256` 与 `:meta`／发送方给的一致 ✓（比对由 agent 做 ✓）、
 **只共享一台 server 的两个 agent 也能取到** ✓、超过上限时明确报错 ✓、TTL 过期后取件失败 ✓、
 **每台 server 上都没有该 token 时给出可诊断的错误** ✓。

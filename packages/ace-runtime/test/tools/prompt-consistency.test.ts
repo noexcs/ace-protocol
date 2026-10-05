@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ACE_TRUST_POLICY, renderAceEvent } from "../../src/agent/pi-adapter.ts";
-import { TOOL_TEXT } from "../../src/tools/spec.ts";
+import { ACE_TRUST_POLICY, renderAceEvent } from "../../src/agent/event-rendering.ts";
+import { RESULT_LINE_GRAMMAR, TOOL_TEXT } from "../../src/tools/spec.ts";
 
 /**
  * Four surfaces teach a model about ACE: the system-prompt policy, the three tool texts, and the injected
@@ -45,18 +45,24 @@ describe("model-facing text", () => {
 		}
 	});
 
-	it("agrees that <ace_event> blocks come from other agents or services, not from the user", () => {
-		const provenance = TOOL_TEXT.publish.guidelines.filter((line) => line.includes("<ace_event>")).join(" ");
-
-		for (const text of [ACE_TRUST_POLICY, provenance]) {
-			expect(text).toMatch(/agents? or services?/);
-			expect(text).toContain("through ACE");
-		}
+	it("states event provenance only in the receiving-side policy, not in the tool text", () => {
+		// Receiving-side rules live in ACE_TRUST_POLICY; the tool descriptions are the sending side. The
+		// sending side may point at the policy but must not restate its facts.
+		expect(ACE_TRUST_POLICY).toMatch(/agents? or services?/);
+		expect(ACE_TRUST_POLICY).toContain("through ACE");
 		expect(ACE_TRUST_POLICY).toContain("never from the user");
-		expect(provenance).toContain("not by the user");
+		const restated = toolText.filter((text) => /agents? or services?/.test(text) && /through ACE/.test(text));
+		expect(restated).toEqual([]);
 	});
 
 	it("never promises that a peer acts without asking its user", () => {
 		for (const text of surfaces) expect(text).not.toContain("acts on it on its own");
+	});
+
+	it("shares the result-line grammar between ace_store_file and ace_get_file, verbatim", () => {
+		// A reader of ace_get_file alone must not need ace_store_file to learn the line syntax, so the
+		// block is included unchanged in both descriptions; this pins that it cannot drift in one only.
+		expect(TOOL_TEXT.storeFile.description).toContain(RESULT_LINE_GRAMMAR);
+		expect(TOOL_TEXT.getFile.description).toContain(RESULT_LINE_GRAMMAR);
 	});
 });

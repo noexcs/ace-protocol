@@ -40,13 +40,14 @@ describe("host boundary", () => {
 		expect(offenders).toEqual([]);
 	});
 
-	// The Pi SDK adapter is the only Pi-coupled module left in this package: the extension, its
-	// manager view and the omp tests moved to `packages/ace-omp`, whose own boundary test keeps them
-	// in line.
-	it("confines Pi imports to the SDK adapter", () => {
+	// No module in this package imports Pi at all any more: the SDK adapter was dead code no host ran
+	// (the omp extension instantiates `PiExtensionAdapter`), so it and its helpers were deleted. The
+	// extension, its manager view and the omp tests live in `packages/ace-omp`, whose own boundary
+	// test keeps them in line.
+	it("keeps every Pi import out of this package", () => {
 		const withPi = typescriptFiles("src").filter(importsPi).sort();
 
-		expect(withPi).toEqual(["src/agent/pi-adapter.ts"]);
+		expect(withPi).toEqual([]);
 	});
 
 	it("keeps every host's own paths and environment variables out", () => {

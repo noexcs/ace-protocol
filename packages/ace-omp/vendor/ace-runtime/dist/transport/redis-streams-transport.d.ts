@@ -39,6 +39,17 @@ export declare const REDIS_STREAMS_DEFAULTS: {
     readonly retryDelayMs: 200;
     readonly maxRetryDelayMs: 5000;
 };
+/**
+ * High-water mark of the per-subscription delivery queue.
+ *
+ * The read loop hands entries to the queue and keeps reading, so a delivery that waits — a queued
+ * event surfaces at the next step boundary, unbounded — no longer stops this subscription from
+ * reading or from reclaiming. The queue is bounded because it holds one entry per handler call the
+ * transport has accepted: a `count` of 16 (the default) means the loop may run 16 read cycles ahead
+ * of the handler, so 256 is far above any realistic burst while still keeping a stalled handler from
+ * growing the queue without bound — at the bound the loop waits for the queue to drain.
+ */
+export declare const REDIS_STREAMS_DELIVERY_QUEUE_LIMIT = 256;
 /** Settings a Redis Streams subscription understands inside its `config` object. */
 export declare const REDIS_STREAMS_SUBSCRIPTION_KEYS: readonly ["stream", "group", "url", "consumer", "field", "count", "blockMs", "reclaimIdleMs", "reclaimAttempts", "retryDelayMs", "maxRetryDelayMs"];
 /** Extract and validate the Redis Streams settings of one subscription. */
@@ -80,6 +91,11 @@ export interface RedisStreamsTransportOptions {
     onError?: (error: unknown) => void;
     /** Counter sink for reconnects, reclaimed entries and dropped events. */
     metrics?: AceMetrics;
+    /**
+     * Entries the delivery queue may hold before the read loop pauses until it drains; defaults to
+     * {@link REDIS_STREAMS_DELIVERY_QUEUE_LIMIT}.
+     */
+    deliveryQueueLimit?: number;
     /** Injectable delay for tests; defaults to a real timer. */
     delay?: (ms: number) => Promise<void>;
     /** Injectable clock for tests. */
@@ -98,6 +114,9 @@ export interface RedisStreamsTransportOptions {
  * - invalid ACE messages are acknowledged too, because the runtime logs and drops them
  *   instead of rejecting them (RFC §13, design doc §30) — a poison message never blocks
  *   the stream;
+ * - delivery runs behind a per-subscription serial queue, so the read loop keeps reading and
+ *   reclaiming while a delivery waits; the queue is bounded ({@link REDIS_STREAMS_DELIVERY_QUEUE_LIMIT})
+ *   and the loop pauses at the bound rather than dropping entries;
  * - a failed read does not end consumption: the loop reconnects with a capped backoff.
  */
 export declare class RedisStreamsTransport implements Transport {
@@ -107,23 +126,64 @@ export declare class RedisStreamsTransport implements Transport {
     private readonly onError;
     private readonly onDropped;
     private readonly metrics;
+    private readonly deliveryQueueLimit;
     private readonly delay;
     private readonly now;
     /** Delivery attempts per reclaimed entry id; the transport's own idempotency guard. */
     private readonly reclaimAttempts;
     /** Entries whose dead-letter write already failed: report once, not once per reclaim pass. */
     private readonly reportedDrops;
+    /** Entry ids handed to the delivery queue and not yet settled. */
+    private readonly inFlight;
     private loop?;
     private stopped;
     private lastReclaimAt;
     constructor(subscription: EndpointConfig, options?: RedisStreamsTransportOptions);
     /** Connect, create the consumer group if needed, then consume in the background. */
     start(handler: RawAceMessageHandler): Promise<void>;
-    /** Stop after the current batch and disconnect. */
+    /**
+     * Stop reading, let the deliveries already handed over settle, then disconnect.
+     *
+     * The order is the point: (a) `stopped` ends the read loop, so no further entry is read;
+     * (b) the loop drains the delivery queue before it resolves, so an entry already read is still
+     * delivered and either acked or — on failure — left pending for reclaim; it must not stay
+     * unacknowledged just because we are shutting down; (c) only then is the client closed, so the
+     * `XACK`s written by those last deliveries go out over a live connection. An entry the broker
+     * still holds was never read, so it stays in the group's PEL for the next consumer to reclaim.
+     */
     stop(): Promise<void>;
-    /** Read loop with capped-backoff reconnection: a broker blip must not make the agent deaf. */
+    /**
+     * Read loop with capped-backoff reconnection: a broker blip must not make the agent deaf.
+     *
+     * Entries are handed to `queue`, never awaited here: a delivery that waits on the host must not
+     * stop this subscription from reading the next batch or from reclaiming a peer's stranded
+     * entries — that backstop is exactly what a stalled handler needs. The queue preserves read
+     * order, and backpressure is one `waitForRoom` before each entry is accepted, so the queue stays
+     * bounded without ever dropping an entry the broker already gave us.
+     */
     private consume;
-    /** Reclaim entries another consumer left pending, so a crashed peer does not strand events. */
+    /**
+     * Hand one entry to the delivery queue, marking it in flight for as long as it is queued or
+     * delivering.
+     *
+     * The mark is what keeps the decoupled reclaim pass honest: an entry this consumer has accepted
+     * is not *stranded*, so a reclaim must skip it. It is set here, at accept time, not when the job
+     * starts — an entry can wait behind a slow delivery for longer than `reclaimIdleMs`, and marking
+     * it late would let the next pass reclaim it while it is still queued. Without the mark an entry
+     * waiting in the queue would be delivered twice and its attempts counter would spend the
+     * `reclaimAttempts` budget (possibly dead-lettering it) while the original delivery is still
+     * about to succeed. The mark is cleared the moment the delivery settles, so a *failed* delivery
+     * is still retried by the next reclaim pass, exactly as before.
+     */
+    private enqueue;
+    /**
+     * Reclaim entries another consumer left pending, so a crashed peer does not strand events.
+     *
+     * Runs on its own guard (`entries.length === 0` plus the `reclaimIdleMs` throttle) whether or not
+     * deliveries are still in flight — that is the point: a peer's stranded entries must not wait
+     * behind this consumer's own slow delivery. Reclaimed entries go through the same serial queue
+     * as freshly read ones, so their handler calls stay ordered and never overlap.
+     */
     private reclaimStale;
     private deliver;
     private acknowledge;

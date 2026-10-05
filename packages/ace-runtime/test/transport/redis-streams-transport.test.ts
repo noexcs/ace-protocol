@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
+import { renderAceEvent } from "../../src/agent/event-rendering.ts";
 import { AceRuntime } from "../../src/runtime/ace-runtime.ts";
 import { AceConfigError, type EndpointConfig } from "../../src/runtime/endpoint-config.ts";
 import {
+	REDIS_STREAMS_DELIVERY_QUEUE_LIMIT,
 	RedisStreamsTransport,
+	type RedisStreamsTransportOptions,
 	redisStreamEntryTimestamp,
 	redisStreamsConfigFrom,
 } from "../../src/transport/redis-streams-transport.ts";
@@ -25,11 +27,11 @@ const validEntry = JSON.stringify({
 	body: "Build failed for project foo.",
 });
 
-function setup(configOverrides: Record<string, unknown> = {}) {
+function setup(configOverrides: Record<string, unknown> = {}, options: Partial<RedisStreamsTransportOptions> = {}) {
 	const input: EndpointConfig = { ...redisInput, config: { ...redisInput.config, ...configOverrides } };
 	const client = new FakeRedisStreamsClient();
 	const errors: unknown[] = [];
-	const transport = new RedisStreamsTransport(input, { client, onError: (error) => errors.push(error) });
+	const transport = new RedisStreamsTransport(input, { client, onError: (error) => errors.push(error), ...options });
 	return { input, client, errors, transport };
 }
 
@@ -43,6 +45,14 @@ async function stop(stopFn: () => Promise<void>, client: FakeRedisStreamsClient)
 /** Wait for a condition driven by the transport's background loop (microtasks only). */
 async function waitFor(predicate: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 100 && !predicate(); attempt++) await Promise.resolve();
+}
+
+/**
+ * Run microtasks without waiting for anything: the only way to assert a *negative* — that the loop
+ * did not read again — is to give it every chance to and then look.
+ */
+async function microrounds(ticks = 200): Promise<void> {
+	for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
 }
 
 describe("redisStreamEntryTimestamp", () => {
@@ -237,6 +247,217 @@ describe("RedisStreamsTransport consumption", () => {
 		const failure = new Error("ECONNREFUSED");
 		client.connectError = failure;
 		await expect(transport.start(async () => {})).rejects.toThrow(failure);
+	});
+});
+
+describe("RedisStreamsTransport delivery queue", () => {
+	it("keeps reading and reclaiming while a delivery waits", async () => {
+		let now = 0;
+		const { client, transport } = setup({ count: 2, reclaimIdleMs: 50 }, { now: () => now });
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			// Stands in for a queued `aside` delivery, which surfaces at the next step boundary: no
+			// wall clock, so the loop cannot wait for it.
+			if (handled.length === 1) await gate.promise;
+		});
+
+		client.push({ id: "1-0", payload: "blocking" });
+		await waitFor(() => handled.length === 1);
+
+		// Delivery one is still running, yet the loop read the next batch: reads, not the wall clock.
+		client.push({ id: "2-0", payload: "second" });
+		await waitFor(() => client.reads.length >= 3);
+		expect(client.reads.length).toBeGreaterThanOrEqual(3);
+
+		// And the idle read reclaims a peer's stranded entry, throttled only by `reclaimIdleMs`.
+		now = 100;
+		client.pushReclaimable({ id: "9-0", payload: "reclaimed" });
+		client.releaseRead();
+		await waitFor(() => client.reclaimed.length >= 1);
+
+		expect(client.reclaimed).toHaveLength(1);
+		// Everything read queues behind the stuck delivery: one at a time, in read order, nothing acked.
+		expect(handled).toEqual(["blocking"]);
+		expect(client.acked).toEqual([]);
+
+		gate.resolve();
+		await client.waitForAcks(3);
+		expect(handled).toEqual(["blocking", "second", "reclaimed"]);
+		await stop(() => transport.stop(), client);
+	});
+
+	it("delivers entries one at a time in read order", async () => {
+		const { client, transport } = setup({ count: 8 });
+		const events: string[] = [];
+		let running = 0;
+		let peakRunning = 0;
+		const releases: Array<() => void> = [];
+		await transport.start(async (raw) => {
+			running += 1;
+			peakRunning = Math.max(peakRunning, running);
+			events.push(`start:${String(raw)}`);
+			const { promise, resolve } = Promise.withResolvers<void>();
+			releases.push(resolve);
+			await promise;
+			running -= 1;
+			events.push(`end:${String(raw)}`);
+		});
+
+		client.push({ id: "1-0", payload: "a" }, { id: "2-0", payload: "b" }, { id: "3-0", payload: "c" });
+		await waitFor(() => events.length >= 1);
+		await microrounds();
+		expect(events).toEqual(["start:a"]);
+
+		for (const payload of ["a", "b", "c"]) {
+			await waitFor(() => events.includes(`start:${payload}`));
+			releases.shift()?.();
+			await waitFor(() => events.includes(`end:${payload}`));
+		}
+
+		expect(events).toEqual(["start:a", "end:a", "start:b", "end:b", "start:c", "end:c"]);
+		expect(peakRunning).toBe(1);
+		await client.waitForAcks(3);
+		expect(client.acked).toEqual(["1-0", "2-0", "3-0"]);
+		await stop(() => transport.stop(), client);
+	});
+
+	it("acknowledges only after the handler resolves, and reports a rejected entry pending", async () => {
+		const { client, transport, errors } = setup();
+		const failure = new Error("agent unavailable");
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			if (raw === "first") await gate.promise;
+			if (raw === "poison") throw failure;
+		});
+
+		client.push({ id: "1-0", payload: "first" }, { id: "2-0", payload: "poison" }, { id: "3-0", payload: "after" });
+		await waitFor(() => handled.length === 1);
+		await microrounds();
+		expect(client.acked).toEqual([]);
+
+		gate.resolve();
+		await client.waitForAcks(2);
+
+		// 1-0 acked once its handler resolved; 2-0 stays in the PEL for reclaim; 3-0 still delivered.
+		expect(handled).toEqual(["first", "poison", "after"]);
+		expect(client.acked).toEqual(["1-0", "3-0"]);
+		expect(errors).toEqual([failure]);
+		await stop(() => transport.stop(), client);
+	});
+
+	it("stops reading when the queue is full and resumes once it drains", async () => {
+		const { client, transport } = setup({ count: 2 }, { deliveryQueueLimit: 2 });
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			if (handled.length === 1) await gate.promise;
+		});
+
+		client.push({ id: "1-0", payload: "one" }, { id: "2-0", payload: "two" });
+		await waitFor(() => handled.length === 1);
+		// The batch filled the queue (limit 2) and the loop is back on a read that has nothing to return.
+		await waitFor(() => client.reads.length >= 2);
+		const readsAtTheBound = client.reads.length;
+
+		client.push({ id: "3-0", payload: "three" });
+		await microrounds();
+
+		// Fourth entry read into a full queue: no further read, and nothing dropped.
+		expect(client.reads).toHaveLength(readsAtTheBound);
+		expect(handled).toEqual(["one"]);
+		expect(client.acked).toEqual([]);
+
+		gate.resolve();
+		await client.waitForAcks(3);
+
+		expect(client.reads.length).toBeGreaterThan(readsAtTheBound);
+		expect(handled).toEqual(["one", "two", "three"]);
+		expect(client.acked).toEqual(["1-0", "2-0", "3-0"]);
+		await stop(() => transport.stop(), client);
+	});
+
+	it("waits for an in-flight delivery on stop and leaves no read entry unacknowledged", async () => {
+		const { client, transport } = setup();
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			if (handled.length === 1) await gate.promise;
+		});
+
+		client.push({ id: "1-0", payload: "first" }, { id: "2-0", payload: "second" });
+		await waitFor(() => handled.length === 1);
+		await waitFor(() => client.reads.length >= 2);
+
+		const stopped = transport.stop();
+		client.releaseRead();
+		await microrounds();
+
+		// The client stays open and nothing is acked while the delivery is still running.
+		expect(client.closes).toBe(0);
+		expect(client.acked).toEqual([]);
+
+		gate.resolve();
+		await stopped;
+
+		// Both entries of the batch were delivered and acked before the client closed.
+		expect(handled).toEqual(["first", "second"]);
+		expect(client.acked).toEqual(["1-0", "2-0"]);
+		expect(client.closes).toBe(1);
+	});
+
+	it("defaults the queue bound far above a realistic burst", () => {
+		// Above the default `count` of 16 batches in flight; a bound that cannot hold one batch would
+		// throttle the loop to one batch at a time for no reason.
+		expect(REDIS_STREAMS_DELIVERY_QUEUE_LIMIT).toBeGreaterThan(16 * 10);
+	});
+	it("does not reclaim an entry it has accepted and is still delivering", async () => {
+		let now = 0;
+		const { client, transport, errors } = setup({ reclaimIdleMs: 50, reclaimAttempts: 1 }, { now: () => now });
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			if (handled.length === 1) await gate.promise;
+		});
+
+		// The broker reports this consumer's own entry as idle, and it is: its delivery is still
+		// waiting behind itself in the queue. It is not a peer's stranded entry, so it is skipped.
+		client.pushReclaimable({ id: "1-0", payload: "first" });
+		client.push({ id: "1-0", payload: "first" });
+		await waitFor(() => handled.length === 1);
+
+		now = 100;
+		await waitFor(() => client.reads.length >= 2);
+		client.releaseRead();
+		await waitFor(() => client.reclaimed.length >= 1);
+
+		now = 200;
+		await waitFor(() => client.reads.length >= 3);
+		client.pushReclaimable({ id: "1-0", payload: "first" });
+		client.releaseRead();
+		await waitFor(() => client.reclaimed.length >= 2);
+		await microrounds();
+
+		// Two reclaim passes saw the entry and both skipped it: it was neither delivered a second
+		// time nor dead-lettered, and the `reclaimAttempts` budget was not spent on a delivery that
+		// has not failed.
+		expect(handled).toEqual(["first"]);
+		expect(client.acked).toEqual([]);
+		expect(errors.filter((error) => String(error).includes("dropping entry"))).toEqual([]);
+
+		gate.resolve();
+		await client.waitForAcks(1);
+
+		// The skipped delivery completes on its own merits: delivered once, acked once.
+		expect(handled).toEqual(["first"]);
+		expect(client.acked).toEqual(["1-0"]);
+		await stop(() => transport.stop(), client);
 	});
 });
 

@@ -60,14 +60,10 @@ describe("formatChannelListing", () => {
 		// (none here), so it stays true when unavailable lines are present. It is the same convention as
 		// `ace 0.1 agents count=N`; the legend that used to precede these rows is in the tool description.
 		expect(rows[0]).toBe("ace 0.1 channels count=2 self=1 unavailable=0");
-		expect(rows[1]).toBe(
-			"channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note=the WSL agent",
-		);
+		expect(rows[1]).toBe("channel=ace:ana:from-wsl activation=next_turn self=no note=the WSL agent");
 		// The session's own channel is what a peer replies to, so the row says so; an endpoint without an
 		// activation of its own reports `default` rather than dropping the key.
-		expect(rows[2]).toBe(
-			"channel=ace:ana:oh-my-pi:01a10a transport=redis-streams activation=default self=yes note=this session's inbox",
-		);
+		expect(rows[2]).toBe("channel=ace:ana:oh-my-pi:01a10a activation=default self=yes note=this session's inbox");
 	});
 
 	it("marks every own channel when the session is live on two servers", () => {
@@ -103,7 +99,7 @@ describe("formatChannelListing", () => {
 		});
 
 		expect(formatChannelListing([chatty])).toContain(
-			"channel=ace:ana:chatty transport=redis-streams activation=default self=no note=reads slowly: batch of 3, spaces and all",
+			"channel=ace:ana:chatty activation=default self=no note=reads slowly: batch of 3, spaces and all",
 		);
 	});
 
@@ -111,8 +107,32 @@ describe("formatChannelListing", () => {
 		const bare = endpoint({ name: "ace:ana:quiet", channel: "ace:ana:quiet" });
 
 		expect(formatChannelListing([bare]).split("\n")[1]).toBe(
-			"channel=ace:ana:quiet transport=redis-streams activation=default self=no note=",
+			"channel=ace:ana:quiet activation=default self=no note=",
 		);
+	});
+
+	it("marks a removed channel in the note, joining with the configured description", () => {
+		// `subscribed` is still read but the current config no longer lists it; the note is a comma-joined
+		// list in a fixed order (description first, then `config-removed`).
+		const rows = formatChannelListing([subscribed], {
+			configRemoved: ["ace:ana:from-wsl"],
+		}).split("\n");
+
+		expect(rows[1]).toBe("channel=ace:ana:from-wsl activation=next_turn self=no note=the WSL agent, config-removed");
+	});
+
+	it("marks a removed channel with no description as just `config-removed`", () => {
+		const bare = endpoint({ name: "ace:ana:gone", channel: "ace:ana:gone" });
+
+		expect(formatChannelListing([bare], { configRemoved: ["ace:ana:gone"] }).split("\n")[1]).toBe(
+			"channel=ace:ana:gone activation=default self=no note=config-removed",
+		);
+	});
+
+	it("leaves a channel still in the config unmarked", () => {
+		const rows = formatChannelListing([subscribed], { configRemoved: ["ace:ana:elsewhere"] }).split("\n");
+
+		expect(rows[1]).toBe("channel=ace:ana:from-wsl activation=next_turn self=no note=the WSL agent");
 	});
 
 	it("says nothing but a zero-count header when this session reads nothing", () => {
@@ -128,9 +148,7 @@ describe("formatChannelListing", () => {
 		// The header counts the trailing line too, so `count=1` is never silently contradicted by it.
 		expect(rows[0]).toBe("ace 0.1 channels count=1 self=0 unavailable=1");
 		// The channel rows keep their exact format…
-		expect(rows[1]).toBe(
-			"channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note=the WSL agent",
-		);
+		expect(rows[1]).toBe("channel=ace:ana:from-wsl activation=next_turn self=no note=the WSL agent");
 		// …and the dropped subscription is a line after them, one per dropped name.
 		expect(rows[2]).toBe('unavailable: ghost:noexcs:noop (server "ghost" did not come up)');
 	});

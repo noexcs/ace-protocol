@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ACE_CONFIG_FILENAME,
+	configRemovedChannels,
 	interpolateEnv,
 	loadAceConfig,
 	parseAceConfig,
@@ -367,6 +368,49 @@ describe("subscriptionEndpoint", () => {
 		// The label is only the host's name for it; the channel is what a peer publishes to.
 		expect(endpoint.channel).toBe("ace:noexcs:oh-my-pi:01a10a");
 		expect(endpoint.config.group).toBe("ace:noexcs:oh-my-pi:01a10a");
+	});
+});
+
+describe("configRemovedChannels", () => {
+	/** The snapshot of a start-time configuration: `subscribe` was this when the session began. */
+	function snapshot(cwd: string, subscribe: string[]) {
+		writeConfig(cwd, { username: "u", servers: { local: { url: "redis://x", subscribe } } });
+		return resolveAceConfig({ cwd, env: {} }).subscriptions;
+	}
+
+	it("reports a channel the current file no longer lists", () => {
+		const cwd = temporaryDirectory();
+		const started = snapshot(cwd, ["inbox", "ci-ok"]);
+		// The user removed `ci-ok` from the file since the session started.
+		writeConfig(cwd, { username: "u", servers: { local: { url: "redis://x", subscribe: ["inbox"] } } });
+
+		expect(configRemovedChannels({ subscriptions: started, cwd, env: {} })).toEqual(["ace:u:ci-ok"]);
+	});
+
+	it("reports nothing for a channel still in the file", () => {
+		const cwd = temporaryDirectory();
+		const started = snapshot(cwd, ["inbox", "ci-ok"]);
+		// Unchanged since start.
+		writeConfig(cwd, { username: "u", servers: { local: { url: "redis://x", subscribe: ["inbox", "ci-ok"] } } });
+
+		expect(configRemovedChannels({ subscriptions: started, cwd, env: {} })).toEqual([]);
+	});
+
+	it("returns nothing, and throws nothing, when the current file cannot be read or parsed", () => {
+		const cwd = temporaryDirectory();
+		const started = snapshot(cwd, ["inbox"]);
+		writeFileSync(join(cwd, ACE_CONFIG_FILENAME), "{ not json");
+
+		expect(configRemovedChannels({ subscriptions: started, cwd, env: {} })).toEqual([]);
+	});
+
+	it("returns nothing when the current file is gone entirely", () => {
+		const cwd = temporaryDirectory();
+		const started = snapshot(cwd, ["inbox"]);
+		rmSync(join(cwd, ACE_CONFIG_FILENAME));
+
+		// A missing file resolves to no configuration at all (resolveAceConfig throws), so no note.
+		expect(configRemovedChannels({ subscriptions: started, cwd, env: {} })).toEqual([]);
 	});
 });
 

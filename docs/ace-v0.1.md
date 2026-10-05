@@ -181,7 +181,8 @@ ace-runtime/
 │   │
 │   ├── agent/
 │   │   ├── agent-engine.ts
-│   │   └── pi-adapter.ts
+│   │   ├── event-rendering.ts
+│   │   └── pi-extension-adapter.ts
 │   │
 │   └── index.ts
 │

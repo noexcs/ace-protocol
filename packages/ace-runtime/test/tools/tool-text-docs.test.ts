@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ACE_TRUST_POLICY } from "../../src/agent/pi-adapter.ts";
+import { ACE_TRUST_POLICY } from "../../src/agent/event-rendering.ts";
 import { channelsToolText, TOOL_TEXT } from "../../src/tools/spec.ts";
 
 /**

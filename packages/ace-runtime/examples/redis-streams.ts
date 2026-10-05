@@ -21,7 +21,13 @@
  */
 
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
-import { AceRuntime, consoleAceLogger, type EndpointConfig, PiAdapter, RedisStreamsTransport } from "../src/index.ts";
+import {
+	AceRuntime,
+	consoleAceLogger,
+	type EndpointConfig,
+	PiExtensionAdapter,
+	RedisStreamsTransport,
+} from "../src/index.ts";
 
 const subscription: EndpointConfig = {
 	name: "build-events",
@@ -55,8 +61,10 @@ const { session } = await createAgentSession({
 const transport = new RedisStreamsTransport(subscription, {
 	onError: (error) => console.error("[ACE] redis streams error:", error),
 });
+const adapter = new PiExtensionAdapter({ pi: session, isIdle: () => !session.isStreaming });
+adapter.onRunError((error) => console.error("[ACE] agent run failed:", error));
 const runtime = new AceRuntime({
-	engine: new PiAdapter({ session, onRunError: (error) => console.error("[ACE] agent run failed:", error) }),
+	engine: adapter,
 	subscribe: [subscription],
 	transports: { [subscription.name]: transport },
 	logger: consoleAceLogger,

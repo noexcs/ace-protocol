@@ -38,7 +38,7 @@ export interface InjectionContext {
 /**
  * The agent engine ACE drives.
  *
- * ACE core depends only on this interface; `PiAdapter` is one implementation
+ * ACE core depends only on this interface; `PiExtensionAdapter` is one implementation
  * (RFC-facing §15). `startTurn()` from the design doc is folded into
  * {@link inject}: both Pi and pi-agent-core start a turn atomically with the
  * injected message when the agent is idle, so splitting them would only invite

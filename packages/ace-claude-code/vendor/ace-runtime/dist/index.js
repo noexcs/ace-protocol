@@ -4,11 +4,11 @@
  * Protocol semantics follow `ACE-RFC-Draft-0.1.md`; the engineering layout
  * follows `ace-v0.1.md`. The runtime is a boundary layer: transports carry raw
  * messages, this package validates them and applies activation semantics, and an
- * {@link AgentEngine} (see `PiAdapter`) turns them into agent work.
+ * {@link AgentEngine} (see `PiExtensionAdapter`) turns them into agent work.
  */
 export * from "./agent/agent-engine.js";
 export * from "./agent/event-delivery-observer.js";
-export * from "./agent/pi-adapter.js";
+export * from "./agent/event-rendering.js";
 export * from "./agent/pi-extension-adapter.js";
 export * from "./logger.js";
 export * from "./protocol/ace-message.js";

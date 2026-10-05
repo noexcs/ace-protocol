@@ -13,17 +13,17 @@ Redis keys and fields, tool parameters, delivery semantics, flows and invariants
 External World
       │
       ▼
-┌──────────────┐   raw message    ┌───────────────────────────────┐   AceMessage   ┌────────────┐
-│  Transport   │ ───────────────► │          ACE Runtime          │ ─────────────► │ PiAdapter  │
-│ InMemory /   │                  │ decode → validate → resolve   │                │            │
-│ Redis Streams│ ◄─────────────── │ activation → dispatch         │                └─────┬──────┘
-└──────────────┘  ack/retry/…     └───────────────────────────────┘                      │
-                                                │                                 ┌──────▼──────┐
-                                     manual ────┘ stored events                   │ Pi session  │
-                                                                                 │ context →   │
-                                                                                 │ agent turn  │
-                                                                                 │ → LLM       │
-                                                                                 └─────────────┘
+┌──────────────┐   raw message    ┌───────────────────────────────┐   AceMessage   ┌─────────────┐
+│  Transport   │ ───────────────► │          ACE Runtime          │ ─────────────► │PiExtension  │
+│ InMemory /   │                  │ decode → validate → resolve   │                │  Adapter    │
+│ Redis Streams│ ◄─────────────── │ activation → dispatch         │                └──────┬──────┘
+└──────────────┘  ack/retry/…     └───────────────────────────────┘                       │
+                                                │                                 ┌───────▼──────┐
+                                     manual ────┘ stored events                   │  Pi session  │
+                                                                                 │  context →   │
+                                                                                 │  agent turn  │
+                                                                                 │  → LLM       │
+                                                                                 └──────────────┘
 ```
 
 The four layers stay separate: **ACE protocol ≠ ACE runtime ≠ transport ≠ agent engine**. Nothing here maps MQ
@@ -38,7 +38,7 @@ which carries this package's build in its `vendor/` — see that README for the 
 
 ```bash
 # 1. the released plugin tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.13/ace-omp-0.2.13.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.14/ace-omp-0.2.14.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -64,10 +64,10 @@ or skip the plugin system and link the plugin's entry into the host's extension 
 keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.13/ace-omp-0.2.13.tgz
-mkdir -p ~/ace-omp-0.2.13 ~/.omp/agent/extensions
-tar xzf ace-omp-0.2.13.tgz -C ~/ace-omp-0.2.13 --strip-components=1
-cd ~/ace-omp-0.2.13 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.14/ace-omp-0.2.14.tgz
+mkdir -p ~/ace-omp-0.2.14 ~/.omp/agent/extensions
+tar xzf ace-omp-0.2.14.tgz -C ~/ace-omp-0.2.14 --strip-components=1
+cd ~/ace-omp-0.2.14 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -91,7 +91,7 @@ redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
 # (ace-omp is the plugin; ace-runtime below it is the library it vendors)
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.13/ace-omp-0.2.13.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.14/ace-omp-0.2.14.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
   "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
@@ -174,14 +174,14 @@ published — it is installed from the release tarball or a linked checkout).
 
 ```typescript
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import { AceRuntime, type EndpointConfig, InMemoryTransport, PiAdapter } from "ace-runtime";
+import { AceRuntime, type EndpointConfig, InMemoryTransport, PiExtensionAdapter } from "ace-runtime";
 
 const { session } = await createAgentSession({ sessionManager: SessionManager.inMemory() });
 const transport = new InMemoryTransport();
-const adapter = new PiAdapter({
-	session,
-	onRunError: (error) => console.error("[ACE] agent run failed:", error),
-});
+// `PiExtensionAdapter` drives any host with `sendUserMessage`; a Pi `AgentSession` is one, and
+// `isStreaming` is the idle probe. Its `onRunError` listener reports failed turns.
+const adapter = new PiExtensionAdapter({ pi: session, isIdle: () => !session.isStreaming });
+adapter.onRunError((error) => console.error("[ACE] agent run failed:", error));
 const subscription: EndpointConfig = {
 	name: "build-events",
 	transport: "memory",
@@ -293,6 +293,17 @@ Acknowledgement policy:
 | Invalid ACE message | logged by the runtime, then `XACK`ed — a poison message never blocks the stream |
 | Handler rejects (injection or transport failure) | entry stays in the group's PEL |
 
+Delivery is decoupled from reading through a **per-subscription serial queue**: the read loop hands each
+entry over and keeps reading, so a delivery that waits on the host — a queued `aside` event surfaces at the
+next step boundary, with no wall clock — no longer stops this subscription from reading new entries or from
+reclaiming a peer's stranded ones. Deliveries still run one at a time in read order, and an entry is
+acknowledged only after its handler resolves. The queue holds at most
+`REDIS_STREAMS_DELIVERY_QUEUE_LIMIT` (256) entries; at the bound the loop waits for a slot instead of
+growing the queue or dropping an entry. An entry this consumer has accepted but not yet settled is skipped
+by reclaim — it is waiting, not stranded, so it is never delivered twice or counted against
+`reclaimAttempts` while its first delivery is still in hand. `stop()` stops reading, drains the queue — so
+an entry already read is still delivered and acknowledged — and only then closes the client.
+
 Producers publish the ACE envelope as JSON in the payload field:
 
 ```bash
@@ -318,7 +329,7 @@ client, and the transport, so the test suite drives a fake client.
 | `src/protocol/` | ACE 0.1 envelope, activation values, validator, decoder, [JSON Schema](schema/ace-message-0.1.schema.json) |
 | `src/runtime/` | endpoint (subscribe/publish) configuration, activation resolution, dispatcher, manual-event store, burst spool, dedup window, metrics, `AceRuntime` |
 | `src/transport/` | `Transport` boundary, `InMemoryTransport`, `RedisStreamsTransport` (+ client interface / node-redis adapter) |
-| `src/agent/` | `AgentEngine` interface and `PiAdapter` |
+| `src/agent/` | `AgentEngine` interface, `PiExtensionAdapter` (drive the host), and `event-rendering.ts` (the injected block and trust policy) |
 | `src/logger.ts` | log lines that never carry a message body |
 | `extensions/` | `ace.ts`: Pi extension that injects events into the session it runs in |
 | `test/` | protocol, runtime, adapter and transport unit tests, plus real-Pi-session integration tests |
@@ -357,9 +368,8 @@ otherwise                     → runtime default (next_turn)
 | `immediate` | body enters context, turn starts | queued at the earliest public processing point |
 | `manual` | retained in memory, no turn | retained in memory, no turn |
 
-The SDK adapter calls Pi directly (`prompt()` / `steer()` / `followUp()`). The in-session extension asks the
-host to deliver the message, and the hosts disagree about what a delivery mode means, so the adapter owns that
-mapping instead of trusting the host:
+The in-session adapter asks the host to deliver the message, and the hosts disagree about what a delivery
+mode means, so the adapter owns that mapping instead of trusting the host:
 
 | activation | agent | upstream Pi | oh-my-pi (`omp`) |
 |---|---|---|---|
@@ -372,17 +382,24 @@ oh-my-pi queues `steer`/`followUp` **without starting a turn**, so an event inje
 waits in a queue that nothing drains — while the broker entry is acknowledged. That is silent loss, measured on
 omp 18.5.0, which is why the adapter never passes those modes to an idle agent, and why on oh-my-pi it waits
 until the injected text appears in the conversation before the transport may acknowledge the entry
-(`AceDeliveryObserver`; `deliveryTimeoutMs`, default 30s). A host that never surfaces the event leaves it in the
-group's pending list for redelivery instead of losing it. `ACE_DELIVERY=aside|portable` overrides host
-detection when a host changes its surface.
+(`AceDeliveryObserver`). `ACE_DELIVERY=aside|portable` overrides host detection when a host changes its surface.
+
+The wait is **per path**, because surface time is. A queued delivery (`aside`, `followUp`) surfaces at the next
+step boundary and a model turn can last minutes, so its surface time is not knowable: the adapter waits for the
+observation with **no wall clock**, and the transport's own `reclaimAttempts`/`reclaimIdleMs` is the backstop for
+a host that truly never surfaces the event. The paths where the host surfaces the event in the current turn (the
+prompt path and `steer`) keep a bounded wait (`deliveryTimeoutMs`, default 30s): a timeout fails the injection
+so the entry stays pending for reclaim.
+
+Injection is **idempotent** by `(subscription, sender, id)`: the adapter records an event as handed to the host
+the moment `sendUserMessage` returns, and never rolls that back — it says the host received the message, not
+that the agent saw it. A broker redelivery of an identity already handed over re-attaches to the observation and
+waits again; it never calls `sendUserMessage` a second time, so one stored entry cannot become several copies in
+the conversation. The record is a bounded FIFO (1024), and a suppressed duplicate is logged so a host can tell
+adapter-level duplication from render-level duplication.
 
 `immediate` preempts at Pi's next **turn boundary** instead of aborting the running turn, so no partial output
 or in-flight tool call is discarded. Mid-turn cancellation is deliberately out of the MVP (design doc §28/§29).
-
-Pi only drains its steering and follow-up queues from a *live* agent loop. An event queued after that loop's last
-poll would sit there until some unrelated run drained it, so `PiAdapter` records every queued event, watches for
-the conversation message Pi emits when it injects it, and starts a new run for anything still undelivered once
-the session settles. Events therefore reach the model exactly once, in order.
 
 ## Context injection
 
@@ -423,7 +440,7 @@ to be registered anywhere to send. Both lines are the sender's own account and n
 
 The header is an adapter choice, **not** part of ACE: the protocol only requires `body` to be visible to later
 reasoning. The fixed prefix also keeps an ACE body from being mistaken for a Pi slash command or prompt template.
-Pass `renderEvent` to `PiAdapter` to change the format.
+Pass `renderEvent` to `PiExtensionAdapter` to change the format.
 
 ## Errors and logging
 
@@ -432,8 +449,9 @@ Pass `renderEvent` to `PiAdapter` to change the format.
 | Non-conforming message | rejected; through a transport it is logged and dropped, `handleRawMessage` throws `AceValidationError` |
 | Transport or injection failure | propagated, so the transport can retry or dead-letter (RFC §17, design doc §30) |
 | Unreachable broker | the start fails once with the URL; reconnection is bounded and an outage after the start is reported at most once until commands succeed again |
-| Agent turn failure | reported through `PiAdapter`'s `onRunError`, since Pi records it on the assistant message rather than rejecting `prompt()` |
-| Injected but never surfaced (extension, oh-my-pi) | the injection fails after `deliveryTimeoutMs`; the entry stays pending so reclaim can redeliver it (RFC §17). The retry may duplicate an event that the host did deliver late — at-least-once, and the event id in the injected header makes the duplicate visible |
+| Agent turn failure | reported through the engine's `onRunError` listener, since Pi records it on the assistant message rather than rejecting a send |
+| Injected but never surfaced (queued path) | the injection waits for the observation without a wall clock; the transport's `reclaimAttempts`/`reclaimIdleMs` is the backstop, so a host that never surfaces the event terminates rather than hangs (RFC §17) |
+| Injected but never surfaced (prompt path, `steer`) | the injection fails after `deliveryTimeoutMs`; the entry stays pending so reclaim can redeliver it (RFC §17). The redelivery of an identity the host already received re-waits only — it does not send a second copy |
 
 Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the body.
 
@@ -477,8 +495,9 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 - `.ace.json` is validated when it is read (kind, activation, transport settings), so a broken configuration fails
   at session start with a message instead of mid-stream. `/ace` deliberately registers no argument completions:
   an open completion popup swallows the first Enter in the TUI.
-- The Pi engine is the public `@earendil-works/pi-coding-agent` SDK; Pi itself is not modified. Only
-  `src/agent/pi-adapter.ts` and `extensions/ace.ts` import Pi (enforced by `test/architecture/host-boundary.test.ts`).
+- The Pi host is driven through the public `@earendil-works/pi-coding-agent` SDK; Pi itself is not modified. Only
+  `packages/ace-omp/extensions/ace.ts` imports Pi (enforced by `test/architecture/host-boundary.test.ts`); the
+  core package imports no host SDK — `PiExtensionAdapter` is typed structurally against `sendUserMessage`.
 
 ## Development
 

@@ -70,16 +70,6 @@ export interface ResolvedChannelTarget {
     sender: string;
 }
 /**
- * Whether a channel name is the transport's own stream-key shape `<ns>:ch:<channel>` (see
- * `channelStreamKey` in `runtime/naming.ts`). A stream key is what a delivered `<ace_event>` block's
- * `stream:` line carries, and copying that line into `ace_publish` is a natural mistake: it resolves
- * as a full name like any other, so the event is stored on a channel nobody subscribes to and the row
- * reports its reader checks as if the address were merely quiet. This detector never changes resolution —
- * a channel named `<ns>:ch:<channel>` stays a legal channel — it only lets the result say that the
- * target is the transport's key, not an address, so a copied stream key cannot look like a working one.
- */
-export declare function isStreamKeyShaped(channel: string): boolean;
-/**
  * What happened to one input target, in call order. A duplicate is reported rather than dropped in
  * silence, so the rendered result can carry one row per input and a caller sees that its second name
  * was the same delivery as an earlier one. `of` is the **resolved channel** the earlier input produced

@@ -15,22 +15,17 @@ import { describeValue } from "../utils.js";
  * channel is a name, not a mailbox) but it is what a typo looks like. What each field means is
  * spelled out once in the tool description, not per result.
  *
- * `streamKey` marks a target whose channel has the transport's key shape; `completedShortName` marks a
- * target the runtime auto-completed from a short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`),
- * so the caller sees the name that was actually stored. Neither is refused; both are named.
+ * `completedShortName` marks a target the runtime auto-completed from a short name (`noexcs:inbox` →
+ * `ace:noexcs:noexcs:inbox`), so the caller sees the name that was actually stored. It is not refused;
+ * it is named.
  */
 export function deliveredChannel(target, facts, options = {}) {
-    const notes = [];
-    if (options.completedShortName === true)
-        notes.push("completed-short-name");
-    if (options.streamKey === true)
-        notes.push("stream-key");
     return {
         target,
         status: "stored",
         peerNamed: facts.peerNamed,
         selfReads: facts.selfReads,
-        ...(notes.length === 0 ? {} : { note: notes.join(",") }),
+        ...(options.completedShortName === true ? { note: "completed-short-name" } : {}),
     };
 }
 /**

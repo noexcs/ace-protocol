@@ -39,7 +39,7 @@ export interface XferTarget {
 export interface StoreFileResult {
 	/** The one line the model relays verbatim. */
 	text: string;
-	/** The pickup code, which is the whole capability. */
+	/** The token, which is the whole capability. */
 	token: string;
 	/** Bytes stored per copy. */
 	size: number;

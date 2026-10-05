@@ -3,7 +3,6 @@ import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import type { ResolvedServer } from "../../src/runtime/ace-config.ts";
 import {
-	isStreamKeyShaped,
 	rejectUnknownArguments,
 	resolveChannelTarget,
 	resolvePublishTargets,
@@ -401,21 +400,6 @@ describe("validatePublishInput", () => {
 		expect(validatePublishInput({ body: "hi", channel: "noexcs:inbox" }, { servers: ["local"] }).targets).toEqual([
 			"noexcs:inbox",
 		]);
-	});
-});
-
-describe("isStreamKeyShaped", () => {
-	it("recognises the transport's own key shape, including one copied from an event header", () => {
-		// Defect 6: `ace:ch:ace:noexcs:inbox` is the `stream:` line of a delivered event. It is a legal
-		// channel name, so resolution still accepts it; this detector is what lets the result name it.
-		expect(isStreamKeyShaped("ace:ch:ace:noexcs:inbox")).toBe(true);
-		expect(isStreamKeyShaped("ace2:ch:ace2:noexcs:inbox")).toBe(true);
-	});
-
-	it("does not mistake an ordinary channel name for a stream key", () => {
-		expect(isStreamKeyShaped("ace:noexcs:inbox")).toBe(false);
-		expect(isStreamKeyShaped("ace:noexcs:ch")).toBe(false);
-		expect(isStreamKeyShaped("local:ace:noexcs:inbox")).toBe(false);
 	});
 });
 

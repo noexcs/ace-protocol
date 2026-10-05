@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AceDeliveryObserver } from "../../src/agent/event-delivery-observer.ts";
-import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
+import { renderAceEvent } from "../../src/agent/event-rendering.ts";
 import type { AceMessage } from "../../src/protocol/ace-message.ts";
 
 const event: AceMessage = {

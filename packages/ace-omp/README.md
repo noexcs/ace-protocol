@@ -300,7 +300,7 @@ it subscribes to, how delivery works, the `<ace_event>` shape a peer sees, and t
 > by the receiver's own policy, which can land it a turn later. The `activation` you pass is a request, not a
 > guarantee: the receiver's own policy decides what happens, and the block's `activation:` line echoes only the
 > request, not the outcome, so do not read it as confirmation of it. Delivery is per subscription: one event
-> sent to two channels this session reads arrives twice (same id, two streams), while targets that resolve to
+> sent to two channels this session reads arrives twice (same id, two deliveries, in separate turns), while targets that resolve to
 > the same channel in one call are sent once.
 
 | Parameter | Type | Required | Default | Description |
@@ -363,11 +363,11 @@ Prompt guideline: call it before `ace_publish` when you do not already know the 
 > mailbox, so `inbox` names a topic every subscriber reads; a configured server that did not come up, and any
 > subscription it carried, is listed after the rows as an `unavailable:` line naming the server (or channel)
 > and why; `.ace.json` is read once at session start, so a channel removed from the file afterwards keeps
-> running until restart and is marked `note=config-removed`; broker settings are left out — address any
+> running until restart and carries `config-removed` in its row's note; broker settings are left out — address any
 > channel by name with ace_publish.
 
-**`ace_store_file {path, ttl?, name?}`** — store a local file on every live server and return the pickup
-code; the style is 存/取: this tool does not send anything, so nothing is published and the model relays the
+**`ace_store_file {path, ttl?, name?}`** — store a local file on every live server and return the
+token; the style is 存/取: this tool does not send anything, so nothing is published and the model relays the
 result line itself.
 
 - reads `path` (absolute, or relative to the session cwd), hashes the bytes, stores one copy per copy on every
@@ -386,7 +386,7 @@ result line itself.
 - permissions: storing needs `SET` on each server; fetching needs `GET`. The token is the capability — 32 hex
   characters, no namespace, no server name, "whoever holds it can fetch" — so relay it only to the intended peer.
 
-**`ace_get_file {token}`** — fetch a stored file by its pickup token.
+**`ace_get_file {token}`** — fetch a stored file by its token.
 
 - tries **each live server in configuration order**, first hit wins (`from=<server>` on the result), and returns
   `path=<quarantine path> sha256=<hex> size=<bytes> name=<name> from=<server> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 with ms>`. `sha256=` is computed here from the bytes

@@ -1,3 +1,4 @@
+import type { AceLogger } from "../logger.ts";
 import type { AceMessage } from "../protocol/ace-message.ts";
 import type { AgentEngine, InjectionContext, InjectionMode } from "./agent-engine.ts";
 import type { DeliveryObserver } from "./event-delivery-observer.ts";
@@ -39,7 +40,6 @@ export interface PiExtensionAdapterOptions {
      */
     isIdle?: () => boolean;
     /** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
-    /** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
     renderEvent?: (message: AceMessage, context?: InjectionContext) => string;
     /** Host delivery behavior; defaults to the upstream-Pi shape. */
     host?: HostDelivery;
@@ -50,15 +50,21 @@ export interface PiExtensionAdapterOptions {
      */
     observeDelivery?: DeliveryObserver;
     /**
-     * How long to wait for {@link PiExtensionAdapterOptions.observeDelivery} before failing the
-     * injection. Keep it below the transport's `reclaimIdleMs`: the transport must be able to
-     * redeliver an event whose wait timed out. Default 30s.
+     * How long a **bounded** delivery wait may take before failing the injection (`steer`, and the
+     * prompt path where the host is expected to surface the event in the current turn). Leave it
+     * below the transport's `reclaimIdleMs`: the transport must be able to redeliver an event whose
+     * wait timed out. Default 30s. Queued deliveries ignore it — see {@link PiExtensionAdapter}.
      */
     deliveryTimeoutMs?: number;
-    /** Timer for the delivery wait; tests inject a controllable one. */
+    /** Timer for the bounded delivery wait; tests inject a controllable one. */
     setTimer?: (callback: () => void, ms: number) => {
         cancel: () => void;
     };
+    /**
+     * Where the adapter reports a suppressed duplicate injection, so a host can tell adapter-level
+     * duplication from render-level duplication. Defaults to discarding the line.
+     */
+    logger?: AceLogger;
 }
 /**
  * Drives the Pi session this extension is loaded into (design doc §16).
@@ -76,6 +82,38 @@ export interface PiExtensionAdapterOptions {
  * It is the only delivery both hosts agree on for an idle agent, so the adapter uses it there
  * instead of relying on `followUp`, which omp never drains on an idle session.
  *
+ * ## Idempotent injection
+ *
+ * `sendUserMessage` has no identity check of its own, and a redelivery from the transport is normal
+ * at-least-once behavior. The adapter therefore records every event identity —
+ * `(subscription, sender, id)` — as **handed to the host** the moment `sendUserMessage` returns
+ * successfully, and never rolls that record back: it says the host received the message, not that
+ * the agent saw it. Those are different facts, and the delivery observer keeps its own (separate)
+ * concern. A redelivery whose identity is already recorded re-attaches to the observation and waits
+ * again; it never calls `sendUserMessage` a second time. The set is a bounded FIFO of capacity
+ * {@link DEFAULT_HANDED_CAPACITY} (the same trade-off `SeenMessageIds` makes: a duplicate older than
+ * the window may still slip through, so memory stays bounded).
+ *
+ * Failure chain this closes: an agent turn can last minutes, so a `next_turn` event queued for the
+ * next step boundary may not surface for a long time. A single wall clock failed that slow success,
+ * the broker never got the acknowledgement, `reclaimStale` redelivered, and the host sent a second
+ * copy — three successful sends for one stored entry (measured: `1 + reclaimAttempts(3) = 4`).
+ *
+ * ## Delivery wait
+ *
+ * What the wait does with the observation depends on the path, because the surface time does too:
+ *
+ * | delivery | paths | wait |
+ * |---|---|---|
+ * | queued | `deliverAs: "aside"` / `"followUp"` | no wall clock — wait for the observation; the transport's `reclaimAttempts`/`reclaimIdleMs` bounds the retry |
+ * | bounded | prompt path (no `deliverAs`), `steer` | fail after `deliveryTimeoutMs` (default 30s), so the entry stays pending and reclaim can redeliver it |
+ *
+ * A queued delivery surfaces at the next step boundary, and a model turn lasts as long as it lasts —
+ * its surface time is not knowable, so a wall clock there would fail a delivery that already
+ * succeeded (`sendUserMessage` returned; the message is queued and will surface). The paths where
+ * the host is expected to surface the event in the current turn keep the timeout, which is the
+ * only signal that the host dropped it.
+ *
  * Deviations from {@link AgentEngine}: `waitForIdle` resolves immediately, because a session
  * shutdown must never block the interactive UI on a live turn.
  */
@@ -87,13 +125,23 @@ export declare class PiExtensionAdapter implements AgentEngine {
     private readonly observeDelivery?;
     private readonly deliveryTimeoutMs;
     private readonly setTimer;
+    private readonly logger;
+    /** Identities already handed to the host, in insertion order (`Map` keeps it), FIFO-bounded. */
+    private readonly handed;
+    private readonly handedCapacity;
     private readonly runErrorListeners;
     constructor(options: PiExtensionAdapterOptions);
     inject(message: AceMessage, mode: InjectionMode, context?: InjectionContext): Promise<void>;
     /** The delivery this host understands for the event's urgency and the agent's state. */
     private deliveryFor;
-    /** Fail loudly when the host never surfaced the event, so the broker keeps it pending. */
+    /**
+     * Wait for the observation. A queued delivery waits without a wall clock (its surface time is the
+     * next step boundary and not knowable); a bounded one fails after {@link deliveryTimeoutMs} so the
+     * broker keeps the entry pending for reclaim.
+     */
     private awaitDelivery;
+    /** Record an identity as handed to the host, evicting the oldest past the capacity. */
+    private remember;
     /** Listeners the runtime registers to count failed runs. */
     onRunError(listener: (error: unknown) => void): void;
     /**

@@ -1,5 +1,5 @@
 import type { AceMessage } from "../protocol/ace-message.ts";
-import { renderAceEvent } from "./pi-adapter.ts";
+import { renderAceEvent } from "./event-rendering.ts";
 
 /** Something that can decide when an injected event has reached the conversation. */
 export interface DeliveryObserver {

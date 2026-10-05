@@ -371,6 +371,39 @@ export function resolveAceConfig(options: {
 }
 
 /**
+ * The channel names a live subscription still reads that the **current** configuration no longer lists.
+ *
+ * `.ace.json` is read once at session start, so a channel removed from the file since then is still
+ * read — the removal takes effect only on restart (RFC §10). Naming those channels lets a host mark
+ * their rows `note=config-removed` instead of leaving the stale subscription invisible.
+ *
+ * Best-effort by design: a current file that cannot be read, parsed or resolved yields no names at
+ * all, because a stale `config-removed` would be worse than no note. `subscriptions` are the
+ * resolved-at-start subscriptions; the current file is resolved the same way
+ * {@link resolveAceConfig} resolves it, and a start subscription whose uploaded channel name is no
+ * longer produced by it is reported.
+ */
+export function configRemovedChannels(options: {
+	/** Subscriptions resolved at session start (the snapshot `ace_channels` lists). */
+	subscriptions: readonly ResolvedSubscription[];
+	cwd: string;
+	env?: Readonly<Record<string, string | undefined>>;
+	/** Host-owned global candidates, in the host's own order — see {@link loadAceConfig}. */
+	globalConfigPaths?: readonly string[];
+}): string[] {
+	let current: ResolvedAceConfig;
+	try {
+		current = resolveAceConfig(options);
+	} catch {
+		return [];
+	}
+	const configured = new Set(current.subscriptions.map((subscription) => subscription.channel));
+	return options.subscriptions
+		.map((subscription) => subscription.channel)
+		.filter((channel) => !configured.has(channel));
+}
+
+/**
  * The server a **full** channel name belongs to, from the name alone: a server owns exactly one
  * namespace, and the namespace is the name's first segment (`<ns>:<username>:<local>` everywhere).
  *

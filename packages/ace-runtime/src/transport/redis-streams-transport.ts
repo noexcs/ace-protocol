@@ -52,6 +52,18 @@ export const REDIS_STREAMS_DEFAULTS = {
 	maxRetryDelayMs: 5_000,
 } as const;
 
+/**
+ * High-water mark of the per-subscription delivery queue.
+ *
+ * The read loop hands entries to the queue and keeps reading, so a delivery that waits — a queued
+ * event surfaces at the next step boundary, unbounded — no longer stops this subscription from
+ * reading or from reclaiming. The queue is bounded because it holds one entry per handler call the
+ * transport has accepted: a `count` of 16 (the default) means the loop may run 16 read cycles ahead
+ * of the handler, so 256 is far above any realistic burst while still keeping a stalled handler from
+ * growing the queue without bound — at the bound the loop waits for the queue to drain.
+ */
+export const REDIS_STREAMS_DELIVERY_QUEUE_LIMIT = 256;
+
 /** Settings a Redis Streams subscription understands inside its `config` object. */
 export const REDIS_STREAMS_SUBSCRIPTION_KEYS = [
 	"stream",
@@ -146,10 +158,76 @@ export interface RedisStreamsTransportOptions {
 	onError?: (error: unknown) => void;
 	/** Counter sink for reconnects, reclaimed entries and dropped events. */
 	metrics?: AceMetrics;
+	/**
+	 * Entries the delivery queue may hold before the read loop pauses until it drains; defaults to
+	 * {@link REDIS_STREAMS_DELIVERY_QUEUE_LIMIT}.
+	 */
+	deliveryQueueLimit?: number;
 	/** Injectable delay for tests; defaults to a real timer. */
 	delay?: (ms: number) => Promise<void>;
 	/** Injectable clock for tests. */
 	now?: () => number;
+}
+
+/**
+ * Per-subscription serial delivery queue.
+ *
+ * One delivery runs at a time, in the order the read loop accepted it: this is a single-consumer
+ * loop, so entries must reach the handler in read order and never overlap. The loop does not wait
+ * for a delivery to finish — it hands the entry over and keeps reading — so a delivery that waits
+ * (a queued `aside` event surfaces at the next step boundary, unbounded) no longer stops this
+ * subscription from reading or from reclaiming.
+ *
+ * `deliver` reports its own failures and does not throw; a rejection that still reaches this queue
+ * (a failing `XACK`, say) escaped that path and has no loop `catch` to land in any more, so it is
+ * reported through `onFailure`.
+ */
+class DeliveryQueue {
+	private readonly limit: number;
+	private readonly onFailure: (error: unknown) => void;
+	private depth = 0;
+	private tail: Promise<void> = Promise.resolve();
+	/** Resolvers waiting for the queue to fall back below the high-water mark. */
+	private readonly onProgress: Array<() => void> = [];
+
+	/** `limit` is the most deliveries the queue may hold; the read loop waits above it. */
+	constructor(limit: number, onFailure: (error: unknown) => void) {
+		this.limit = limit;
+		this.onFailure = onFailure;
+	}
+
+	/** Accept one delivery; it runs after every earlier one, never concurrently with it. */
+	push(job: () => Promise<void>): void {
+		this.depth += 1;
+		this.tail = this.tail.then(async () => {
+			try {
+				await job();
+			} catch (error) {
+				this.onFailure(error);
+			} finally {
+				this.depth -= 1;
+				for (const wake of this.onProgress.splice(0)) wake();
+			}
+		});
+	}
+
+	/**
+	 * Resolve once one more delivery fits. Called per entry, never per batch: a batch larger than the
+	 * limit then waits for one slot at a time instead of for room it could never get, so a `count`
+	 * above the limit slows the loop down but cannot deadlock it.
+	 */
+	async waitForRoom(): Promise<void> {
+		while (this.depth >= this.limit) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			this.onProgress.push(resolve);
+			await promise;
+		}
+	}
+
+	/** Resolve once every accepted delivery has finished, successfully or not. */
+	async drain(): Promise<void> {
+		while (this.depth > 0) await this.tail;
+	}
 }
 
 /**
@@ -165,6 +243,9 @@ export interface RedisStreamsTransportOptions {
  * - invalid ACE messages are acknowledged too, because the runtime logs and drops them
  *   instead of rejecting them (RFC §13, design doc §30) — a poison message never blocks
  *   the stream;
+ * - delivery runs behind a per-subscription serial queue, so the read loop keeps reading and
+ *   reclaiming while a delivery waits; the queue is bounded ({@link REDIS_STREAMS_DELIVERY_QUEUE_LIMIT})
+ *   and the loop pauses at the bound rather than dropping entries;
  * - a failed read does not end consumption: the loop reconnects with a capped backoff.
  */
 export class RedisStreamsTransport implements Transport {
@@ -174,12 +255,15 @@ export class RedisStreamsTransport implements Transport {
 	private readonly onError: (error: unknown) => void;
 	private readonly onDropped: ((entry: DroppedEntry) => void | Promise<void>) | undefined;
 	private readonly metrics: AceMetrics | undefined;
+	private readonly deliveryQueueLimit: number;
 	private readonly delay: (ms: number) => Promise<void>;
 	private readonly now: () => number;
 	/** Delivery attempts per reclaimed entry id; the transport's own idempotency guard. */
 	private readonly reclaimAttempts = new Map<string, number>();
 	/** Entries whose dead-letter write already failed: report once, not once per reclaim pass. */
 	private readonly reportedDrops = new Set<string>();
+	/** Entry ids handed to the delivery queue and not yet settled. */
+	private readonly inFlight = new Set<string>();
 	private loop?: Promise<void>;
 	private stopped = true;
 	private lastReclaimAt = 0;
@@ -190,6 +274,7 @@ export class RedisStreamsTransport implements Transport {
 		this.onError = options.onError ?? (() => {});
 		this.onDropped = options.onDropped;
 		this.metrics = options.metrics;
+		this.deliveryQueueLimit = options.deliveryQueueLimit ?? REDIS_STREAMS_DELIVERY_QUEUE_LIMIT;
 		this.delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 		this.now = options.now ?? (() => Date.now());
 		this.client =
@@ -209,10 +294,19 @@ export class RedisStreamsTransport implements Transport {
 		await this.client.ensureGroup(this.config.stream, this.config.group);
 		this.stopped = false;
 		this.lastReclaimAt = this.now();
-		this.loop = this.consume(handler);
+		this.loop = this.consume(handler, new DeliveryQueue(this.deliveryQueueLimit, (error) => this.report(error)));
 	}
 
-	/** Stop after the current batch and disconnect. */
+	/**
+	 * Stop reading, let the deliveries already handed over settle, then disconnect.
+	 *
+	 * The order is the point: (a) `stopped` ends the read loop, so no further entry is read;
+	 * (b) the loop drains the delivery queue before it resolves, so an entry already read is still
+	 * delivered and either acked or — on failure — left pending for reclaim; it must not stay
+	 * unacknowledged just because we are shutting down; (c) only then is the client closed, so the
+	 * `XACK`s written by those last deliveries go out over a live connection. An entry the broker
+	 * still holds was never read, so it stays in the group's PEL for the next consumer to reclaim.
+	 */
 	async stop(): Promise<void> {
 		if (!this.loop) return;
 		this.stopped = true;
@@ -221,8 +315,16 @@ export class RedisStreamsTransport implements Transport {
 		await this.client.close();
 	}
 
-	/** Read loop with capped-backoff reconnection: a broker blip must not make the agent deaf. */
-	private async consume(handler: RawAceMessageHandler): Promise<void> {
+	/**
+	 * Read loop with capped-backoff reconnection: a broker blip must not make the agent deaf.
+	 *
+	 * Entries are handed to `queue`, never awaited here: a delivery that waits on the host must not
+	 * stop this subscription from reading the next batch or from reclaiming a peer's stranded
+	 * entries — that backstop is exactly what a stalled handler needs. The queue preserves read
+	 * order, and backpressure is one `waitForRoom` before each entry is accepted, so the queue stays
+	 * bounded without ever dropping an entry the broker already gave us.
+	 */
+	private async consume(handler: RawAceMessageHandler, queue: DeliveryQueue): Promise<void> {
 		let delay = this.config.retryDelayMs;
 		let outage = false;
 		while (!this.stopped) {
@@ -241,13 +343,18 @@ export class RedisStreamsTransport implements Transport {
 					this.reportNotice(`redis stream ${this.config.stream}: reconnected`);
 				}
 
-				// Finish the batch even if `stop()` arrived mid-batch: entries must not stay
-				// unacknowledged just because we are shutting down.
-				for (const entry of entries) await this.deliver(handler, entry);
+				// Queue the whole batch: a `stop()` that arrives mid-batch must not leave a read entry
+				// undelivered — "entries must not stay unacknowledged just because we are shutting
+				// down" still holds, and `stop()` drains this queue. The queue's own bound is the only
+				// thing that can pause this loop here, and it does so one entry at a time.
+				for (const entry of entries) {
+					await queue.waitForRoom();
+					this.enqueue(queue, handler, entry);
+				}
 
-				if (entries.length === 0) await this.reclaimStale(handler);
+				if (entries.length === 0) await this.reclaimStale(handler, queue);
 			} catch (error) {
-				if (this.stopped) return;
+				if (this.stopped) break;
 				if (!outage) {
 					outage = true;
 					this.report(error);
@@ -256,10 +363,44 @@ export class RedisStreamsTransport implements Transport {
 				delay = Math.min(delay * 2, this.config.maxRetryDelayMs);
 			}
 		}
+		// The loop ended because we are stopping: an entry already read is delivered and acked (or
+		// left pending) before `stop()` returns, and never after the client is closed.
+		await queue.drain();
 	}
 
-	/** Reclaim entries another consumer left pending, so a crashed peer does not strand events. */
-	private async reclaimStale(handler: RawAceMessageHandler): Promise<void> {
+	/**
+	 * Hand one entry to the delivery queue, marking it in flight for as long as it is queued or
+	 * delivering.
+	 *
+	 * The mark is what keeps the decoupled reclaim pass honest: an entry this consumer has accepted
+	 * is not *stranded*, so a reclaim must skip it. It is set here, at accept time, not when the job
+	 * starts — an entry can wait behind a slow delivery for longer than `reclaimIdleMs`, and marking
+	 * it late would let the next pass reclaim it while it is still queued. Without the mark an entry
+	 * waiting in the queue would be delivered twice and its attempts counter would spend the
+	 * `reclaimAttempts` budget (possibly dead-lettering it) while the original delivery is still
+	 * about to succeed. The mark is cleared the moment the delivery settles, so a *failed* delivery
+	 * is still retried by the next reclaim pass, exactly as before.
+	 */
+	private enqueue(queue: DeliveryQueue, handler: RawAceMessageHandler, entry: RedisStreamEntry): void {
+		this.inFlight.add(entry.id);
+		queue.push(async () => {
+			try {
+				await this.deliver(handler, entry);
+			} finally {
+				this.inFlight.delete(entry.id);
+			}
+		});
+	}
+
+	/**
+	 * Reclaim entries another consumer left pending, so a crashed peer does not strand events.
+	 *
+	 * Runs on its own guard (`entries.length === 0` plus the `reclaimIdleMs` throttle) whether or not
+	 * deliveries are still in flight — that is the point: a peer's stranded entries must not wait
+	 * behind this consumer's own slow delivery. Reclaimed entries go through the same serial queue
+	 * as freshly read ones, so their handler calls stay ordered and never overlap.
+	 */
+	private async reclaimStale(handler: RawAceMessageHandler, queue: DeliveryQueue): Promise<void> {
 		const { reclaimIdleMs, reclaimAttempts } = this.config;
 		if (reclaimIdleMs <= 0) return;
 		if (this.now() - this.lastReclaimAt < reclaimIdleMs) return;
@@ -273,6 +414,10 @@ export class RedisStreamsTransport implements Transport {
 			this.config.count,
 		);
 		for (const entry of entries) {
+			// This consumer is already delivering it: it is not stranded, and re-queuing it would
+			// deliver it twice and spend an attempt on a delivery that has not even failed yet.
+			if (this.inFlight.has(entry.id)) continue;
+
 			const attempts = this.reclaimAttempts.get(entry.id) ?? 0;
 			if (attempts >= reclaimAttempts) {
 				// Give up. The last copy is recorded first: an entry that no handler could deliver is
@@ -313,7 +458,10 @@ export class RedisStreamsTransport implements Transport {
 			this.reclaimAttempts.set(entry.id, attempts + 1);
 			this.metrics?.increment(this.name, "reclaimed");
 			this.reportNotice(`redis stream ${this.config.stream}: reclaimed entry ${entry.id} (attempt ${attempts + 1})`);
-			await this.deliver(handler, entry);
+			// Same bound as a freshly read batch: a reclaim pass may not push the queue past its
+			// high-water mark just because the entries arrived from the PEL instead of a read.
+			await queue.waitForRoom();
+			this.enqueue(queue, handler, entry);
 		}
 	}
 

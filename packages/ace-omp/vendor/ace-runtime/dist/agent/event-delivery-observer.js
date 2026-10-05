@@ -1,4 +1,4 @@
-import { renderAceEvent } from "./pi-adapter.js";
+import { renderAceEvent } from "./event-rendering.js";
 /**
  * Resolves an injection once it shows up in the conversation.
  *

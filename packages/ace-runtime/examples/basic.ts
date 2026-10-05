@@ -2,7 +2,7 @@
  * ACE 0.1 end-to-end example (design doc §26).
  *
  * ```text
- * External producer ─ InMemoryTransport ─ ACE Runtime ─ PiAdapter ─ Pi session ─ LLM
+ * External producer ─ InMemoryTransport ─ ACE Runtime ─ PiExtensionAdapter ─ Pi session ─ LLM
  * ```
  *
  * Pick a model from your Pi configuration (`provider/modelId`):
@@ -32,7 +32,7 @@ import {
 	decodeAceMessage,
 	type EndpointConfig,
 	InMemoryTransport,
-	PiAdapter,
+	PiExtensionAdapter,
 } from "../src/index.ts";
 
 const demoEvent: AceMessage = {
@@ -58,10 +58,13 @@ const { session } = await createAgentSession({
 });
 
 const transport = new InMemoryTransport();
-const adapter = new PiAdapter({
-	session,
-	onRunError: (error) => console.error("[ACE] agent run failed:", error),
+const adapter = new PiExtensionAdapter({
+	// The extension adapter talks to the host through `sendUserMessage`; a Pi `AgentSession` is such a
+	// host, and `isStreaming` is the idle probe the adapter asks for.
+	pi: session,
+	isIdle: () => !session.isStreaming,
 });
+adapter.onRunError((error) => console.error("[ACE] agent run failed:", error));
 const subscription: EndpointConfig = {
 	name: "build-events",
 	transport: "memory",

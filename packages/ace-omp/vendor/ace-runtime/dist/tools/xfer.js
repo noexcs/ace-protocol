@@ -322,7 +322,7 @@ export function formatSendResult(options) {
 /**
  * The `ace_get_file` result: the quarantine path the bytes landed at, the hash computed here, the
  * size, the name they were written under, the server they came from, and the blob's own
- * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the pickup token
+ * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the token
  * expires without a second fetch. The hash is reported, never adjudicated — the caller compares it
  * with the sender's and with the metadata's.
  */

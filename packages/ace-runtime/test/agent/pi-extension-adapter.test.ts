@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { DeliveryObserver } from "../../src/agent/event-delivery-observer.ts";
-import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
+import { renderAceEvent } from "../../src/agent/event-rendering.ts";
 import {
 	type DeliverAs,
 	detectHostDelivery,
@@ -51,31 +51,34 @@ class ManualTimer {
 	}
 }
 
-/** Observer that resolves only when the test says so. */
+/** Observer that resolves only when the test says so; keeps every pending waiter. */
 class ControllableObserver implements DeliveryObserver {
 	readonly observed: AceMessage[] = [];
 	readonly released: AceMessage[] = [];
-	private resolveCurrent?: () => void;
+	private readonly waiters: Array<() => void> = [];
 
 	observe(message: AceMessage): Promise<void> {
 		this.observed.push(message);
-		return new Promise((resolve) => {
-			this.resolveCurrent = resolve;
-		});
+		const { promise, resolve } = Promise.withResolvers<void>();
+		this.waiters.push(resolve);
+		return promise;
 	}
 
 	release(message: AceMessage): void {
 		this.released.push(message);
 	}
 
+	/** Resolve every pending observation at once, the way the host echoes a delivered message. */
 	deliver(): void {
-		this.resolveCurrent?.();
+		for (const resolve of this.waiters.splice(0)) resolve();
 	}
 }
 
 function setup(
 	options: {
 		idle?: boolean;
+		/** A mutable idle probe, for a test that changes the agent state between calls. */
+		isIdle?: () => boolean;
 		supportsAside?: boolean;
 		observer?: DeliveryObserver;
 		timer?: ManualTimer;
@@ -86,7 +89,7 @@ function setup(
 	const timer = options.timer ?? new ManualTimer();
 	const adapter = new PiExtensionAdapter({
 		pi,
-		isIdle: () => options.idle ?? true,
+		isIdle: options.isIdle ?? (() => options.idle ?? true),
 		host: { supportsAside: options.supportsAside ?? false },
 		setTimer: timer.setTimer,
 		...(options.observer ? { observeDelivery: options.observer } : {}),
@@ -136,6 +139,97 @@ describe("PiExtensionAdapter delivery", () => {
 	});
 });
 
+describe("PiExtensionAdapter idempotent injection", () => {
+	it("sends the same identity once and re-waits for the observation on the second call", async () => {
+		// The regression that shipped in 0.2.13: the live path (this adapter) had no identity check, so
+		// a broker redelivery called `sendUserMessage` again and the agent saw the block 2–4 times.
+		const observer = new ControllableObserver();
+		const { pi, adapter } = setup({ observer, idle: true, supportsAside: true });
+		const context = { subscription: "inbox" };
+
+		const first = adapter.inject(event, "next_turn", context);
+		await Promise.resolve();
+		// The first delivery is still waiting; the broker redelivers the same entry.
+		const second = adapter.inject(event, "next_turn", context);
+		await Promise.resolve();
+
+		expect(pi.sent).toHaveLength(1);
+		// Two waiters: the redelivery re-attached to the observation instead of re-sending.
+		expect(observer.observed).toEqual([event, event]);
+
+		observer.deliver();
+		await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+		expect(pi.sent).toHaveLength(1);
+	});
+
+	it("resolves a redelivery immediately when the event already surfaced", async () => {
+		const observer = new ControllableObserver();
+		const { pi, adapter } = setup({ observer, idle: true, supportsAside: true });
+
+		const first = adapter.inject(event, "next_turn");
+		await Promise.resolve();
+		observer.deliver();
+		await first;
+
+		await expect(adapter.inject(event, "next_turn")).resolves.toBeUndefined();
+		expect(pi.sent).toHaveLength(1);
+	});
+
+	it("re-waits a redelivery under the original delivery's rule, not the current agent state", async () => {
+		// The first send was queued (`aside` while running), so its wait had no wall clock. If the agent
+		// goes idle before the broker redelivers, a freshly computed rule would call this a bounded path and
+		// arm a timer the original delivery never had; the recorded rule must win.
+		const observer = new ControllableObserver();
+		const timer = new ManualTimer();
+		let idle = false;
+		const { pi, adapter } = setup({ observer, timer, isIdle: () => idle, supportsAside: true });
+
+		const first = adapter.inject(event, "next_turn");
+		await Promise.resolve();
+		expect(pi.sent[0]?.options?.deliverAs).toBe("aside");
+		expect(timer.armed).toBe(false);
+
+		idle = true;
+		const second = adapter.inject(event, "next_turn");
+		await Promise.resolve();
+		expect(pi.sent).toHaveLength(1);
+		expect(timer.armed).toBe(false);
+
+		observer.deliver();
+		await Promise.all([first, second]);
+	});
+
+	it("sends two events that share a body but have different ids", async () => {
+		const observer = new ControllableObserver();
+		const { pi, adapter } = setup({ observer, idle: true, supportsAside: true });
+		const first: AceMessage = { ...event, id: "evt_1", body: "same body" };
+		const second: AceMessage = { ...event, id: "evt_2", body: "same body" };
+
+		const a = adapter.inject(first, "next_turn");
+		const b = adapter.inject(second, "next_turn");
+		await Promise.resolve();
+
+		expect(pi.sent).toHaveLength(2);
+		observer.deliver();
+		await Promise.all([a, b]);
+	});
+
+	it("sends the same id on two subscriptions as two deliveries", async () => {
+		// Per-subscription dedup (RFC §17): the subscription is part of the identity, so an event published
+		// to two channels this session reads reaches it twice.
+		const observer = new ControllableObserver();
+		const { pi, adapter } = setup({ observer, idle: true, supportsAside: true });
+
+		const a = adapter.inject(event, "next_turn", { subscription: "inbox" });
+		const b = adapter.inject(event, "next_turn", { subscription: "team" });
+		await Promise.resolve();
+
+		expect(pi.sent).toHaveLength(2);
+		observer.deliver();
+		await Promise.all([a, b]);
+	});
+});
+
 describe("PiExtensionAdapter observed delivery", () => {
 	it("does not resolve before the event shows up in the conversation", async () => {
 		const observer = new ControllableObserver();
@@ -154,10 +248,44 @@ describe("PiExtensionAdapter observed delivery", () => {
 		expect(settled).toBe(true);
 	});
 
-	it("fails the injection when the event never arrives, so the entry stays pending", async () => {
+	it("keeps waiting without a wall clock on the queued (aside) path", async () => {
+		// A queued delivery surfaces at the next step boundary, and a model turn can last minutes: its
+		// surface time is not knowable, so a 30s wall clock would fail a delivery that already succeeded.
 		const observer = new ControllableObserver();
 		const timer = new ManualTimer();
 		const { adapter } = setup({ observer, timer, idle: true, supportsAside: true });
+
+		const injecting = adapter.inject(event, "next_turn");
+		await Promise.resolve();
+
+		// No timer was armed (deterministic — `ManualTimer` only fires when told), so nothing can throw
+		// on a wall clock while the observation is pending.
+		expect(timer.armed).toBe(false);
+		expect(observer.observed).toEqual([event]);
+
+		observer.deliver();
+		await expect(injecting).resolves.toBeUndefined();
+	});
+
+	it("fails the bounded (steer) path when the event never arrives, so the entry stays pending", async () => {
+		const observer = new ControllableObserver();
+		const timer = new ManualTimer();
+		const { adapter } = setup({ observer, timer, idle: false, supportsAside: true });
+
+		const injecting = adapter.inject(event, "immediate");
+		await Promise.resolve();
+		expect(timer.armed).toBe(true);
+
+		timer.fire();
+
+		await expect(injecting).rejects.toThrow(/was not observed in the conversation/);
+		expect(observer.released).toEqual([event]);
+	});
+
+	it("fails the bounded prompt path when the event never arrives", async () => {
+		const observer = new ControllableObserver();
+		const timer = new ManualTimer();
+		const { adapter } = setup({ observer, timer, idle: true, supportsAside: false });
 
 		const injecting = adapter.inject(event, "next_turn");
 		await Promise.resolve();
@@ -166,7 +294,6 @@ describe("PiExtensionAdapter observed delivery", () => {
 		timer.fire();
 
 		await expect(injecting).rejects.toThrow(/was not observed in the conversation/);
-		expect(observer.released).toEqual([event]);
 	});
 
 	it("releases the observation and rethrows when the host refuses the message", async () => {
@@ -177,6 +304,8 @@ describe("PiExtensionAdapter observed delivery", () => {
 		await expect(adapter.inject(event, "next_turn")).rejects.toThrow("session is shutting down");
 
 		expect(observer.released).toEqual([event]);
+		// A refused send is not "handed to the host": the redelivery must reach `sendUserMessage` again.
+		await expect(adapter.inject(event, "next_turn")).rejects.toThrow("session is shutting down");
 	});
 
 	it("keeps resolving on hand-off alone when no observer is wired", async () => {

@@ -92,7 +92,7 @@ export interface OutboundDraft {
 /**
  * context 接缝：信封 ⇄ 模型可见文本，工具调用 ⇄ 信封草稿。
  *
- * **现状一致**：`PiAdapter.renderEvent` 对应 `render`，`ace_publish` 工具内部的信封构建对应 `build`。
+ * **现状一致**：`event-rendering.renderAceEvent` 对应 `render`，`ace_publish` 工具内部的信封构建对应 `build`。
  */
 export interface ContextAdapter {
 	/** 运行时规范 1 落在它的返回值上：运行时观察这段文本，它出现即确认。 */
