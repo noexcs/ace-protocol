@@ -28,6 +28,7 @@ export * from "./runtime/pending-event-store.ts";
 export * from "./runtime/seen-message-ids.ts";
 export * from "./runtime/shutdown.ts";
 export * from "./tools/listing.ts";
+export * from "./tools/results.ts";
 export * from "./tools/spec.ts";
 export * from "./transport/in-memory-transport.ts";
 export * from "./transport/redis-agent-registry.ts";

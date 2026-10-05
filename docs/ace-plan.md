@@ -101,8 +101,11 @@
 |---|---|---|
 | `ace-claude-code` | **工具 spec 引用**：已改为从 `ace-runtime` 取名字/描述/schema（`src/tools.ts` 只剩 `ace_pending`/`ace_activate` 的宿主专属文本）✓；跨宿主一致性测试 `test/tool-text-unity.test.ts`（含"源码里不得出现共享文本的字面量"）✓ | **已完成** |
 | `ace-claude-code` | **解绑核心入口里的 Pi 适配器**：核心 `index` 仍 `export * from "./agent/pi-adapter.js"` → 消费者（claude/codex）被迫安装 Pi SDK ✗。正解：核心加子路径导出（如 `ace-runtime/pi-adapter`），入口不再导出它，omp 插件改从子路径取 | 待做 |
+| `ace-claude-code` | 工具**结果与错误**的文案也归核心（`TOOL_ERROR_TEXT`、`formatPublishResult`、`deliveredChannel`/`deliveredMember`/`failedTarget`、`formatDiscoveredSessions`）；claude 侧的 `ace_pending`/`ace_activate`/`ace_channels`/`ace_publish` 结果文案仍是自己一份 ✗ → 改为引用 | 待做 |
 | `ace-claude-code` | 清单加 `mcpServers` 条目（channel 不注册时工具仍可用）+ 真机验证同名 server 同时出现在两处 | 待做 |
 | `ace-codex` | 补 **MCP 工具面**（现在无工具面，只能入站）；并**按官方参考对齐 app-server envelope**（我们记的形状与公开文档的 JSON-RPC 2.0 有出入） | 待做 |
+
+**文本归属规则（本轮的判据）**：**模型能读到的文本 → 核心**（工具名/描述/指引/参数说明/工具结果/工具错误 —— 已全部下沉 ✓，这样机制一变只改一处 ✓）；**只有人看得到的输出**（`/ace` 命令的回显、用法行、补全候选、TUI 管理器）留在宿主 ✓。
 
 **vendor 机制注意（已踩过）**：核心改一行 → 必须 `npm run build` → `node scripts/check-vendor-sync.ts --write` →
 再在消费包里 `bun install` 重链；且**消费包要自己声明 vendored 运行时的依赖**（`typebox`、`@earendil-works/pi-coding-agent`），

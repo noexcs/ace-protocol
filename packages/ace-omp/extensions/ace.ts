@@ -71,16 +71,22 @@ import {
 	createRedisStreamsAddClient,
 	createTransports,
 	DeadLetterSink,
+	deliveredChannel,
+	deliveredMember,
 	describeDiscovered,
 	describeEndpoint,
 	describeSender,
 	detectHostDelivery,
 	type EndpointConfig,
 	endpointAddress,
+	failedTarget,
 	formatChannelListing,
 	formatChannelReport,
+	formatDiscoveredSessions,
+	formatPublishResult,
 	formatSessionLabel,
 	hostFacts,
+	NO_SESSION_LABEL,
 	PiExtensionAdapter,
 	PUBLISH_PARAMETERS,
 	publishEndpointOf,
@@ -94,6 +100,7 @@ import {
 	senderIdentity,
 	sessionInboxEndpoint,
 	shutdownAce,
+	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
 	withTrustPolicy,
@@ -274,17 +281,15 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		const configured = publishers[name];
 		if (configured) return { kind: "channel", name, publisher: configured };
 		if (!registry) {
-			throw new Error(
-				`unknown target "${name}" (configured: ${Object.keys(publishers).join(", ") || "none"}; no agent directory configured)`,
-			);
+			throw new Error(TOOL_ERROR_TEXT.targetUnknown(name, Object.keys(publishers)));
 		}
 		const resolution = resolveTarget(await registry.list(), name);
 		if (!resolution.ok) {
 			const candidates = resolution.candidates.slice(0, 10);
 			throw new Error(
 				resolution.reason === "ambiguous"
-					? `target "${name}" matches ${resolution.candidates.length} sessions; pass the full member: ${candidates.join(", ")}`
-					: `no live session matches "${name}"${candidates.length === 0 ? "" : ` (live: ${candidates.join(", ")})`}`,
+					? TOOL_ERROR_TEXT.targetAmbiguous(name, resolution.candidates.length, candidates)
+					: TOOL_ERROR_TEXT.targetNotFound(name, candidates),
 			);
 		}
 		return { kind: "member", member: resolution.entry.member, entry: resolution.entry };
@@ -299,9 +304,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	async function publishToMember(entry: RegistryEntry, message: AceMessage): Promise<void> {
 		const endpoint = publishEndpointOf(entry);
 		if (endpoint.transport !== "redis-streams") {
-			throw new Error(
-				`member "${entry.member}" advertises transport "${endpoint.transport}", which this runtime cannot publish to`,
-			);
+			throw new Error(TOOL_ERROR_TEXT.transportUnsupported(entry.member, endpoint.transport));
 		}
 		memberPublishers ??= new Map();
 		let publisher = memberPublishers.get(endpoint.url);
@@ -322,7 +325,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			parameters: AGENTS_PARAMETERS,
 			async execute(_toolCallId, params) {
 				if (!registry) {
-					throw new Error(`no agent directory configured; add "registry" to ${ACE_CONFIG_FILENAME}`);
+					throw new Error(TOOL_ERROR_TEXT.noDirectory);
 				}
 				const agentPrefix = params.agent === undefined ? undefined : `${params.agent}:`;
 				const live = (await registry.list())
@@ -335,7 +338,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: rows.length === 0 ? "No other agent sessions are registered right now." : rows.join("\n"),
+							text: formatDiscoveredSessions(rows),
 						},
 					],
 					details: { count: rows.length },
@@ -360,7 +363,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			async execute() {
 				const config = resolvedConfig;
 				if (!config) {
-					throw new Error(`ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`);
+					throw new Error(TOOL_ERROR_TEXT.notRunning);
 				}
 				const listing = channelListingInput(config, sessionInbox);
 				return {
@@ -426,7 +429,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					senderDescription: describeSender(
 						hostFacts({
 							codingAgent: codingAgentName(pi),
-							sessionId: sessionId ?? "(no session)",
+							sessionId: sessionId ?? NO_SESSION_LABEL,
 							cwd: sessionContext?.cwd ?? process.cwd(),
 						}),
 					),
@@ -444,34 +447,37 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						const target = await resolvePublishTarget(name);
 						if (target.kind === "channel") {
 							await target.publisher.publish(message);
-							delivered.push(`channel "${target.name}"`);
+							delivered.push(deliveredChannel(target.name));
 							continue;
 						}
 						// The same session twice in one call is one delivery.
 						const address = `${target.entry.channel.config.url}#${target.entry.channel.config.stream}`;
 						if (sentStreams.has(address)) {
-							delivered.push(`member "${target.member}" (already sent)`);
+							delivered.push(deliveredMember(target.member, true));
 							continue;
 						}
 						sentStreams.add(address);
 						await publishToMember(target.entry, message);
-						delivered.push(`member "${target.member}"`);
+						delivered.push(deliveredMember(target.member));
 					} catch (error) {
-						failures.push(`"${name}": ${describeError(error)}`);
+						failures.push(failedTarget(name, describeError(error)));
 					}
 				}
 
 				if (delivered.length === 0) {
-					throw new Error(`nothing published: ${failures.join("; ")}`);
+					throw new Error(TOOL_ERROR_TEXT.nothingPublished(failures));
 				}
 				return {
 					content: [
 						{
 							type: "text",
-							text: [
-								`Published id=${message.id} from ${sender} to ${delivered.length} target(s): ${delivered.join(", ")} (activation: ${message.activation}).`,
-								...(failures.length > 0 ? [`Failed: ${failures.join("; ")}`] : []),
-							].join("\n"),
+							text: formatPublishResult({
+								id: message.id,
+								sender,
+								activation: message.activation,
+								delivered,
+								failures,
+							}),
 						},
 					],
 					details: {
