@@ -27,9 +27,9 @@ export declare function describeEndpoint(endpoint: EndpointConfig): string;
  * The directory's row order: by channel name ascending, then by server name for the same channel name
  * on two servers. `ace_agents` merges several servers' directories and the underlying listings have no
  * stable order of their own, so without an explicit sort the same peers came back in a different order
- * across calls. `renews_in` is not the key: it is a liveness hint recomputed at each call and the peer
- * renews its lease, so it moves between calls even when the set of peers is unchanged, and a sort on it
- * would reorder rows for no reason.
+ * across calls. `renews_in` is not the key: it is the peer's remaining lease at the moment of the call
+ * and the peer renews its lease, so it moves between calls even when the set of peers is unchanged, and
+ * a sort on it would reorder rows for no reason.
  */
 export declare function compareDiscoveredSessions(a: {
     server: string;

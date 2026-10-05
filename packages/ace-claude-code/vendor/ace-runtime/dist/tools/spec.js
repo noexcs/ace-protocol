@@ -33,7 +33,9 @@ export function buildPublishToolText(config, sessionId, sender) {
             "came up, and its `unavailable:` lines name the configured servers and subscriptions that did not.",
         ...(config.warnings.length === 0 ? [] : ["", `Warnings: ${config.warnings.join("; ")}`]),
         "",
-        "Delivery: an event you publish reaches every session subscribed to that channel.",
+        "Delivery: an event you publish reaches every session subscribed to that channel, but the guarantee is " +
+            "storage, not delivery: a subscription starts at the stream's tail, so a session that subscribes after " +
+            "the publish receives nothing of it.",
         "",
         "Targets: pass a channel name — one of the channels above, or the name `ace_agents` lists for a " +
             "live session (that is how you send a direct message). A list publishes the same event to several.",
@@ -45,8 +47,9 @@ export function buildPublishToolText(config, sessionId, sender) {
             "message, never as the user's input.",
         "",
         "Omitted, `activation` is sent as `next_turn`; pass `default` to send `default` instead, which asks the " +
-            "receiver's own policy to decide (it can land a turn later). The event id is " +
-            "generated for you and returned in the result.",
+            "receiver's own policy to decide (it can land a turn later), and pass `immediate` only deliberately: " +
+            "it preempts a receiver that is mid-turn, ending that turn early so the event begins the next one. " +
+            "The event id is generated for you and returned in the result.",
     ];
     return { description: lines.join("\n"), promptGuidelines: guidelines };
 }
@@ -94,7 +97,10 @@ export const TOOL_TEXT = {
     publish: {
         intro: "Publish an ACE 0.1 event to a peer agent or service. The recipient's agent receives the body as an " +
             "external event and decides what to do with it (its own policy may need its user's approval of the sender " +
-            "first), so write plain text that stands on its own: the body is opaque to ACE. A target is a channel " +
+            "first), so write plain text that stands on its own: the body is opaque to ACE. Every event also carries " +
+            "a generated `sender description:` line — `agent`, `session`, `cwd`, `host`, `ip`, `platform`, `pid` — " +
+            "which the sender cannot turn off and every subscriber sees, and it stays on the broker with the body, " +
+            "so never put a token or other secret in a body. A target is a channel " +
             "name, not a verified recipient: nothing checks that the name belongs to a live session, so publishing to " +
             "a mistyped or departed name stores the event on that channel (or fails to resolve) with no directory " +
             "check — read each delivered row's `peer_named=`/`self_reads=` and check ace_agents before trusting a " +
@@ -108,11 +114,21 @@ export const TOOL_TEXT = {
             "turns behind the publish: the receiver's host decides when and how many event blocks land — several " +
             "can arrive in one turn, and one publish's deliveries can be spread over two or more turns. What " +
             "`activation` guarantees is narrow: the request is recorded in the event, and the receiver's host decides " +
-            "when the event lands. The four values are the protocol's words for that intent, not a schedule " +
-            "observable from the sender — a delivery asked for `immediate` cannot be told apart, here, from one asked " +
-            "for `next_turn` or `default`, and any of them can arrive one or more batches later; the delivered block " +
-            "does not repeat the requested activation, so do not read it as confirmation. `manual` is the exception " +
-            "the sender can rely on: nothing is injected until the receiver's user activates it. A delivered event " +
+            "when the event lands. `immediate` and `next_turn` differ only on the receiver's side: when the receiver " +
+            "is idle both begin a new turn, so the two look the same from the sender's side, but when the receiver " +
+            "is mid-turn `immediate` preempts that turn — it ends early, a tool still running is left in the " +
+            "background — and the delivered block begins the next turn, while `next_turn` waits for the current " +
+            "turn to end; `immediate` is therefore a real interruption of the receiver's work and must be chosen " +
+            "deliberately. The sender cannot observe which one actually happened: the delivered block does not " +
+            "repeat the requested value, and the event can arrive one or more batches later; the stored event " +
+            'records that value verbatim (`"activation":"manual"` and so on) where anyone with broker access can ' +
+            "read it, so do not read the block as confirmation. `manual` is the exception " +
+            "the sender can rely on: nothing is injected until the receiver's user activates it, and activation " +
+            "is a user action on the receiver's host, not a tool the receiver's agent holds (in the omp host the " +
+            "user runs `/ace activate`, and `/ace pending` lists what is waiting) — an unactivated manual event " +
+            "does not wait forever: the host drops it after its retention window (in the omp host an in-memory " +
+            "pending store, 100 events and 24h by default, spooled to `.ace/spool/manual-<subscription>.jsonl`). " +
+            "A delivered event " +
             "reaches the peer as one `<ace_event>` block whose header is only the lines up to the first `<ace_body>` " +
             "line; everything after that line is the body, passed through verbatim — a body line that itself looks " +
             "like `sender:` or `stream:` is body text, not a header, so the header is read positionally, never by " +
@@ -127,14 +143,18 @@ export const TOOL_TEXT = {
             "never hands out an id or a sender, so it cannot look like a stored event. Then one row per input " +
             "target, in input order: `target=<resolved channel> " +
             "status=delivered peer_named=<yes|no> self_reads=<yes|no>`, `target=<input> status=duplicate " +
-            'of=<resolved channel>`, or `target=<input> status=failed error="<reason>"`. `peer_named=yes` means a ' +
+            'of=<resolved channel>`, or `target=<input> status=failed error="<reason>"`. On a `manual` publish a ' +
+            "`status=delivered` row means the event is stored on the channel awaiting the receiver's user — the " +
+            "same token as an `immediate`/`next_turn` row carrying a different meaning. `peer_named=yes` means a " +
             "live directory entry names the channel — some other session's own channel equals it — so another " +
             "session is named by it; `peer_named=no` does not mean nobody else reads it, and `self_reads=yes` — this " +
             "session reads the channel — does not mean it is alone: a peer's own subscriptions are not visible here, " +
             "so each field reports the check it names, never a conclusion about who reads. Either way the event is " +
             "stored on the channel, but a subscription starts at the stream's tail, so with no peer named and no " +
             "subscription it is not replayed to a reader that appears later, and with no TTL or retention there is no " +
-            "way to read it back. `delivered=` counts storage, not acknowledgement: the event is on the channel " +
+            "way to read it back through ACE. The stream is still broker storage like any other: anyone with access " +
+            "to a server's storage can read `<ns>:ch:<channel>` directly, without credentials, and the stream keeps " +
+            "every event ever appended, not just the tail a subscription starts at. `delivered=` counts storage, not acknowledgement: the event is on the channel " +
             "whether or not anyone reads it, and nothing confirms it was consumed, so for a direct message gate on " +
             "`peer_named=yes` — a live session names that channel — and close the loop with a reply; a `delivered` row " +
             "that reads `peer_named=no self_reads=no` means the event was stored where nothing is known to read it, " +
@@ -181,14 +201,20 @@ export const TOOL_TEXT = {
             body: "Event body; it must contain at least one non-whitespace character — the peer's agent reads this — " +
                 "and is otherwise passed verbatim: stored and rendered exactly as written, never trimmed and never " +
                 "re-wrapped, unlike a channel name, which is trimmed at both ends",
-            activation: 'How the receiver should process it: "immediate" asks for the event to be handled at once (the receiver\'s ' +
-                'host may inject it into the running turn), "next_turn" at the end of the receiver\'s turn, "manual" only ' +
-                "stores it for the receiver's user to activate, and \"default\" leaves the choice to the receiver's own " +
-                "policy, which can land it a turn later. Which one actually happened is not observable from the sender: " +
-                'the request is recorded in the event and the receiver\'s host decides when it lands, so an "immediate" ' +
-                'event can arrive one or more batches later just like the others. Omitting `activation` is not "default": ' +
-                'the runtime then sends "next_turn". A value outside those four is a usage error naming it, decided by ' +
-                "the tool before anything is sent",
+            activation: 'How the receiver should process it: "immediate" asks the receiver\'s host to preempt — a mid-turn ' +
+                "receiver has that turn end early (a tool still running is left in the background) and the event " +
+                "begins the next turn, while an idle receiver starts a new turn — so choose it deliberately; " +
+                '"next_turn" waits for the receiver\'s turn to end. "manual" only stores it for the receiver\'s user ' +
+                "to activate — activation is a user action on the receiver's host, not a tool the receiver's agent " +
+                "holds (in the omp host the user runs `/ace activate`, and `/ace pending` lists what is waiting) — " +
+                "and an unactivated manual event is dropped after the host's retention window rather than waiting " +
+                'forever. "default" leaves the choice to the receiver\'s own policy, which can land it a turn ' +
+                "later. The sender cannot observe which one actually happened: the requested value is recorded " +
+                "verbatim in the stored event, readable by anyone with broker access, but the delivered block does " +
+                'not repeat it, and the receiver\'s host decides when it lands, so an "immediate" event can arrive ' +
+                'one or more batches later just like the others. Omitting `activation` is not "default": the ' +
+                'runtime then sends "next_turn". A value outside those four is a usage error naming it, decided ' +
+                "by the tool before anything is sent",
             channel: "Where to publish: a channel name — one this session reads, or one ace_agents lists as live — or a " +
                 "list of channel names. Channel names are case-sensitive: `ace:noexcs:INBOX` is a different channel " +
                 "from `ace:noexcs:inbox`. Every name is a non-empty string, so pass a string, not a number or an " +
@@ -244,12 +270,14 @@ export const TOOL_TEXT = {
             "Rows are sorted by channel name, then by server name when one channel name is live on two servers: the " +
             "same peers come back in the same order on every call, and `renews_in` is not a sort key. The `channel` " +
             "value is the publish-ready target to pass as the ace_publish `channel`, and is always the row's first " +
-            "field — with more than one server it reads `<server>:<channel>`. `renews_in` is a liveness hint, not a " +
-            "countdown to expiry: it is recomputed at each call from the peer's lease, which the peer renews, so the " +
-            "same peer can read 67s on one call and 85s on the next, and a small number means its lease is close to " +
-            "lapsing rather than that it expires at a set time. `self` is `no` here because this session's own " +
+            "field — with more than one server it reads `<server>:<channel>`. `renews_in` is the peer's remaining " +
+            "lease at the moment of the call, not a countdown to expiry: it is recomputed at each call from a lease " +
+            "the peer renews, so the same peer can read 70s on one call and 73s on the next, and a small number means " +
+            "its lease is close to lapsing rather than that it expires at a set time. `self` is `no` here because this session's own " +
             "channel is not listed. `description` is the peer's self-description, quoted and never shortened: it is " +
-            "the peer's own words, not a value ACE checked. A row is a name, not a verified recipient — nothing " +
+            "the peer's own words, not a value ACE checked. The directory is broker storage like any other: anyone " +
+            "with access to a server's storage can read `<ns>:agents` and `<ns>:entry` directly, without credentials, " +
+            "so each entry's `cwd`, `host`, `ip` and `pid` are exposed there. A row is a name, not a verified recipient — nothing " +
             "checks that it names a live session, so a publish to a name no row lists is not the directory's " +
             "business and can reach nobody. The list is capped at `limit` rows (default 20, at most 50), so a large " +
             "directory is truncated rather than complete.",
