@@ -98,6 +98,7 @@ import {
 	resolveTarget,
 	SESSION_INBOX,
 	senderName,
+	serverForChannel,
 	shutdownAce,
 	subscriptionEndpoint,
 	TOOL_ERROR_TEXT,
@@ -253,6 +254,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let subscriptions: EndpointConfig[] = [];
 	/** The channel names behind {@link subscriptions}: what a publish target is checked against. */
 	let readChannels = new Set<string>();
+	/** Configured subscriptions whose server did not come up: listed so the gap is visible, not silent. */
+	let unavailableSubscriptions: Array<{ channel: string; server: string }> = [];
 	/** Lazily opened writer per server URL: publishing needs no configured list of publications. */
 	const addClients = new Map<string, RedisStreamsAddClient>();
 	let resolvedConfig: ResolvedAceConfig | undefined;
@@ -313,6 +316,17 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 		const only = activeServers.length === 1 ? activeServers[0] : undefined;
 		if (only !== undefined) return { server: only, channel: complete(name, only.server.namespace) };
+
+		// A full name carries its server in its namespace, so it needs no directory entry to be accepted;
+		// the directory is for short names, and for a namespace two live servers share.
+		const namespaceServer = serverForChannel({
+			servers: activeServers.map((active) => active.server),
+			channel: name,
+		});
+		const byNamespace = activeServers.find((active) => active.server === namespaceServer);
+		if (byNamespace !== undefined) {
+			return { server: byNamespace, channel: complete(name, byNamespace.server.namespace) };
+		}
 
 		const matches: Array<{ server: ActiveServer; channel: string }> = [];
 		for (const active of activeServers) {
@@ -434,6 +448,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 								...(sessionInbox === undefined
 									? {}
 									: { selfChannel: sessionInbox.channel ?? sessionInbox.name }),
+								unavailable: unavailableSubscriptions,
 							}),
 						},
 					],
@@ -619,6 +634,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		const derived: EndpointConfig[] = [];
 		activeServers = [];
 		readChannels = new Set();
+		unavailableSubscriptions = [];
 		sessionInbox = undefined;
 		for (const server of resolved.servers) {
 			const sender = senderName({
@@ -663,10 +679,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			derived.push(inbox);
 		}
 		// Subscribed channel names are read on the server they were configured for, with that server's
-		// sender as the reading identity; a subscription whose server did not come up is dropped.
+		// sender as the reading identity; a subscription whose server did not come up is dropped from the
+		// readers and recorded as unavailable, so `ace_channels` can show the gap instead of hiding it.
 		for (const subscribed of resolved.subscriptions) {
 			const owner = activeServers.find((active) => active.server.name === subscribed.server.name);
-			if (owner === undefined) continue;
+			if (owner === undefined) {
+				unavailableSubscriptions.push({ channel: subscribed.channel, server: subscribed.server.name });
+				continue;
+			}
 			readChannels.add(subscribed.channel);
 			derived.push(
 				subscriptionEndpoint({
@@ -760,6 +780,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		deadLetters = undefined;
 		subscriptions = [];
 		readChannels = new Set();
+		unavailableSubscriptions = [];
 		activeServers = [];
 		addClients.clear();
 		// The order (reader → directory entry and stream → client) and its best-effort error handling

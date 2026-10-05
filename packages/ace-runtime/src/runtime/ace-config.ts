@@ -371,6 +371,25 @@ export function resolveAceConfig(options: {
 }
 
 /**
+ * The server a **full** channel name belongs to, from the name alone: a server owns exactly one
+ * namespace, and the namespace is the name's first segment (`<ns>:<username>:<local>` everywhere).
+ *
+ * `undefined` for a short name — fewer than three segments carry no namespace to trust, so the caller
+ * falls back to the live directory — and for a namespace several servers share, where only the
+ * directory can say which one holds the session. Hosts call this before a directory lookup so a full
+ * name is accepted as written even when no session happens to be registered under it.
+ */
+export function serverForChannel(options: {
+	servers: readonly ResolvedServer[];
+	channel: string;
+}): ResolvedServer | undefined {
+	const segments = options.channel.split(":");
+	if (segments.length < 3) return undefined;
+	const matches = options.servers.filter((server) => server.namespace === segments[0]);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
  * Two entries pointing at the same Redis with different namespaces are *not* two servers: they are one
  * server seen twice, with two disjoint directories. That is legal (and useful for isolation), but it is
  * the one way to get "I registered, why can't they see me" — so say it out loud.

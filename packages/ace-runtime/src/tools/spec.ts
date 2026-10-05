@@ -92,8 +92,11 @@ export const TOOL_TEXT = {
 				'How the receiver should process it (default: next_turn): "immediate" acts now, "next_turn" acts at the end of the receiver\'s turn, "manual" only stores it for the receiver\'s user to activate; pass "default" to let the receiver decide',
 			channel:
 				"Where to publish: a channel name — one this session reads, or one ace_agents lists as live " +
-				"(a `<server>:` prefix picks the server when several are configured) — or a list of channel names. " +
-				"Names are not validated: a channel nobody subscribes to is accepted, and the event is stored there.",
+				"(when several servers are configured, a full `<namespace>:<username>:<name>` names its server in the " +
+				"first segment, and a `<server>:` prefix also picks one) — or a list of channel names. " +
+				"A full channel name is accepted as written and the event is stored there, whether or not anyone " +
+				"reads it; with several servers a short name must match a live channel in the directory, or the " +
+				"publish fails.",
 		},
 	},
 	agents: {
@@ -107,7 +110,7 @@ export const TOOL_TEXT = {
 	},
 	channels: {
 		description:
-			"List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out",
+			"List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). A configured subscription whose server did not come up is not read, and is listed after the rows as `unavailable: <channel> (server \"<name>\" did not come up)`. Broker settings are left out",
 		/**
 		 * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
 		 * has no directory tool), so it is a separate piece a host appends or drops. Compose with

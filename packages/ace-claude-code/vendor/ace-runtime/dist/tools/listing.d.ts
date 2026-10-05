@@ -21,6 +21,14 @@ export declare function describeEndpoint(endpoint: EndpointConfig): string;
  */
 export declare function formatChannelListing(subscriptions: readonly EndpointConfig[], options?: {
     selfChannel?: string;
+    /**
+     * Configured subscriptions whose server never came up: they are not read, but they are not
+     * silently absent either — one trailing line says which channel is missing and why.
+     */
+    unavailable?: readonly {
+        channel: string;
+        server: string;
+    }[];
 }): string;
 /**
  * The inputs every channel surface lists: the channels this session subscribes to, plus the inbox the

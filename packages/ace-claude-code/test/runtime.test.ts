@@ -447,7 +447,7 @@ describe("publish surface", () => {
 		expect(writer?.closed).toBe(true);
 	});
 
-	it("resolves a peer channel through the directories and rejects ambiguity across servers", async () => {
+	it("resolves a full channel name by its namespace when no directory entry names it", async () => {
 		const entries: Record<string, RegistryEntry[]> = { [URL_A]: [], [URL_B]: [] };
 		const cwd = configDirectory({
 			primary: { url: URL_A, namespace: NS_A },
@@ -470,20 +470,57 @@ describe("publish surface", () => {
 		const surface = handle.tools.publish;
 		if (!surface) throw new Error("no publish surface");
 
-		const peer = channelName(NS_A, USERNAME, "peer");
-		entries[URL_A] = [entry(peer)];
-		expect((await surface.resolve(peer)).server.name).toBe("primary");
+		// Both directories are empty: only the namespace in the name itself can pick the server, so the
+		// name is accepted as written rather than rejected for having no registered session under it.
+		const full = channelName(NS_A, USERNAME, "eval-sink");
+		await expect(surface.resolve(full)).resolves.toMatchObject({
+			server: { name: "primary", url: URL_A, namespace: NS_A },
+			channel: full,
+			sender: SENDER_A,
+		});
+		// A full name whose namespace no live server owns is still the directory's to settle, and empty
+		// directories settle it with a failure.
+		await expect(surface.resolve("zzz:tester:nobody")).rejects.toThrow(/no live channel matches/);
 
-		// The same channel live on two servers is ambiguous: guessing would address the wrong agent.
-		entries[URL_B] = [entry(peer)];
-		await expect(surface.resolve(peer)).rejects.toThrow(/matches 2 live channels/);
+		await handle.stop();
+	});
 
-		// The same prefix narrowed to one server still resolves.
-		entries[URL_B] = [];
-		await expect(surface.resolve("lan:tester:pe")).resolves.toMatchObject({ server: { name: "primary" } });
+	it("keeps short names and a shared namespace with the directories, ambiguity included", async () => {
+		const entries: Record<string, RegistryEntry[]> = { [URL_A]: [], [URL_B]: [] };
+		// Both servers own the same namespace, so a full name cannot pick one on its own: only the
+		// directory can, which is exactly where that ambiguity is supposed to stay.
+		const cwd = configDirectory({
+			primary: { url: URL_A, namespace: NS_A },
+			secondary: { url: URL_B, namespace: NS_A },
+		});
+		const { factory } = recordingStores({ entries });
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: quiet,
+			sessionId: SESSION_ID,
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+		const surface = handle.tools.publish;
+		if (!surface) throw new Error("no publish surface");
 
-		// Nothing live matches: the error names what was looked for.
-		await expect(surface.resolve("lan:tester:nobody")).rejects.toThrow(/no live channel matches/);
+		// A short (two-segment) name carries no namespace: it is looked up in the live directories.
+		await expect(surface.resolve("lan:tester")).rejects.toThrow(/no live channel matches/);
+		entries[URL_A] = [entry(channelName(NS_A, USERNAME, "peer"))];
+		await expect(surface.resolve("lan:tester")).resolves.toMatchObject({ server: { name: "primary" } });
+		// The full name is shared-namespace ambiguous too, and the directory settles it the same way.
+		await expect(surface.resolve(channelName(NS_A, USERNAME, "peer"))).resolves.toMatchObject({
+			server: { name: "primary" },
+		});
+		// The same prefix live on two servers is ambiguous: guessing would address the wrong agent.
+		entries[URL_B] = [entry(channelName(NS_A, USERNAME, "other"))];
+		await expect(surface.resolve("lan:tester")).rejects.toThrow(/matches 2 live channels/);
 
 		await handle.stop();
 	});

@@ -29,6 +29,7 @@ import {
 	resolveTarget,
 	SESSION_INBOX,
 	senderName,
+	serverForChannel,
 	shutdownAce,
 	subscriptionEndpoint,
 	TOOL_ERROR_TEXT,
@@ -275,6 +276,20 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		const only = activeServers.length === 1 ? activeServers[0] : undefined;
 		if (only !== undefined) {
 			return { server: only.server, channel: complete(name, only.server.namespace), sender: only.sender };
+		}
+		// A full name carries its server in its namespace, so it needs no directory entry to be accepted;
+		// the directory is for short names, and for a namespace two live servers share.
+		const namespaceServer = serverForChannel({
+			servers: activeServers.map((active) => active.server),
+			channel: name,
+		});
+		const byNamespace = activeServers.find((active) => active.server === namespaceServer);
+		if (byNamespace !== undefined) {
+			return {
+				server: byNamespace.server,
+				channel: complete(name, byNamespace.server.namespace),
+				sender: byNamespace.sender,
+			};
 		}
 		const matches: PublishedTarget[] = [];
 		for (const active of activeServers) {

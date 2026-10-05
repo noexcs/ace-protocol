@@ -8,6 +8,7 @@ import {
 	loadAceConfig,
 	parseAceConfig,
 	resolveAceConfig,
+	serverForChannel,
 	subscriptionEndpoint,
 } from "../../src/runtime/ace-config.ts";
 import { AceConfigError } from "../../src/runtime/endpoint-config.ts";
@@ -287,6 +288,36 @@ describe("resolveAceConfig", () => {
 		});
 
 		expect(resolveAceConfig({ cwd, env: {} }).warnings.join(" ")).toContain("cannot see each other");
+	});
+});
+
+describe("serverForChannel", () => {
+	const servers = [
+		{ name: "local", url: "redis://local", namespace: "ace" },
+		{ name: "second", url: "redis://second", namespace: "ace2" },
+	];
+
+	it("resolves a full channel name by its namespace, with no directory entry anywhere", () => {
+		expect(serverForChannel({ servers, channel: "ace:noexcs:eval-sink" })).toEqual(servers[0]);
+		expect(serverForChannel({ servers, channel: "ace2:someone-else:inbox" })).toEqual(servers[1]);
+	});
+
+	it("leaves a short name to the directory", () => {
+		expect(serverForChannel({ servers, channel: "eval-sink" })).toBeUndefined();
+		expect(serverForChannel({ servers, channel: "ace:eval-sink" })).toBeUndefined();
+	});
+
+	it("leaves a namespace no server owns to the directory too", () => {
+		expect(serverForChannel({ servers, channel: "ghost:noexcs:noop" })).toBeUndefined();
+	});
+
+	it("leaves a namespace two servers share ambiguous for the directory", () => {
+		const sharing = [
+			{ name: "a", url: "redis://a", namespace: "ace" },
+			{ name: "b", url: "redis://b", namespace: "ace" },
+		];
+
+		expect(serverForChannel({ servers: sharing, channel: "ace:noexcs:eval-sink" })).toBeUndefined();
 	});
 });
 

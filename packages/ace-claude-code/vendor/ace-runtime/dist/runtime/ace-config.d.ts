@@ -123,6 +123,19 @@ export declare function resolveAceConfig(options: {
     globalConfigPaths?: readonly string[];
 }): ResolvedAceConfig;
 /**
+ * The server a **full** channel name belongs to, from the name alone: a server owns exactly one
+ * namespace, and the namespace is the name's first segment (`<ns>:<username>:<local>` everywhere).
+ *
+ * `undefined` for a short name — fewer than three segments carry no namespace to trust, so the caller
+ * falls back to the live directory — and for a namespace several servers share, where only the
+ * directory can say which one holds the session. Hosts call this before a directory lookup so a full
+ * name is accepted as written even when no session happens to be registered under it.
+ */
+export declare function serverForChannel(options: {
+    servers: readonly ResolvedServer[];
+    channel: string;
+}): ResolvedServer | undefined;
+/**
  * The runtime endpoint for a subscribed channel: the address and the group are derived from the
  * channel name, so nothing here can disagree with what a peer computes.
  */

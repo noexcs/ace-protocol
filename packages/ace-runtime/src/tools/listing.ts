@@ -33,7 +33,14 @@ export function describeEndpoint(endpoint: EndpointConfig): string {
  */
 export function formatChannelListing(
 	subscriptions: readonly EndpointConfig[],
-	options: { selfChannel?: string } = {},
+	options: {
+		selfChannel?: string;
+		/**
+		 * Configured subscriptions whose server never came up: they are not read, but they are not
+		 * silently absent either — one trailing line says which channel is missing and why.
+		 */
+		unavailable?: readonly { channel: string; server: string }[];
+	} = {},
 ): string {
 	const line = (endpoint: EndpointConfig): string => {
 		const name = endpoint.channel ?? endpoint.name;
@@ -47,9 +54,13 @@ export function formatChannelListing(
 			`note=${endpoint.description ?? ""}`,
 		].join(" ");
 	};
+	const unavailable = (options.unavailable ?? []).map(
+		(entry) => `  unavailable: ${entry.channel} (server "${entry.server}" did not come up)`,
+	);
 	return [
 		"subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it); `note` runs to the end of the line",
 		...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
+		...unavailable,
 	].join("\n");
 }
 

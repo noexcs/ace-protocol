@@ -175,8 +175,9 @@ agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | pl
 
 1. `<server>:<channel>`（首段命中某台已激活 server 名、且名字里含冒号）→ 该 server，channel 为补全后的全名；
 2. 否则若本会话只在一台 server 上 → 就用它，短名补全为 `<ns>:<username>:<name>`；
-3. 否则把名字拿到每台 server 的目录里查（`resolveTarget`：精确名，或**唯一前缀**）→ 恰有一条命中才算成功；
-4. 多于一条 → 报 `targetAmbiguous` 并列出候选（不猜）；零条 → 报 `targetNotFound` 并列出在线候选。
+3. 否则若名字是**全名**（≥ 3 段）且首段（namespace）唯一命中一台在线 server → 该 server，名字原样使用（`serverForChannel`；全名自带 server，不查目录也接受）；
+4. 否则把名字拿到每台 server 的目录里查（`resolveTarget`：精确名，或**唯一前缀**）→ 恰有一条命中才算成功；
+5. 多于一条 → 报 `targetAmbiguous` 并列出候选（不猜）；零条 → 报 `targetNotFound` 并列出在线候选。
 
 短名补全（`complete`）：段数 ≥ 3 的名称原样使用，否则拼成 `<ns>:<username>:<name>`。
 
@@ -213,7 +214,7 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 |---|---|
 | `body` | `Event body; the peer's agent reads this` |
 | `activation` | `How the receiver should process it (default: next_turn): "immediate" acts now, "next_turn" acts at the end of the receiver's turn, "manual" only stores it for the receiver's user to activate; pass "default" to let the receiver decide` |
-| `channel` | ``Where to publish: a channel name — one this session reads, or one ace_agents lists as live (a `<server>:` prefix picks the server when several are configured) — or a list of channel names. Names are not validated: a channel nobody subscribes to is accepted, and the event is stored there.`` |
+| `channel` | ``Where to publish: a channel name — one this session reads, or one ace_agents lists as live (when several servers are configured, a full `<namespace>:<username>:<name>` names its server in the first segment, and a `<server>:` prefix also picks one) — or a list of channel names. A full channel name is accepted as written and the event is stored there, whether or not anyone reads it; with several servers a short name must match a live channel in the directory, or the publish fails.`` |
 
 ### 4.2 `ace_agents`
 
@@ -300,7 +301,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 |---|---|
 | 参数 | 无 |
 | 只读 | 是：从运行时已解析的订阅（派生的收件箱 + 配置的 `subscribe`）列举，不写、不改；运行时不存任何通道策略 |
-| 输出 | 一段 `subscribe:` 头 + 每通道一行 `channel=… transport=… activation=… self=… note=…`（`note` 为行尾原文，可空，故不引号）；`self=yes` 标本会话自己的通道 |
+| 输出 | 一段 `subscribe:` 头 + 每通道一行 `channel=… transport=… activation=… self=… note=…`（`note` 为行尾原文，可空，故不引号）；`self=yes` 标本会话自己的通道；行后按需追加 `unavailable: <channel> (server "<name>" did not come up)`——配置了订阅但该 server 没起来时不静默丢弃 |
 | 不含 | `config`/`options`（broker 细节）、spool（内部实现） |
 | `details` | `{ subscribe: [{ name, transport, description?, activation?, derived }], count }` |
 | target | 可发的目标就是频道名（配置的订阅名，或 `ace_agents` 列出的在线 channel）；没有单独的 `publish` 列表 |
@@ -308,7 +309,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 **工具描述（模型可见）**
 
 ```text
-List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out — address live peers with ace_agents.
+List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). A configured subscription whose server did not come up is not read, and is listed after the rows as `unavailable: <channel> (server "<name>" did not come up)`. Broker settings are left out — address live peers with ace_agents.
 ```
 
 （末尾指向 `ace_agents` 的一句只属于注册了该工具的宿主；不注册的宿主用 `channelsToolText({ agentsTool: false })` 去掉它。）

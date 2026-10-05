@@ -42,7 +42,7 @@ export declare const TOOL_TEXT: {
         };
     };
     readonly channels: {
-        readonly description: "List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out";
+        readonly description: "List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). A configured subscription whose server did not come up is not read, and is listed after the rows as `unavailable: <channel> (server \"<name>\" did not come up)`. Broker settings are left out";
         /**
          * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
          * has no directory tool), so it is a separate piece a host appends or drops. Compose with

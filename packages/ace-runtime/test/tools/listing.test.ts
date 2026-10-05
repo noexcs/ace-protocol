@@ -61,6 +61,19 @@ describe("formatChannelListing", () => {
 	it("says (none) when this session reads nothing", () => {
 		expect(formatChannelListing([])).toContain("(none)");
 	});
+
+	it("names each subscription whose server did not come up instead of dropping it silently", () => {
+		const rows = formatChannelListing([subscribed], {
+			unavailable: [{ channel: "ghost:noexcs:noop", server: "ghost" }],
+		}).split("\n");
+
+		// The channel rows keep their exact format…
+		expect(rows[1]).toBe(
+			"  channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note=the WSL agent",
+		);
+		// …and the dropped subscription is a line after them, one per dropped name.
+		expect(rows[2]).toBe('  unavailable: ghost:noexcs:noop (server "ghost" did not come up)');
+	});
 });
 
 describe("channelListingInput", () => {

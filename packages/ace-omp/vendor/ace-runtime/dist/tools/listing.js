@@ -38,9 +38,11 @@ export function formatChannelListing(subscriptions, options = {}) {
             `note=${endpoint.description ?? ""}`,
         ].join(" ");
     };
+    const unavailable = (options.unavailable ?? []).map((entry) => `  unavailable: ${entry.channel} (server "${entry.server}" did not come up)`);
     return [
         "subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it); `note` runs to the end of the line",
         ...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
+        ...unavailable,
     ].join("\n");
 }
 /**
