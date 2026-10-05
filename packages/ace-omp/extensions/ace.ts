@@ -88,10 +88,12 @@ import {
 	type Registration,
 	type RegistryEntry,
 	type ResolvedAceConfig,
-	registryMember,
 	resolveAceConfig,
 	resolveTarget,
 	SESSION_INBOX,
+	senderIdentity,
+	sessionInboxEndpoint,
+	shutdownAce,
 	TOOL_TEXT,
 	validateAceMessage,
 	withTrustPolicy,
@@ -258,15 +260,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.
-	/**
-	 * The identity this session publishes under: its directory member when it has one, otherwise the
-	 * same `<coding-agent>:<sessionId>` shape. A sender never needs to be registered to send, but when it
-	 * is, member and sender are the same value.
-	 */
-	function senderIdentity(): string {
-		return registration?.member ?? registryMember(codingAgentName(pi), sessionId ?? "(no session)");
-	}
-
 	/** Where a publish call goes: a configured channel, or a session the directory knows. */
 	type PublishTarget =
 		| { kind: "channel"; name: string; publisher: AcePublisher }
@@ -407,12 +400,20 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.publish,
 			label: "ACE Publish",
-			...buildPublishToolText(config, sessionId, senderIdentity()),
+			...buildPublishToolText(
+				config,
+				sessionId,
+				senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId }),
+			),
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {
 				// One identity everywhere: the same value as this session's directory member.
-				const sender = senderIdentity();
+				const sender = senderIdentity({
+					member: registration?.member,
+					codingAgent: codingAgentName(pi),
+					sessionId,
+				});
 				// The id is the runtime's: the caller reads it back from the result instead of choosing it.
 				// The sender reads like a directory member (`<sender>:<sessionId>`) and carries a
 				// self-description, so a receiver can show who and where it is without any lookup: the
@@ -568,13 +569,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					cwd: ctx.cwd,
 					url: resolved.registry.url,
 				});
-				const inbox: EndpointConfig = {
-					name: SESSION_INBOX,
-					transport: "redis-streams",
-					description: "this session's inbox (agent directory)",
-					config: { stream: registration.stream, group: registration.group, url: resolved.registry.url },
-					options: {},
-				};
+				const inbox = sessionInboxEndpoint(registration, resolved.registry.url);
 				sessionInbox = inbox;
 				subscriptions = [...resolved.subscribe, inbox];
 			} catch (error) {
@@ -620,7 +615,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			await runtime.start();
 			resolvedConfig = resolved;
 			pi.registerTool(publishTool(resolved));
-			const identity = senderIdentity();
+			const identity = senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId });
 			const publishing =
 				resolved.publish.length > 0 ? `; publish ${resolved.publish.map(describeEndpoint).join(", ")}` : "";
 			const disabled = resolved.disabled.length > 0 ? ` [disabled: ${resolved.disabled.join(", ")}]` : "";
@@ -658,7 +653,6 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			claimedRuntime = false;
 		}
 		const activeRegistry = registry;
-		const activeRegistration = registration;
 		const activeMemberPublishers = memberPublishers;
 		const active = runtime;
 		const activePublishers = Object.values(publishers);
@@ -671,9 +665,13 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		registry = undefined;
 		registration = undefined;
 		memberPublishers = undefined;
-		await active?.stop();
-		if (activeRegistry !== undefined && activeRegistration !== undefined) await activeRegistry.unregister();
-		await activeRegistry?.close();
+		// The order (reader → directory entry and stream → client) and its best-effort error handling
+		// live in the runtime, so every host gets it right by construction.
+		await shutdownAce({
+			runtime: active,
+			registry: activeRegistry,
+			onError: (step, error) => report(ctx, `[ace] ${step}: ${describeError(error)}`, "warning"),
+		});
 		if (activeMemberPublishers) {
 			for (const publisher of activeMemberPublishers.values()) await publisher.close();
 		}
@@ -777,7 +775,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							: []),
 					];
 				};
-				const header = `${senderIdentity()} (agent ${adapter.isRunning() ? "running" : "idle"})${
+				const header = `${senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId })} (agent ${adapter.isRunning() ? "running" : "idle"})${
 					resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
 				}`;
 				// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
@@ -802,7 +800,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				report(
 					ctx,
 					formatChannelReport({
-						identity: senderIdentity(),
+						identity: senderIdentity({
+							member: registration?.member,
+							codingAgent: codingAgentName(pi),
+							sessionId,
+						}),
 						agentState: adapter.isRunning() ? "running" : "idle",
 						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
 						subscriptions: listing?.subscriptions ?? [],

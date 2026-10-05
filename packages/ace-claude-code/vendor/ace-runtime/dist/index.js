@@ -25,6 +25,7 @@ export * from "./runtime/event-spool.js";
 export * from "./runtime/metrics.js";
 export * from "./runtime/pending-event-store.js";
 export * from "./runtime/seen-message-ids.js";
+export * from "./runtime/shutdown.js";
 export * from "./tools/listing.js";
 export * from "./tools/spec.js";
 export * from "./transport/in-memory-transport.js";

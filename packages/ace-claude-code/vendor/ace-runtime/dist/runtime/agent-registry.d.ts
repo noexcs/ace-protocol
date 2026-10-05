@@ -1,6 +1,25 @@
 import type { AceLogger } from "../logger.ts";
+import type { EndpointConfig } from "./endpoint-config.ts";
 /** Subscription name of the inbox the agent directory registers for this session. */
 export declare const SESSION_INBOX = "session-inbox";
+/**
+ * The subscription that reads the inbox the directory registered: the address peers are told to
+ * publish to. Every host wires this up, and it has to be the same shape everywhere — so it is built
+ * here from the {@link Registration} the registry returned, not spelled out per host.
+ */
+export declare function sessionInboxEndpoint(registration: Registration, url: string): EndpointConfig;
+/** What a sender is called when the host has no session id to name it by. */
+export declare const NO_SESSION_LABEL = "(no session)";
+/**
+ * The identity this session publishes under: its directory member when it has one, otherwise the same
+ * `<coding-agent>:<sessionId>` shape. A sender never needs to be registered to send, but when it is,
+ * member and sender are the same value — which is what lets a peer answer the session that wrote to it.
+ */
+export declare function senderIdentity(options: {
+    member?: string;
+    codingAgent: string;
+    sessionId?: string;
+}): string;
 /** Key layout, expiry and heartbeat, derived from `.ace.json` `registry.prefix`. */
 export declare const REGISTRY_DEFAULTS: {
     readonly prefix: "ace:agents";

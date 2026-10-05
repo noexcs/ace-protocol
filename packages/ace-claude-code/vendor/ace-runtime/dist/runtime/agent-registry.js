@@ -2,6 +2,30 @@ import { networkInterfaces, hostname as osHostname } from "node:os";
 import { formatSessionLabel } from "../utils.js";
 /** Subscription name of the inbox the agent directory registers for this session. */
 export const SESSION_INBOX = "session-inbox";
+/**
+ * The subscription that reads the inbox the directory registered: the address peers are told to
+ * publish to. Every host wires this up, and it has to be the same shape everywhere — so it is built
+ * here from the {@link Registration} the registry returned, not spelled out per host.
+ */
+export function sessionInboxEndpoint(registration, url) {
+    return {
+        name: SESSION_INBOX,
+        transport: "redis-streams",
+        description: "this session's inbox (agent directory)",
+        config: { stream: registration.stream, group: registration.group, url },
+        options: {},
+    };
+}
+/** What a sender is called when the host has no session id to name it by. */
+export const NO_SESSION_LABEL = "(no session)";
+/**
+ * The identity this session publishes under: its directory member when it has one, otherwise the same
+ * `<coding-agent>:<sessionId>` shape. A sender never needs to be registered to send, but when it is,
+ * member and sender are the same value — which is what lets a peer answer the session that wrote to it.
+ */
+export function senderIdentity(options) {
+    return options.member ?? registryMember(options.codingAgent, options.sessionId ?? NO_SESSION_LABEL);
+}
 /** Key layout, expiry and heartbeat, derived from `.ace.json` `registry.prefix`. */
 export const REGISTRY_DEFAULTS = {
     prefix: "ace:agents",
