@@ -30,6 +30,12 @@ export interface AceRuntimeOptions {
 	transports: Readonly<Record<string, Transport>>;
 	/** Fallback activation; ACE 0.1 requires `next_turn` when unset (RFC §8). */
 	defaultActivation?: ConcreteActivation;
+	/**
+	 * This session's own sender names, one per live server. A message whose `sender` is one of them was
+	 * published by this session itself and comes back as an echo: the injected block marks it `self: yes`
+	 * so a naive echo cannot turn into a self-loop.
+	 */
+	selfSenders?: readonly string[];
 	logger?: AceLogger;
 	metrics?: AceMetrics;
 	/** `(sender, id)` pairs remembered per subscription for deduplication (default 1024). */
@@ -68,6 +74,8 @@ export class AceRuntime {
 	private readonly dispatcher: EventDispatcher;
 	private readonly seenBySubscription = new Map<string, SeenMessageIds>();
 	private readonly dedupCapacity: number;
+	/** This session's own sender names (see {@link AceRuntimeOptions.selfSenders}). */
+	private readonly selfSenders: ReadonlySet<string>;
 	private readonly spool: EventSpool | undefined;
 	private readonly now: () => number;
 	private started = false;
@@ -117,6 +125,7 @@ export class AceRuntime {
 		this.logger = options.logger ?? {};
 		this.metrics = options.metrics ?? new AceMetrics();
 		this.dedupCapacity = options.dedupCapacity ?? 1024;
+		this.selfSenders = new Set(options.selfSenders ?? []);
 		this.now = options.now ?? (() => Date.now());
 		if (options.spool) {
 			const { rule, ...spoolOptions } = options.spool;
@@ -143,7 +152,13 @@ export class AceRuntime {
 		});
 		this.restorePendingEvents();
 
-		this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger, this.metrics);
+		this.dispatcher = new EventDispatcher(
+			this.engine,
+			this.pendingEventStore,
+			this.logger,
+			this.metrics,
+			this.selfSenders,
+		);
 		// Failures arrive after the fact and without saying which event was in flight, so they are
 		// counted at runtime scope rather than charged to a subscription.
 		this.engine.onRunError?.((error) => this.recordRunFailure(error));
@@ -255,6 +270,7 @@ export class AceRuntime {
 		await this.engine.inject(event.message, "next_turn", {
 			subscription: event.subscriptionName,
 			...(origin === undefined ? {} : { address: endpointAddress(origin) }),
+			...(this.selfSenders.has(event.message.sender) ? { self: true } : {}),
 		});
 	}
 

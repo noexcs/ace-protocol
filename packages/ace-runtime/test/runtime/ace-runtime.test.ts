@@ -330,4 +330,56 @@ describe("AceRuntime lifecycle and configuration", () => {
 
 		expect((engine.injections[0]?.message as AceMessage).futureField).toBe("value");
 	});
+
+	it("marks an event from one of this session's own senders as self (defect: no self marker)", async () => {
+		const transport = new InMemoryTransport();
+		const engine = new FakeAgentEngine();
+		const input: EndpointConfig = { name: "inbox", transport: "memory", config: {}, options: {} };
+		const runtime = new AceRuntime({
+			engine,
+			subscribe: [input],
+			transports: { [input.name]: transport },
+			selfSenders: ["ace:ana:oh-my-pi:sess"],
+		});
+		await runtime.start();
+
+		await runtime.handleRawMessage({ ...validRaw, sender: "ace:ana:oh-my-pi:sess", id: "evt_self" }, input);
+		await runtime.handleRawMessage({ ...validRaw, id: "evt_peer" }, input);
+
+		expect(engine.injections[0]?.context?.self).toBe(true);
+		expect(engine.injections[1]?.context?.self).toBeUndefined();
+	});
+
+	it("echoes a self-published event back on every channel the session reads", async () => {
+		// Bug 1 of the seventh open round: the report read "self-publishes to `ace:noexcs:inbox` produced
+		// ZERO self-echoes while `ace:noexcs:team` echoed". No channel selects for a drop — the inbox event
+		// simply arrived several turns later (the same evaluation's transcripts show it did arrive, and the
+		// runtime does not filter by channel). This test pins the invariant that made it impossible: one
+		// runtime, two subscriptions, the same self-sent event delivered on each, both injected and both
+		// marked `self`, because de-duplication is per subscription and the marker is per message.
+		const engine = new FakeAgentEngine();
+		const inbox: EndpointConfig = { name: "session-inbox", transport: "memory", config: {}, options: {} };
+		const team: EndpointConfig = { name: "ace:ana:team", transport: "memory", config: {}, options: {} };
+		const transports = { [inbox.name]: new InMemoryTransport(), [team.name]: new InMemoryTransport() };
+		const runtime = new AceRuntime({
+			engine,
+			subscribe: [inbox, team],
+			transports,
+			selfSenders: ["ace:ana:oh-my-pi:sess"],
+		});
+		await runtime.start();
+
+		const selfPublished = { ...validRaw, sender: "ace:ana:oh-my-pi:sess", id: "evt_self" };
+		const first = await runtime.handleRawMessage(selfPublished, inbox);
+		const second = await runtime.handleRawMessage(selfPublished, team);
+
+		expect(first.disposition).toBe("injected");
+		expect(second.disposition).toBe("injected");
+		expect(engine.injections.map((injection) => injection.message.id)).toEqual(["evt_self", "evt_self"]);
+		expect(engine.injections.map((injection) => injection.context?.self)).toEqual([true, true]);
+		expect(engine.injections.map((injection) => injection.context?.subscription)).toEqual([
+			"session-inbox",
+			"ace:ana:team",
+		]);
+	});
 });

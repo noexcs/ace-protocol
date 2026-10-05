@@ -31,11 +31,25 @@ export declare function withTrustPolicy(systemPrompt: string): string;
  *
  * - `sender`, as the sender wrote it (peers that construct theirs as a directory member of
  *   `<agent>:<sessionId>` can be matched against `ace_agents` by eye);
- * - `sender description`, when the sender supplied one;
+ * - `self: yes`, when this session published the event itself ({@link InjectionContext.self}): the
+ *   block is its own event echoed back by a channel it reads, not a peer's message;
+ * - `sender description`, when the sender supplied one and the event is not this session's own echo:
+ *   on a self-echo the description is this session's own location, so repeating it tells the reader
+ *   nothing it does not already know (the `self: yes` line already says the block is its own);
  * - `stream`, from {@link InjectionContext}: the Redis stream key the event was read from (the
  *   subscription name when the transport exposes no address). A sender's target name lives in the sender's
  *   own configuration, so it is not what a receiver can name;
  * - `id`, the runtime-generated message id.
+ *
+ * The body is separated from the header by a fixed `<ace_body>` line, not by a blank line. A body is
+ * opaque to ACE and may itself contain lines shaped like `sender:` or `stream:` — the two-real-session
+ * evaluation sent exactly such a body. A blank line left "the header" and "the body" distinguishable
+ * only to a reader that already knew the header's length; with the fence, the header is exactly the
+ * lines between `<ace_event>` and the **first** `<ace_body>`, and everything from the line after it to
+ * `</ace_event>` is the body, verbatim. A later `<ace_body>` inside the body is body text like any
+ * other (the first one wins), so no body line can be read as a header, whatever it says. The body
+ * stays byte-for-byte what the sender wrote — the fence adds a boundary, it does not indent, trim or
+ * re-wrap anything.
  *
  * Everything in the header is the sender's own account or our own bookkeeping; it is display-only and
  * never an authorization.

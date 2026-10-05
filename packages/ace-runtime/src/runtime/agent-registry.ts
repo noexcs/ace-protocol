@@ -24,19 +24,48 @@ export interface RegistryEntry {
 }
 
 /**
- * Whether anything is *known* to read `channel`: a live directory entry (a session's own channel), or
- * one of the channels the calling session itself subscribes to. Only those two are knowable — another
- * session's configured subscriptions live in its own file — so a `false` here means "no subscriber we
- * know of", which is what a mistyped target looks like. It is not a delivery precondition: a channel is a
- * name, and publishing to a name that has no subscriber yet is legal.
+ * What is known about who reads `channel`, as **two separate checks**, each named for what it
+ * actually tests, rather than one summary word:
+ *
+ * - `peerNamed` — a live directory entry names the channel and it is not one of this session's own
+ *   channels: some *other* session's own channel (its sender name) equals it. This is a name
+ *   equality check, not a subscription audit: a peer that merely subscribes to the channel — a topic
+ *   reader — is not discoverable, because its subscriptions live in its own `.ace.json`.
+ *   `peerNamed=no` therefore means "no live session is named by this channel", never "nobody reads
+ *   it".
+ * - `selfReads` — *this* session reads the channel: it is one of this session's own sender channels
+ *   (one per live server) or one of its configured subscriptions. `selfReads=no` never means the
+ *   channel is exclusive either; a peer that subscribes but is not named by it still reads it.
+ *
+ * `own` is the channel names this session's own sender carries, one per server it is live on. The
+ * directory lists this session's own registration too, so without `own` a publish to one's own inbox
+ * would count that entry and answer `peerNamed=true` — a "peer" that is the publisher itself. Only
+ * the two sources are knowable, so publishing to a name neither check knows is legal (a channel is a
+ * name, not a mailbox) but is what a typo looks like. The single word this replaces collapsed both
+ * checks into `peer`/`self`/`none` and so overclaimed each: `peer` read as "a peer subscribed",
+ * `self` as "the publisher is the only reader", `none` as "nobody reads it" — none of which the
+ * check could establish.
  */
-export function hasKnownSubscriber(options: {
+export interface ReaderFacts {
+	/** A live directory entry names the channel — some other session's own channel equals it. */
+	readonly peerNamed: boolean;
+	/** This session reads the channel (its own sender channel, or a configured subscription). */
+	readonly selfReads: boolean;
+}
+
+export function readerFactsOf(options: {
 	channel: string;
 	live: readonly RegistryEntry[];
 	subscriptions: readonly string[];
-}): boolean {
-	const { channel, live, subscriptions } = options;
-	return live.some((entry) => entry.channel === channel) || subscriptions.includes(channel);
+	/** This session's own channel names (its sender, one per live server), excluded from the peer test. */
+	own?: readonly string[];
+}): ReaderFacts {
+	const { channel, live, subscriptions, own = [] } = options;
+	const isOwn = own.includes(channel);
+	return {
+		peerNamed: !isOwn && live.some((entry) => entry.channel === channel),
+		selfReads: isOwn || subscriptions.includes(channel),
+	};
 }
 
 /**
@@ -248,6 +277,28 @@ export function describeSender(facts: HostFacts): string {
 export type TargetResolution =
 	| { ok: true; entry: RegistryEntry }
 	| { ok: false; reason: "not-found" | "ambiguous"; candidates: string[] };
+
+/** The description field that names the coding agent a channel runs (`describeSender` writes it first). */
+const CODING_AGENT_FIELD = "agent=";
+
+/**
+ * The coding agent a directory entry says it runs: the first token of its `agent=…` self-description
+ * field (`agent=oh-my-pi 18.5.0 | session=… | …`). `undefined` when the entry carries no such field.
+ *
+ * This is what `ace_agents`' `agent` filter means. A channel name is not the place to look: it carries
+ * the coding agent too, but only as the third segment of a name that also carries the namespace and
+ * the user, and a display or `<server>:` prefix can sit in front of it.
+ */
+export function codingAgentOf(entry: RegistryEntry): string | undefined {
+	for (const field of entry.description.split("|")) {
+		const trimmed = field.trim();
+		if (!trimmed.startsWith(CODING_AGENT_FIELD)) continue;
+		const value = trimmed.slice(CODING_AGENT_FIELD.length).trim();
+		const space = value.indexOf(" ");
+		return space === -1 ? value : value.slice(0, space);
+	}
+	return undefined;
+}
 
 /**
  * Resolve a `target` against the live channels.

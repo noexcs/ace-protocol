@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentRegistry,
 	type AgentRegistryStore,
+	codingAgentOf,
 	type RegistryEntry,
 	resolveTarget,
 } from "../../src/runtime/agent-registry.ts";
@@ -239,5 +240,36 @@ describe("resolveTarget", () => {
 	it("does not treat a partial session id as a prefix of another agent", () => {
 		expect(resolveTarget(entries, `ace:noexcs:oh-my-pi:01a102b6`).ok).toBe(true);
 		expect(resolveTarget(entries, "ace:noexcs:oh-my-pi:zzz")).toMatchObject({ ok: false, reason: "not-found" });
+	});
+});
+
+/**
+ * What `ace_agents`' `agent` filter means. It used to be a prefix of the *channel name* (`oh-my-pi:`),
+ * which after multi-server rows gained their `<server>:` prefix — and even before, because the coding
+ * agent is never the first segment — matched nothing, so a filtered call was indistinguishable from an
+ * empty directory.
+ */
+describe("codingAgentOf", () => {
+	const entry = (channel: string, description: string): RegistryEntry => ({ channel, description, expiresAt: 0 });
+
+	it("reads the agent= field of the self-description, not the channel name", () => {
+		const registered = entry(
+			`ace:noexcs:oh-my-pi:${sessionId}`,
+			"agent=oh-my-pi | session=01a102b8 | cwd=/w | host=h | platform=darwin-arm64 | pid=1",
+		);
+
+		expect(codingAgentOf(registered)).toBe("oh-my-pi");
+		// The comparison the filter used to make can never be satisfied by a real row: the channel name
+		// carries the coding agent as its third segment, and a `<server>:` prefix may sit in front of it.
+		expect(registered.channel.startsWith("oh-my-pi:")).toBe(false);
+		expect(`local:${registered.channel}`.startsWith("oh-my-pi:")).toBe(false);
+	});
+
+	it("keeps a version suffix out of the coding agent", () => {
+		expect(codingAgentOf(entry("ace:noexcs:pi:sess", "agent=pi 1.2.3 | session=sess"))).toBe("pi");
+	});
+
+	it("is undefined when the entry carries no agent field", () => {
+		expect(codingAgentOf(entry("ace:noexcs:pi:sess", "session=sess | cwd=/w"))).toBeUndefined();
 	});
 });

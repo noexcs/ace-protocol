@@ -65,7 +65,7 @@ describe("manager rows", () => {
 					options: {},
 				},
 			],
-			selfChannel: "session-inbox",
+			selfChannels: ["session-inbox"],
 		});
 
 		expect(items.map((item) => `${item.label} → ${item.description}`)).toEqual([
@@ -75,10 +75,16 @@ describe("manager rows", () => {
 	});
 });
 
+/** A registered tool as these tests reach it: the handler directly, with arguments of any shape. */
+interface RegisteredTool {
+	name: string;
+	execute: (toolCallId: string, params: unknown) => Promise<unknown>;
+}
+
 /** The slice of `ExtensionAPI` the extension touches; nothing else is reached in these tests. */
 function fakeExtensionApi() {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-	const tools: string[] = [];
+	const tools: RegisteredTool[] = [];
 	const commands: Array<{
 		name: string;
 		handler: (args: string, ctx: unknown) => Promise<void>;
@@ -88,13 +94,14 @@ function fakeExtensionApi() {
 		handlers,
 		tools,
 		commands,
-		// The factory uses exactly these members; the cast stands in for the rest of ExtensionAPI.
+		// The factory uses exactly these members; the cast stands in for the rest of ExtensionAPI, so the
+		// recorded tool definitions keep the loose handler signature this file calls them with.
 		api: {
 			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 				handlers.set(event, handler);
 				return () => {};
 			},
-			registerTool: (definition: { name: string }) => void tools.push(definition.name),
+			registerTool: (definition: RegisteredTool) => void tools.push(definition),
 			registerCommand: (
 				name: string,
 				definition: { handler: (args: string, ctx: unknown) => Promise<void>; getArgumentCompletions?: unknown },
@@ -176,5 +183,108 @@ describe("system prompt policy", () => {
 			// Subagent sessions run no ACE runtime of their own.
 			expect(handler?.({ systemPrompt: "BASE" }, fakeContext("sub", dir).ctx)).toBeUndefined();
 		});
+	});
+});
+
+describe("tool arguments", () => {
+	/** The registered handler named `name`, called the way the host calls it. */
+	function tool(name: string, tools: RegisteredTool[]) {
+		const found = tools.find((entry) => entry.name === name);
+		if (found === undefined) throw new Error(`${name} was not registered`);
+		return found;
+	}
+
+	it("refuses an argument a tool does not declare, instead of ignoring it", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		// The handler sees the raw argument object, so an undeclared key is visible here: the schemas leave
+		// `additionalProperties` open for exactly this reason (oh-my-pi deletes unrecognized keys before the
+		// tool runs when it is closed, which is the silent no-op this check replaced).
+		await expect(
+			tool("ace_publish", tools).execute("call_1", { body: "hi", channel: "outbox", bogus: true }),
+		).rejects.toThrow('ace_publish does not take "bogus"; it takes `body`, `channel`, `activation`');
+		await expect(tool("ace_channels", tools).execute("call_1", { foo: 1 })).rejects.toThrow(
+			'ace_channels does not take "foo"; it takes no arguments',
+		);
+		await expect(tool("ace_agents", tools).execute("call_1", { bogus: true })).rejects.toThrow(
+			'ace_agents does not take "bogus"; it takes `agent`, `limit`',
+		);
+	});
+
+	it("refuses a value a coercing host could have handed through, naming it", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		// `body` and `channel` declare no type, so the host has nothing to convert and the raw value arrives:
+		// the tool refuses it instead of a number becoming a channel name.
+		await expect(tool("ace_publish", tools).execute("call_1", { body: "hi", channel: 42 })).rejects.toThrow(
+			"ace_publish `channel` must be a non-empty string or an array of non-empty strings, received 42",
+		);
+		await expect(tool("ace_publish", tools).execute("call_1", { body: "hi", channel: "bad name" })).rejects.toThrow(
+			'ace_publish `channel` "bad name" contains interior whitespace or a control character, which a channel name cannot carry',
+		);
+	});
+
+	it("refuses a wrong-typed ace_agents argument instead of coercing it, naming the value", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		// `agent` and `limit` declare no type, like `ace_publish`'s `body`/`channel`, so the host has nothing to
+		// convert: `agent: 5` used to arrive as the filter "5" (an empty directory) and `limit: true`/`limit: "5"`
+		// as 1/5. The tool refuses each and names the value.
+		await expect(tool("ace_agents", tools).execute("call_1", { agent: 5 })).rejects.toThrow(
+			"ace_agents `agent` must be a string, received 5",
+		);
+		await expect(tool("ace_agents", tools).execute("call_1", { limit: true })).rejects.toThrow(
+			"ace_agents `limit` must be an integer, received true",
+		);
+		await expect(tool("ace_agents", tools).execute("call_1", { limit: "5" })).rejects.toThrow(
+			'ace_agents `limit` must be an integer, received "5"',
+		);
+		// A blank filter is no filter, not a usage error: the call passes validation and only then finds no
+		// directory registered in this test session.
+		await expect(tool("ace_agents", tools).execute("call_1", { agent: "" })).rejects.toThrow(/no agent directory/);
+	});
+
+	it("answers a missing body and a bad activation with its own sentence, not the host's", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		// Item 4: `body` is declared optional, so the host's JSON-schema validator no longer rejects the
+		// missing key in its own wording with the whole tool document echoed back.
+		await expect(tool("ace_publish", tools).execute("call_1", { channel: "outbox" })).rejects.toThrow(
+			"ace_publish `body` must contain at least one non-whitespace character, received undefined",
+		);
+		// `activation` declares no enum, so a value outside the four reaches the tool and is refused here.
+		await expect(
+			tool("ace_publish", tools).execute("call_1", { body: "hi", channel: "outbox", activation: "later" }),
+		).rejects.toThrow(
+			'ace_publish `activation` must be one of "immediate", "next_turn", "manual", "default", received "later"',
+		);
+	});
+
+	it("reports an all-failed publish as the same field list, not a sentence", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		// No directory is registered in this test session, so the only target fails at resolution — the same
+		// shape an unreachable peer gives. Defect 3: the thrown text is the documented field list, with the
+		// header's `delivered=0` and a `status=failed` row per input, not a `nothing published: …` sentence.
+		const message = await tool("ace_publish", tools)
+			.execute("call_1", { body: "hi", channel: "outbox" })
+			.then(
+				() => undefined,
+				(error: unknown) => (error instanceof Error ? error.message : String(error)),
+			);
+
+		const head = message?.split("\n")[0] ?? "";
+		expect(head).toContain("targets=1 delivered=0 failed=1 duplicates=0");
+		expect(message).toContain("target=outbox status=failed error=");
+		expect(message).not.toContain("nothing published");
+		// Bug 2: no event was created, so the header carries `event=none`, not an id and an empty `sender=`.
+		expect(head).toContain("event=none");
+		expect(head).not.toContain("id=");
+		expect(head).not.toContain("sender=");
 	});
 });

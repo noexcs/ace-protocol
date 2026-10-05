@@ -23,7 +23,9 @@ export declare class EventDispatcher {
     private readonly pendingEvents;
     private readonly logger;
     private readonly metrics;
-    constructor(engine: AgentEngine, pendingEvents: PendingEventStore, logger?: AceLogger, metrics?: AceMetrics);
+    /** This session's own sender names: a message from one of them is its own event echoed back. */
+    private readonly selfSenders;
+    constructor(engine: AgentEngine, pendingEvents: PendingEventStore, logger?: AceLogger, metrics?: AceMetrics, selfSenders?: ReadonlySet<string>);
     dispatch(message: AceMessage, subscriptionName: string, activation: ConcreteActivation, 
     /** Address the event arrived on, for the header; the subscription name is already here. */
     address?: string): Promise<DispatchResult>;

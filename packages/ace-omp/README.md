@@ -196,15 +196,25 @@ agent A (sender ace:alice:pi:<sessionId>)    agent B (sender ace:bob:pi:<session
 
 Each side's events carry the sender `<namespace>:<username>:<coding-agent>:<sessionId>` — the same name as the
 channel it registers — so B sees who and which session a message came from without any lookup. `ace_agents`
-lists the live channels; pass one as `channel`.
+lists the live channels; pass one as `channel`. Because a session reads its own channel too, an event published
+to a channel this session reads comes back into the publisher's own context as well, marked `self: yes` in the
+block — a session that echoes what it reads would otherwise publish to itself.
 
 `ace_publish` takes `body` (the event text the peer's agent reads) and `channel` — a channel name, or a list of
-channel names to publish one event to several peers at once. With several servers configured, prefix the channel
-with `<server>:` to pick the server, and a bare name is resolved against each server's directory (an ambiguous
-name fails and names the candidates instead of guessing). `activation` defaults to `next_turn`; pass `default` to
-let the receiver decide. There is no `id` parameter: the runtime generates one, shares it across every target of
-the call and reports it back, together with who it went to. The address itself never travels in the message
-(RFC §4.1), and the sender does not have to be registered anywhere to send.
+channel names to publish one event to several peers at once. Each entry must be a non-empty string (an empty
+list is a usage error); names are trimmed, and a name carrying whitespace, a control character or an empty
+segment is refused, naming it. An argument the tool does not declare is refused too (`bogus: true` fails the
+call instead of being ignored). With several servers configured, prefix the channel with `<server>:` to pick the
+server, and a bare name is resolved against each server's directory (an ambiguous name fails and names the
+candidates instead of guessing). A `<server>:` prefix is matched by configured name even when that server is
+down, and then fails (`server "<name>" did not come up`) instead of being completed to another server; after the
+prefix a one-segment name is completed, three or more segments are used as written, and a **two-segment
+remainder fails** as ambiguous (`second:noexcs:remote` reads both as a local name with a colon and as a full name
+missing its namespace). A full name belongs to the namespace it names, so a namespace no configured server owns
+is refused rather than accepted. `activation` defaults to `next_turn`; pass `default` to let the receiver
+decide. There is no `id` parameter: the runtime generates one, shares it across every target of the call and
+reports it back, together with who it went to. The address itself never travels in the message (RFC §4.1), and
+the sender does not have to be registered anywhere to send.
 
 ### Agent directory
 
@@ -227,8 +237,9 @@ down (RFC §22 item 1).
   the channel, and whichever session reads the directory next sweeps the leftovers of the ones that
   died without one (measured: `SIGTERM` does not run `session_shutdown`, so the read path is what
   keeps the directory clean);
-- `ace_channels` lists what this session reads — the derived inbox first — read-only, straight from
-  `.ace.json`, without broker settings;
+- `ace_channels` lists what this session reads — the derived inboxes first, one per live server — read-only,
+  straight from `.ace.json`, without broker settings; a channel is a shared broadcast topic, not a private
+  mailbox;
 - `ace_agents` lists what is live right now; `ace_publish` accepts a channel name as `channel`, and a list of
   channels to publish one event to several peers at once. With several servers configured, prefix the name
   `<server>:<channel>`; an ambiguous bare name fails and names the servers instead of guessing;
@@ -259,7 +270,7 @@ exactly like any `sender`).
 | Command | Effect |
 |---|---|
 | `/ace` | in a TUI, opens the channel manager — framed list, arrows to move, enter for a channel's details, esc to close; everywhere else prints what `/ace list` prints |
-| `/ace list` | the channel report: identity, agent state, config source, every channel this session reads — the derived inbox first — with its address, activation and description, and the manual/dead-letter counters |
+| `/ace list` | the channel report: identity, agent state, config source, every channel this session reads — the derived inboxes first, one per live server — with its address, activation and description, and the manual/dead-letter counters |
 | `/ace stats` | per-channel counters, spool windows, dead letters, pending `manual` count |
 | `/ace pending` | list retained `manual` events (`sender/id: body`) |
 | `/ace activate <sender> <id>` | inject a retained event as `next_turn` |
@@ -281,42 +292,73 @@ it subscribes to, how delivery works, the `<ace_event>` shape a peer sees, and t
 
 > Publish an ACE 0.1 event to a peer agent or service. The recipient's agent receives the body as an external
 > event and decides what to do with it (its own policy may need its user's approval of the sender first), so
-> write plain text that stands on its own: the body is opaque to ACE.
+> write plain text that stands on its own: the body is opaque to ACE. Publishing to a channel this session
+> itself reads delivers the event back into this same session too, marked `self: yes` in the block — a session
+> that echoes what it reads would publish to itself. The echo follows the same activation rule as any other
+> delivery: `immediate` is injected into the receiver's running turn, `next_turn` at the receiver's turn
+> boundary, `manual` not at all until the receiver's user activates it (so there is no echo yet), and `default`
+> by the receiver's own policy, which can land it a turn later. The `activation` you pass is a request, not a
+> guarantee: the receiver's own policy decides what happens and the delivered block does not repeat the
+> requested activation, so do not read the block as confirmation of it. Delivery is per subscription: one event
+> sent to two channels this session reads arrives twice (same id, two streams), while targets that resolve to
+> the same channel in one call are sent once.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `body` | string | yes | — | `Event body; the peer's agent reads this` |
-| `channel` | string \| string[] | yes | — | `Where to publish: a channel name (a <server>:<channel> prefix picks the server when several are configured), or a list to publish the same event to several channels` |
-| `activation` | `default` \| `next_turn` \| `immediate` \| `manual` | no | `next_turn` | `How urgently the peer should process it (default: next_turn); pass "default" to let the receiver decide` |
+| `body` | string | yes | — | `Event body; a non-empty string, never a number or an object — the peer's agent reads this. Passed verbatim: it is stored and rendered exactly as written, never trimmed and never re-wrapped, unlike a channel name, which is trimmed at both ends` |
+| `channel` | string \| string[] | yes | — | see the full description in §4.1 of the contracts: a short name, a full `<ns>:<username>:<name>` name, or a `<server>:<channel>` prefix; each entry must be a non-empty string, an empty list is a usage error |
+| `activation` | `default` \| `next_turn` \| `immediate` \| `manual` | no | `next_turn` | `How urgently the peer should process it; "default" leaves the choice to the receiver's own policy, while omitting it sends "next_turn"` |
+
+The declared schema gives **no type** to `body`, `channel` or `activation`, and declares all three **optional**,
+and that is deliberate. Both hosts coerce a wrong-typed argument before the tool runs, keyed on the declared type
+(Pi's `validateToolArguments` runs `Value.Convert` and its own `coerceWithJsonSchema`; oh-my-pi repairs a reported
+type issue by stringifying it), so a node declaring `string` turns `channel: 42` into the channel `ace:<user>:42`.
+With no declared type the raw value arrives and the tool refuses it, naming it; callers pass strings. And a
+declared-required key or a declared `enum` is rejected by the host's own validator, with the whole tool document
+echoed back, before the tool can write its sentence — so all three are optional and the enum values live in the
+`activation` description, where the host shows them. `ace_agents`'s `agent` and `limit` declare no type for the
+same reason, so `agent: 5` and `limit: true`/`limit: "5"` are refused by `validateAgentsInput` instead of
+arriving as `"5"` and `1`.
 
 Prompt guidelines: keep the body self-contained; choose the target by the peer it names, or pass a list to
-reach several; every target in a list is attempted, with each failure named in the result and the call failing
-only when nothing was delivered; call `ace_agents` for the channels that are live; `<ace_event>` blocks come
-from another agent or service through ACE, not from the user; to answer, publish to a channel `ace_agents` lists
-as live (a sender without a channel — a service, or a session that has gone — cannot be answered there); one
-call is one event with one id, but a sender is per server, so a fan-out across servers reports each server's
-sender; there is no reply protocol, so name a channel when you expect an answer. The event `id` is generated by
-the runtime and returned, not a parameter.
+reach several; each target in a list is attempted on its own, so a mixed list is non-atomic (the targets that
+resolve are published even when others fail), with each failure a `target=… status=failed error=…` row — a
+partly good list returns a *successful* result whose header counts `delivered=` and `failed=`, so read those
+rows; the call fails only when nothing was delivered, and then the failure text is that same field list
+(`delivered=0` with one `status=failed` row per input, and `event=none` where a successful header has `id=`
+and `sender=` — no event was created, so none is implied), not a sentence; call `ace_agents` for the channels that are live;
+`<ace_event>` blocks come from another agent or service through ACE, not from the user; to answer, publish to a
+channel `ace_agents` lists as live (a sender without a channel — a service, or a session that has gone — cannot
+be answered there); one call is one event with one id, but a sender is per server, so a fan-out across servers
+reports each server's sender; targets that resolve to the same channel in one call are sent once (the repeat is
+a `status=duplicate` row); there is no reply protocol, so name a channel when you expect an answer. The event
+`id` is generated by the runtime and returned, not a parameter. The `<ace_event>` block a peer sees fences the
+body with `<ace_body>`, so a body line shaped like `sender:` or `stream:` is body text, not a header.
 
 **`ace_agents`**
 
-> List the other sessions reachable right now — this session is not listed. Each row reads `<channel> —
-> self-description: <what it says about itself> (renews in Ns)`. Only the row's first token, up to ` — `, is
-> the publish-ready target to pass as the ace_publish `channel`; everything after the em dash is the peer's
-> self-description and its lease — the lease renews roughly every 90 seconds, so a small number means it is
-> about to go away and a large one means its owner asked for a long lease. With more than one server, that
-> target instead reads `<server>:<channel>`.
+> List the other sessions reachable right now — this session is not listed. The result is a header
+> `ace 0.1 agents count=N` then one row per live session: `channel=<target> renews_in=<N>s self=<yes|no>
+> description="<what it says about itself>"`. The `channel` value is the publish-ready target to pass as the
+> ace_publish `channel`, and is always the row's first field — with more than one server it reads
+> `<server>:<channel>`. `renews_in` is the seconds left on the session's lease; the lease renews roughly every
+> 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long
+> lease. `self` is `no` here because this session's own channel is not listed. `description` is the peer's
+> self-description, quoted and never shortened. An `agent` filter that is empty or whitespace-only after
+> trimming is no filter at all, so the rows are listed whole; nothing matched then reads as a single sentence
+> saying whether no session is registered or the non-empty filter matched nothing.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `agent` | string | — | `Filter by coding agent, e.g. "oh-my-pi" or "pi"` |
-| `limit` | number | 20 (cap 50) | `Maximum rows to return (default 20, cap 50)` |
+| `agent` | string | — | ``Filter by coding agent: the exact `agent=` value of a live session's self-description, e.g. "oh-my-pi" or "pi" — not a prefix of its channel name. Must be a string; it is trimmed, and an empty or whitespace-only value is no filter (the directory is listed whole, never as an empty one).`` |
+| `limit` | integer | 20 (clamped to 1..50) | ``Maximum rows to return: an integer (default 20, clamped to at least 1 and at most 50, so `limit: 0` returns 1 row). A non-integer value — including `true` or `"5"` — is a usage error naming the value, never a coercion to a number.`` |
 
 Prompt guideline: call it before `ace_publish` when you do not already know the channel name.
 
 **`ace_channels`** — no parameters.
 
-> List this session's ACE channels: what it subscribes to — the derived inbox first — read from .ace.json;
-> a configured server that did not come up, and any subscription it carried, is listed after the rows as an
-> `unavailable:` line naming the server (or channel) and why; broker settings are left out — address any
-> channel by name with ace_publish.
+> List this session's ACE channels: what it subscribes to — the derived inboxes first, one per live server
+> (each marked `self=yes`) — read from .ace.json; a channel is a shared broadcast topic, not a private
+> mailbox, so `inbox` names a topic every subscriber reads; a configured server that did not come up, and any
+> subscription it carried, is listed after the rows as an `unavailable:` line naming the server (or channel)
+> and why; broker settings are left out — address any channel by name with ace_publish.

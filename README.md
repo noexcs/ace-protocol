@@ -27,8 +27,8 @@ a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary, and
 [ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
 
-Verified today: 302 tests (291 in the host-neutral core across 25 test files, 11 in the ace-omp host plugin
-across 3), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
+Verified today: 507 tests (388 in the host-neutral core across 29 test files, 16 in the ace-omp host plugin
+across 3, 64 in the ace-claude-code plugin across 9, 39 in the ace-codex bridge across 4), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
 delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst
 spooling, the agent directory lifecycle and its crash sweep, dead-letter replay, and direct publish by channel
 name), and `npm run verify:omp` in `packages/ace-omp` (3 scenarios inside a real `omp --mode rpc` session: the
@@ -37,8 +37,13 @@ acknowledged, and a `manual` event is retained without starting a turn).
 
 A session's channel is its address: a live session registers the channel named by its sender and can be found
 by its peers in the **agent directory** on Redis (RFC §22 item 1). `ace_agents` lists the channels that are
-online, and `ace_publish` takes a channel name as `channel` — a `<server>:<channel>` prefix picks the server when
-several are configured — or a list of channels to send one event to several peers at once. See
+online (its `agent` filter matches the coding agent a session runs, from its self-description), and
+`ace_publish` takes a channel name as `channel` — a `<server>:<channel>` prefix picks the server when several
+are configured, and the prefix is matched by configured name even when that server is down, in which case the
+call fails instead of publishing elsewhere — or a list of channels to send one event to several peers at once
+(each name must be a non-empty string). An event published to a channel this session reads comes back into its
+own context marked `self: yes` — unless the activation is `manual`, which stores it instead of injecting it,
+so the echo follows the same activation rule as any other delivery. See
 [the contracts](docs/ace-runtime-contracts.md).
 
 ## Quick start

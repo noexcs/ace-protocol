@@ -5,7 +5,6 @@ import type {
 	AceMessage,
 	AgentRegistryStore,
 	EndpointConfig,
-	LiveChannelDirectory,
 	RedisStreamsAddClient,
 	ResolvedAceConfig,
 	ResolvedServer,
@@ -17,7 +16,6 @@ import {
 	AceMetrics,
 	AceRuntime,
 	AgentRegistry,
-	channelName,
 	channelStreamKey,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
@@ -26,14 +24,13 @@ import {
 	describeEndpoint,
 	NO_SESSION_LABEL,
 	REDIS_STREAMS_DEFAULTS,
+	readerFactsOf,
 	resolveAceConfig,
-	resolveTarget,
+	resolveChannelTarget,
 	SESSION_INBOX,
 	senderName,
-	serverForChannel,
 	shutdownAce,
 	subscriptionEndpoint,
-	TOOL_ERROR_TEXT,
 } from "../vendor/ace-runtime/dist/index.js";
 import { readNewTrail } from "./ack.ts";
 import type { ChannelPush } from "./engine.ts";
@@ -179,7 +176,8 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 	const multi = resolved.servers.length > 1;
 	const activeServers: ActiveServer[] = [];
 	const derived: EndpointConfig[] = [];
-	let sessionInbox: EndpointConfig | undefined;
+	/** The inboxes the directory registered for this session, one per live server. */
+	const sessionInboxes: EndpointConfig[] = [];
 	/**
 	 * A server's sender name with the session label this host has: the injected session id, or the
 	 * runtime's no-session label when the host gave none.
@@ -226,7 +224,7 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 				sender,
 				description: "this session's inbox — the channel named by its sender",
 			});
-			sessionInbox ??= inbox;
+			sessionInboxes.push(inbox);
 			derived.push(inbox);
 		}
 	}
@@ -254,66 +252,23 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 	// Lazily opened writer per server URL: publishing needs no configured list of publications — the
 	// stream is derived from the target channel's name.
 	const addClients = new Map<string, RedisStreamsAddClient>();
-	/** Complete a short channel name with this server's namespace and the user's name. */
-	function complete(name: string, namespace: string): string {
-		return name.includes(":") && name.split(":").length >= 3 ? name : channelName(namespace, resolved.username, name);
-	}
 	/**
-	 * A target is a **channel name**. `<server>:<channel>` picks the server; with a single server the
-	 * bare name is enough. Otherwise the name is looked up in each server's directory — that is how a
-	 * peer is addressed, because a peer *is* the channel named by its sender. Guessing between two live
-	 * channels would send an event to the wrong agent, so an ambiguous target fails and names them.
+	 * A target is a **channel name**. The rules live in the runtime (`resolveChannelTarget`), shared with
+	 * every host: a `<server>:` prefix picks that server by name (up or not), a full name belongs to the
+	 * namespace it names, a short name uses the one live server or the live directory. This host only
+	 * hands the resolver the servers it has and maps the answer to its publish surface.
 	 */
-	async function resolvePublishTarget(name: string): Promise<PublishedTarget> {
-		const first = name.split(":")[0] ?? "";
-		const explicit = activeServers.find((active) => active.server.name === first);
-		if (explicit !== undefined && name.includes(":")) {
-			return {
-				server: explicit.server,
-				channel: complete(name.slice(first.length + 1), explicit.server.namespace),
-				sender: explicit.sender,
-			};
-		}
-		const only = activeServers.length === 1 ? activeServers[0] : undefined;
-		if (only !== undefined) {
-			return { server: only.server, channel: complete(name, only.server.namespace), sender: only.sender };
-		}
-		// A full name carries its server in its namespace, so it needs no directory entry to be accepted;
-		// the directory is for short names, and for a namespace two live servers share.
-		const namespaceServer = serverForChannel({
-			servers: activeServers.map((active) => active.server),
-			channel: name,
+	const resolvePublishTarget = (name: string): Promise<PublishedTarget> =>
+		resolveChannelTarget({
+			name,
+			active: activeServers.map((active) => ({
+				server: active.server,
+				sender: active.sender,
+				list: () => active.registry.list(),
+			})),
+			configured: resolved.servers,
+			username: resolved.username,
 		});
-		const byNamespace = activeServers.find((active) => active.server === namespaceServer);
-		if (byNamespace !== undefined) {
-			return {
-				server: byNamespace.server,
-				channel: complete(name, byNamespace.server.namespace),
-				sender: byNamespace.sender,
-			};
-		}
-		const matches: PublishedTarget[] = [];
-		const live: LiveChannelDirectory[] = [];
-		for (const active of activeServers) {
-			const entries = await active.registry.list();
-			live.push({ server: active.server.name, channels: entries.map((entry) => entry.channel) });
-			const resolution = resolveTarget(entries, name);
-			if (resolution.ok)
-				matches.push({ server: active.server, channel: resolution.entry.channel, sender: active.sender });
-		}
-		const unique = matches[0];
-		if (unique !== undefined && matches.length === 1) return unique;
-		if (matches.length > 1) {
-			throw new Error(
-				TOOL_ERROR_TEXT.targetAmbiguous(
-					name,
-					matches.length,
-					matches.map((match) => `${match.server.name}:${match.channel}`),
-				),
-			);
-		}
-		throw new Error(TOOL_ERROR_TEXT.targetNotFound(name, live));
-	}
 	/** Publish to a channel: the stream is derived from the name, and one writer per server is opened on first use. */
 	async function sendToChannel(target: PublishedTarget, message: AceMessage): Promise<void> {
 		const url = target.server.url;
@@ -333,6 +288,24 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		serverNames: activeServers.map((active) => active.server.name),
 		resolve: resolvePublishTarget,
 		send: sendToChannel,
+		// The two reader checks, from the same shared implementation as every host: the target server's own
+		// directory says whether a peer session is *named* by the channel, this session's subscriptions say
+		// whether it reads the channel itself. Two answers named for their checks — not one verdict on who
+		// reads, which neither check could establish.
+		readerFacts: async (target) => {
+			const active = activeServers.find(
+				(candidate) => candidate.server.name === target.server.name && candidate.server.url === target.server.url,
+			);
+			const live = active === undefined ? [] : await active.registry.list();
+			return readerFactsOf({
+				channel: target.channel,
+				live,
+				subscriptions: subscriptions.map((endpoint) => endpoint.channel ?? endpoint.name),
+				// The directory lists this session's own registration too; without this, publishing to one's
+				// own inbox would see that entry and report a `peer` that is this very session.
+				own: activeServers.map((active) => active.sender),
+			});
+		},
 	};
 
 	const runtime = new AceRuntime({
@@ -340,6 +313,9 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		subscribe: subscriptions,
 		spool: { dir: join(aceDir, "spool") },
 		manual: resolved.manual,
+		// An event from one of these senders is this session's own publish echoed back by a channel it
+		// reads; the block says `self: yes` so an echo cannot masquerade as a peer's message.
+		selfSenders: activeServers.map((active) => active.sender),
 		transports: makeTransports(subscriptions, {
 			metrics,
 			onDropped: (subscription, entry) => {
@@ -386,7 +362,7 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 	const tools: ToolContext = {
 		config: resolved,
 		subscriptions,
-		...(sessionInbox === undefined ? {} : { inbox: sessionInbox }),
+		inboxes: sessionInboxes,
 		...(sessionId === undefined ? {} : { sessionId }),
 		codingAgent,
 		cwd,

@@ -6,16 +6,13 @@ export const REGISTRY_DEFAULTS = {
     ttlMs: 90_000,
     refreshMs: 30_000,
 };
-/**
- * Whether anything is *known* to read `channel`: a live directory entry (a session's own channel), or
- * one of the channels the calling session itself subscribes to. Only those two are knowable — another
- * session's configured subscriptions live in its own file — so a `false` here means "no subscriber we
- * know of", which is what a mistyped target looks like. It is not a delivery precondition: a channel is a
- * name, and publishing to a name that has no subscriber yet is legal.
- */
-export function hasKnownSubscriber(options) {
-    const { channel, live, subscriptions } = options;
-    return live.some((entry) => entry.channel === channel) || subscriptions.includes(channel);
+export function readerFactsOf(options) {
+    const { channel, live, subscriptions, own = [] } = options;
+    const isOwn = own.includes(channel);
+    return {
+        peerNamed: !isOwn && live.some((entry) => entry.channel === channel),
+        selfReads: isOwn || subscriptions.includes(channel),
+    };
 }
 /**
  * Registers one session's channel in the shared directory (RFC §22 item 1 — not part of ACE 0.1).
@@ -137,6 +134,27 @@ export function describeSender(facts) {
         `platform=${facts.platform}`,
         `pid=${facts.pid}`,
     ].join(" | ");
+}
+/** The description field that names the coding agent a channel runs (`describeSender` writes it first). */
+const CODING_AGENT_FIELD = "agent=";
+/**
+ * The coding agent a directory entry says it runs: the first token of its `agent=…` self-description
+ * field (`agent=oh-my-pi 18.5.0 | session=… | …`). `undefined` when the entry carries no such field.
+ *
+ * This is what `ace_agents`' `agent` filter means. A channel name is not the place to look: it carries
+ * the coding agent too, but only as the third segment of a name that also carries the namespace and
+ * the user, and a display or `<server>:` prefix can sit in front of it.
+ */
+export function codingAgentOf(entry) {
+    for (const field of entry.description.split("|")) {
+        const trimmed = field.trim();
+        if (!trimmed.startsWith(CODING_AGENT_FIELD))
+            continue;
+        const value = trimmed.slice(CODING_AGENT_FIELD.length).trim();
+        const space = value.indexOf(" ");
+        return space === -1 ? value : value.slice(0, space);
+    }
+    return undefined;
 }
 /**
  * Resolve a `target` against the live channels.

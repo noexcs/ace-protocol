@@ -35,6 +35,7 @@ function fakeSurface(fail = false) {
 			if (fail) throw new Error("broker down");
 			messages.push(message);
 		},
+		readerFacts: async () => ({ peerNamed: true, selfReads: false }),
 	};
 	return { surface, messages, target };
 }
@@ -55,6 +56,7 @@ function ctx(partial: Partial<ToolContext>): ToolContext {
 	return {
 		config: undefined,
 		subscriptions: [],
+		inboxes: [],
 		sessionId: "sess-1",
 		codingAgent: "claude-code",
 		cwd: "/work",
@@ -103,7 +105,7 @@ describe("ace_channels", () => {
 			sender: SENDER,
 		});
 		const result = await executeTool(
-			ctx({ config: resolved, subscriptions: [inbox, configured], inbox }),
+			ctx({ config: resolved, subscriptions: [inbox, configured], inboxes: [inbox] }),
 			"ace_channels",
 			{},
 		);
@@ -159,6 +161,72 @@ describe("ace_publish", () => {
 		expect(result.content[0].text).toContain(target.channel);
 	});
 
+	it("delivers once when two names in one call resolve to the same channel", async () => {
+		const messages: AceMessage[] = [];
+		const target: PublishedTarget = {
+			server: { name: "local", url: SERVER_URL, namespace: "ace" },
+			channel: channelName("ace", "claude", "outbox"),
+			sender: SENDER,
+		};
+		const surface: PublishSurface = {
+			senders: [SENDER],
+			serverNames: ["local"],
+			// Two different input strings, one resolved (server, channel) pair: string de-duplication
+			// cannot collapse them, so the drop has to happen after resolution.
+			resolve: async () => target,
+			send: async (_target, message) => {
+				messages.push(message);
+			},
+			readerFacts: async () => ({ peerNamed: true, selfReads: false }),
+		};
+
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", {
+			body: "hello",
+			channel: ["outbox", "local:outbox"],
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(messages).toHaveLength(1);
+		expect(result.content[0].text).toContain("targets=2 delivered=1 failed=0 duplicates=1");
+		// `of=` names the earlier *resolved* channel — the value the delivered row shows as its target —
+		// not the earlier input string (`outbox`), which that row never displays.
+		expect(result.content[0].text).toContain("target=local:outbox status=duplicate of=ace:claude:outbox");
+	});
+
+	it("carries the surface's two reader checks and the stream-key note into the rows", async () => {
+		// Defects 1 and 6 at the host's edge: two fields named for the check they report, not one word
+		// (`peer`/`self`/`none` read as verdicts on who reads), and a copied stream key named rather than
+		// reported as an ordinary quiet channel.
+		const surface: PublishSurface = {
+			senders: [SENDER],
+			serverNames: ["local"],
+			resolve: async (name: string) => ({
+				server: { name: "local", url: SERVER_URL, namespace: "ace" },
+				channel: name,
+				sender: SENDER,
+			}),
+			send: async () => {},
+			readerFacts: async (target) =>
+				target.channel === "self-read"
+					? { peerNamed: false, selfReads: true }
+					: target.channel.startsWith("ace:ch:")
+						? { peerNamed: false, selfReads: false }
+						: { peerNamed: true, selfReads: false },
+		};
+
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", {
+			body: "hello",
+			channel: ["peer-read", "self-read", "ace:ch:ace:noexcs:inbox"],
+		});
+
+		const text = result.content[0].text;
+		expect(text).toContain("target=peer-read status=delivered peer_named=yes self_reads=no");
+		expect(text).toContain("target=self-read status=delivered peer_named=no self_reads=yes");
+		expect(text).toContain(
+			"target=ace:ch:ace:noexcs:inbox status=delivered peer_named=no self_reads=no note=stream-key",
+		);
+	});
+
 	it("honours an explicit activation", async () => {
 		const { surface, messages } = fakeSurface();
 		await executeTool(ctx({ publish: surface }), "ace_publish", {
@@ -169,11 +237,57 @@ describe("ace_publish", () => {
 		expect(messages[0]?.activation).toBe("immediate");
 	});
 
-	it("reports an unresolvable target as a failure and publishes nothing", async () => {
+	it("answers a missing body, a bad activation and a prefixed two-segment name itself", async () => {
+		const { surface, messages } = fakeSurface();
+		const resolved = resolveAceConfig({ cwd: configDir(), env: {} });
+
+		// Item 4: `body` is optional in the declared schema, so the host's validator no longer rejects the
+		// missing key in its own wording (with the whole tool document echoed back) — the tool names it.
+		const noBody = await executeTool(ctx({ publish: surface }), "ace_publish", { channel: "outbox" });
+		expect(noBody.isError).toBe(true);
+		expect(noBody.content[0].text).toBe(
+			"ace_publish `body` must contain at least one non-whitespace character, received undefined",
+		);
+
+		// …and `activation` declares no enum now, so a value outside the four is refused here too.
+		const badActivation = await executeTool(ctx({ publish: surface }), "ace_publish", {
+			body: "hi",
+			channel: "outbox",
+			activation: "later",
+		});
+		expect(badActivation.isError).toBe(true);
+		expect(badActivation.content[0].text).toBe(
+			'ace_publish `activation` must be one of "immediate", "next_turn", "manual", "default", received "later"',
+		);
+
+		// Bug 3: `<server>:` plus a two-segment remainder is a pre-send usage error, not a `status=failed`
+		// row beside a freshly minted id — resolution never runs, so nothing is sent.
+		const ambiguous = await executeTool(ctx({ config: resolved, publish: surface }), "ace_publish", {
+			body: "hi",
+			channel: "local:ace:inbox",
+		});
+		expect(ambiguous.isError).toBe(true);
+		expect(ambiguous.content[0].text).toContain('after the server prefix "local", "ace:inbox" is a two-segment name');
+		expect(ambiguous.content[0].text).not.toContain("status=failed");
+		expect(messages).toHaveLength(0);
+	});
+
+	it("reports an unresolvable target as the same field list, not a sentence", async () => {
 		const { surface, messages } = fakeSurface();
 		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", channel: "nowhere" });
 		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toMatch(/nothing published/i);
+		// Defect 3: the all-failed text is the documented field list — `delivered=0` and a `status=failed` row per
+		// input — not the `nothing published: "nowhere": …` prose that used to stand in for it.
+		const text = result.content[0].text;
+		const head = text.split("\n")[0] ?? "";
+		expect(head).toContain("targets=1 delivered=0 failed=1 duplicates=0");
+		expect(text).toContain("target=nowhere status=failed error=");
+		expect(text).not.toMatch(/nothing published/i);
+		// Bug 2: nothing was delivered, so no event was created — the header says `event=none` instead of
+		// handing out an id and an empty `sender=`.
+		expect(head).toContain("event=none");
+		expect(head).not.toContain("id=");
+		expect(head).not.toContain("sender=");
 		expect(messages).toHaveLength(0);
 	});
 
@@ -196,6 +310,106 @@ describe("ace_publish", () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain("`channel`");
 		expect(messages).toHaveLength(0);
+	});
+
+	it("fails bad input instead of coercing it into a valid-looking channel", async () => {
+		const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+			["an empty channel", { body: "hello", channel: "" }, /`channel` must be a non-empty string.*received ""/],
+			["a numeric channel", { body: "hello", channel: 5 }, /`channel` must be a non-empty string.*received 5/],
+			[
+				"an empty list",
+				{ body: "hello", channel: [] },
+				/`channel` must be a non-empty string.*received an empty list/,
+			],
+			["a list entry that is empty", { body: "hello", channel: ["outbox", ""] }, /entry 2 of 2.*received ""/],
+			[
+				"a non-string body",
+				{ body: 12345, channel: "outbox" },
+				/`body` must contain at least one non-whitespace character/,
+			],
+		];
+		for (const [label, args, expected] of cases) {
+			const { surface, messages } = fakeSurface();
+			const result = await executeTool(ctx({ publish: surface }), "ace_publish", args);
+			expect(result.isError, label).toBe(true);
+			expect(result.content[0].text, label).toMatch(expected);
+			expect(messages, label).toHaveLength(0);
+		}
+	});
+
+	it("refuses a name with whitespace, a control character or an empty segment, naming it", async () => {
+		const cases: Array<[Record<string, unknown>, string]> = [
+			[
+				{ body: "hello", channel: "out team" },
+				'ace_publish `channel` "out team" contains interior whitespace or a control character, which a channel name cannot carry',
+			],
+			[
+				{ body: "hello", channel: "ace:noexcs:probe\nws" },
+				'ace_publish `channel` "ace:noexcs:probe\\nws" contains interior whitespace or a control character, which a channel name cannot carry',
+			],
+			[
+				{ body: "hello", channel: "ace::foo" },
+				'ace_publish `channel` "ace::foo" has an empty segment — ":" separates the segments, so every segment must be non-empty',
+			],
+		];
+		for (const [args, expected] of cases) {
+			const { surface, messages } = fakeSurface();
+			const result = await executeTool(ctx({ publish: surface }), "ace_publish", args);
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toBe(expected);
+			expect(messages).toHaveLength(0);
+		}
+	});
+
+	it("trims a name before publishing it", async () => {
+		const { surface, messages, target } = fakeSurface();
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", {
+			body: "hello",
+			channel: " outbox ",
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain(target.channel);
+		expect(messages).toHaveLength(1);
+	});
+});
+
+describe("undeclared arguments", () => {
+	it("refuses a key `ace_publish` does not take, instead of ignoring it", async () => {
+		const { surface, messages } = fakeSurface();
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", {
+			body: "hello",
+			channel: "outbox",
+			bogus: true,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toBe(
+			'ace_publish does not take "bogus"; it takes `body`, `channel`, `activation`',
+		);
+		expect(messages).toHaveLength(0);
+	});
+
+	it("refuses any key for a tool that takes no arguments", async () => {
+		// The check runs before the runtime is consulted, so a bogus key is reported as such and not as
+		// "ACE is not running".
+		const result = await executeTool(ctx({}), "ace_channels", { foo: 1 });
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toBe('ace_channels does not take "foo"; it takes no arguments');
+	});
+
+	it("refuses the keys the host-only tools do not take", async () => {
+		const { runtime } = fakeRuntime();
+		const pending = await executeTool(ctx({ runtime }), "ace_pending", { limit: 3 });
+		expect(pending.content[0].text).toBe('ace_pending does not take "limit"; it takes no arguments');
+
+		const activate = await executeTool(ctx({ runtime }), "ace_activate", {
+			sender: "ci",
+			id: "evt_9",
+			force: true,
+		});
+		expect(activate.content[0].text).toBe('ace_activate does not take "force"; it takes `sender`, `id`');
 	});
 });
 

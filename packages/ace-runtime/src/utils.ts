@@ -5,11 +5,20 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Short, log-safe description of a value. Never dumps object contents. */
+/**
+ * Short, log-safe description of a value. Never dumps object contents.
+ *
+ * A primitive is named by its value, not its type — `received 2.5`, `received NaN`, `received true` —
+ * so a usage error says which value was refused, as the string and null cases already did. Only a
+ * non-empty array (whose contents are never dumped) and a plain object fall back to their type word;
+ * an empty array is named as the empty list it is.
+ */
 export function describeValue(value: unknown): string {
 	if (typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "number") return String(value);
+	if (typeof value === "boolean") return String(value);
 	if (value === null) return "null";
-	if (Array.isArray(value)) return "array";
+	if (Array.isArray(value)) return value.length === 0 ? "an empty list" : "array";
 	return typeof value;
 }
 

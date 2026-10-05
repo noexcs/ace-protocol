@@ -10,19 +10,26 @@ import {
 	ACE_TOOL_NAMES,
 	CHANNELS_PARAMETERS,
 	channelListingInput,
-	channelStreamKey,
 	channelsToolText,
 	deliveredChannel,
 	describeSender,
+	duplicateTarget,
 	failedTarget,
 	formatChannelListing,
 	formatPublishResult,
 	hostFacts,
+	isStreamKeyShaped,
 	NO_SESSION_LABEL,
 	PUBLISH_PARAMETERS,
+	type PublishTargetRow,
+	type ReaderFacts,
+	rejectUnknownArguments,
+	resolvePublishTargets,
+	TOOL_ARGUMENTS,
 	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
+	validatePublishInput,
 } from "../vendor/ace-runtime/dist/index.js";
 
 /** One JSON Schema `inputSchema` for an MCP tool. */
@@ -72,6 +79,13 @@ export interface PublishSurface {
 	resolve(name: string): Promise<PublishedTarget>;
 	/** Derive the stream from the channel name and append the message with the server's writer. */
 	send(target: PublishedTarget, message: AceMessage): Promise<void>;
+	/**
+	 * What is known about who reads a resolved channel, as two checks: `peerNamed` (a live directory
+	 * entry on its server names the channel — another session's own channel equals it) and `selfReads`
+	 * (this session reads it). Two answers named for their checks, not one verdict: `peerNamed` is false
+	 * for a peer that merely subscribes, and `selfReads` true never means the channel is exclusive.
+	 */
+	readerFacts(target: PublishedTarget): Promise<ReaderFacts>;
 }
 
 /**
@@ -87,8 +101,8 @@ export interface ToolContext {
 	config?: ResolvedAceConfig;
 	/** The channels the runtime reads (derived): configured subscriptions plus one inbox per live server. */
 	subscriptions: EndpointConfig[];
-	/** The derived inbox the agent directory registered for this session, when there is one. */
-	inbox?: EndpointConfig;
+	/** The derived inboxes the agent directory registered for this session, one per live server. */
+	inboxes: EndpointConfig[];
 	/** The host session id, when Claude Code exposes it; carried as the ACE `sessionId` (RFC §5.4). */
 	sessionId?: string;
 	codingAgent: string;
@@ -98,6 +112,10 @@ export interface ToolContext {
 	/** The publishing surface; absent when ACE is not running. */
 	publish?: PublishSurface;
 }
+
+/** The argument names the two host-only tools declare; a key outside one is a usage error, not a no-op. */
+const PENDING_ARGUMENTS: readonly string[] = [];
+const ACTIVATE_ARGUMENTS = ["sender", "id"] as const;
 
 /**
  * The text of the tools **only this host** has. The shared tools (`ace_publish`, `ace_channels`) take
@@ -170,12 +188,17 @@ export async function executeTool(ctx: ToolContext, name: string, args: Record<s
 	try {
 		switch (name) {
 			case ACE_TOOL_NAMES.channels:
+				// `ace_channels` takes no arguments; a caller must learn that its key was not honoured.
+				rejectUnknownArguments(name, args, TOOL_ARGUMENTS.channels);
 				return channelsTool(ctx);
 			case ACE_TOOL_NAMES.publish:
+				// `validatePublishInput` also refuses keys `ace_publish` does not declare.
 				return await publishTool(ctx, args);
 			case "ace_pending":
+				rejectUnknownArguments(name, args, PENDING_ARGUMENTS);
 				return pendingTool(ctx);
 			case "ace_activate":
+				rejectUnknownArguments(name, args, ACTIVATE_ARGUMENTS);
 				return await activateTool(ctx, args);
 			default:
 				return errorResult(`unknown tool "${name}"`);
@@ -195,16 +218,12 @@ function requireRuntime(ctx: ToolContext): AceRuntimeSurface {
 
 function channelsTool(ctx: ToolContext): ToolResult {
 	if (!ctx.config) return errorResult(TOOL_ERROR_TEXT.notRunning);
-	// The runtime keeps the inbox among its subscriptions (the transport reads it); the listing appends it
-	// itself so it can mark the session's own channel, so drop the copy already there.
-	const self = ctx.inbox === undefined ? undefined : (ctx.inbox.channel ?? ctx.inbox.name);
-	const listing = channelListingInput(
-		self === undefined ? ctx.subscriptions : ctx.subscriptions.filter((s) => (s.channel ?? s.name) !== self),
-		ctx.inbox,
-	);
+	// The runtime keeps the inboxes among its subscriptions (the transports read them); the listing
+	// de-duplicates, so passing them again only supplies the names to mark `self=yes`.
+	const listing = channelListingInput(ctx.subscriptions, ctx.inboxes);
 	return textResult(
 		formatChannelListing(listing.subscriptions, {
-			...(listing.selfChannel === undefined ? {} : { selfChannel: listing.selfChannel }),
+			...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
 		}),
 	);
 }
@@ -227,16 +246,17 @@ async function activateTool(ctx: ToolContext, args: Record<string, unknown>): Pr
 }
 
 async function publishTool(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-	const body = typeof args.body === "string" ? args.body : undefined;
-	const rawChannel = args.channel;
-	const target = typeof rawChannel === "string" ? [rawChannel] : Array.isArray(rawChannel) ? rawChannel : undefined;
-	if (body === undefined || body.length === 0 || target === undefined || target.length === 0) {
-		throw new Error(TOOL_ERROR_TEXT.usagePublish);
-	}
+	// Input is checked before anything is built or sent. The whole argument object goes in, not just the
+	// two known fields: `validatePublishInput` refuses an undeclared key as well as a coerced value, and
+	// both must be reported instead of being dropped or rewritten before the tool sees them.
+	const input = validatePublishInput(args, {
+		servers: ctx.config?.servers.map((server) => server.name) ?? [],
+	});
 	const surface = ctx.publish;
 	if (surface === undefined) throw new Error(TOOL_ERROR_TEXT.notRunning);
-	const activation =
-		typeof args.activation === "string" && args.activation !== "default" ? args.activation : "next_turn";
+	// `default` asks the receiver's policy; this host's runtime has no `default` mode of its own, so it
+	// sends `next_turn` for an omitted or explicitly `default` value, as it always has.
+	const activation = input.activation === undefined || input.activation === "default" ? "next_turn" : input.activation;
 
 	// The id is the runtime's: the caller reads it back from the result instead of choosing it. The
 	// sender carries a self-description, so a receiver can show who and where it is without any lookup.
@@ -249,21 +269,22 @@ async function publishTool(ctx: ToolContext, args: Record<string, unknown>): Pro
 		}),
 	);
 
-	const delivered: string[] = [];
-	const failures: string[] = [];
-	const sentStreams = new Set<string>();
+	// Resolution and de-duplication are shared: an input that resolves to a (server, channel) pair an
+	// earlier input already produced becomes a duplicate row, whatever its input string.
+	const resolution = await resolvePublishTargets(input.targets, (name) => surface.resolve(name));
+	const rows: PublishTargetRow[] = [];
 	const senders: string[] = [];
-	for (const name of [...new Set(target.filter((t): t is string => typeof t === "string"))]) {
+	for (const outcome of resolution) {
+		if (outcome.kind === "failure") {
+			rows.push(failedTarget(outcome.name, outcome.detail));
+			continue;
+		}
+		if (outcome.kind === "duplicate") {
+			rows.push(duplicateTarget(outcome.name, outcome.of));
+			continue;
+		}
+		const resolved = outcome.target;
 		try {
-			const resolved = await surface.resolve(name);
-			const stream = channelStreamKey(resolved.server.namespace, resolved.channel);
-			// The same channel twice in one call is one delivery.
-			const address = `${resolved.server.url}#${stream}`;
-			if (sentStreams.has(address)) {
-				delivered.push(deliveredChannel(resolved.channel));
-				continue;
-			}
-			sentStreams.add(address);
 			if (!senders.includes(resolved.sender)) senders.push(resolved.sender);
 			// A sender name belongs to one server, so the event is built per target rather than once.
 			const message = validateAceMessage({
@@ -273,17 +294,25 @@ async function publishTool(ctx: ToolContext, args: Record<string, unknown>): Pro
 				...(ctx.sessionId === undefined ? {} : { sessionId: ctx.sessionId }),
 				senderDescription: description,
 				activation,
-				body,
+				body: input.body,
 			});
 			await surface.send(resolved, message);
-			delivered.push(deliveredChannel(resolved.channel));
+			// `peer_named=… self_reads=…` and the stream-key note are decided the same way on every host.
+			rows.push(
+				deliveredChannel(resolved.channel, await surface.readerFacts(resolved), {
+					streamKey: isStreamKeyShaped(resolved.channel),
+				}),
+			);
 		} catch (error) {
-			failures.push(failedTarget(name, describeError(error)));
+			rows.push(failedTarget(outcome.name, describeError(error)));
 		}
 	}
 
-	if (delivered.length === 0) throw new Error(TOOL_ERROR_TEXT.nothingPublished(failures));
-	return textResult(formatPublishResult({ id, sender: senders.join(", "), activation, delivered, failures }));
+	const text = formatPublishResult({ id, sender: senders.join(","), activation, rows });
+	// Nothing delivered is a failed call, but its text is the same field list — `delivered=0` with one
+	// `status=failed` row per input — so the result shape does not depend on how many targets succeeded.
+	if (!rows.some((row) => row.status === "delivered")) throw new Error(text);
+	return textResult(text);
 }
 
 function errorResult(message: string): ToolResult {

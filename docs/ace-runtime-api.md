@@ -51,6 +51,8 @@ export interface AceRuntimeOptions {
 	/** 键 = **订阅名**；AceRuntime 会校验每个订阅都有对应 transport（缺一个就抛，重复用同一个也抛） */
 	transports: Readonly<Record<string, Transport>>;
 	defaultActivation?: ConcreteActivation;   // 缺省 next_turn
+	/** 本会话自己的 sender 名（每台 server 一个）：命中即"自己发的事件又被自己读到"，注入块标 `self: yes` */
+	selfSenders?: readonly string[];
 	logger?: AceLogger; metrics?: AceMetrics;
 	dedupCapacity?: number;                   // 默认 1024，(sender,id) 去重窗口，每订阅一份
 	manual?: { max?: number; ttlMs?: number }; // 缺省 100 / 24h
@@ -266,6 +268,42 @@ export type TargetResolution =
 	| { ok: true; entry: RegistryEntry }
 	| { ok: false; reason: "not-found" | "ambiguous"; candidates: string[] };
 // target = 精确 channel 名，或只匹配到一个的前缀；不猜（多个候选直接返回 ambiguous + candidates）
+export function codingAgentOf(entry: RegistryEntry): string | undefined;
+// 条目自述里 `agent=` 的**首个 token**（如 oh-my-pi，版本后缀不算）：ace_agents 的 `agent` 过滤用它，
+// 精确匹配；它不是 channel 名前缀（channel 名只在第三段带 coding agent，多 server 时前面还有 `<server>:`）。
+
+// tools/publish.ts —— ace_publish 的入参校验与 target 解析，各宿主共用同一实现
+export function rejectUnknownArguments(tool: string, params: unknown, known: readonly string[]): void;
+// 工具不认识的参数键 → 失败并点名（工具参数表见 spec.ts 的 `TOOL_ARGUMENTS`，与 schema 放在一起）
+export function validatePublishInput(
+	params: Record<string, unknown>,
+	options?: { servers?: readonly string[] },   // 已配置 server 名：发送前拒绝 `<server>:` + 2 段残余要用
+): {
+	body: string;
+	activation?: Activation;   // 省略 → 宿主发 next_turn；四个值之外点名拒绝
+	targets: string[];   // 顺序保留、精确重复保留（去重发生在解析之后）
+};
+// 名字先 trim（首尾空白直接接受），再拒绝**名字内部**含空白或控制字符、或含空段（`ace::foo`）的名字并点名该值；
+// **`<server>:` 前缀 + 2 段残余**（`second:noexcs:remote`）也在这里、发送前按用法错误拒绝，点名 server 与残余——
+// `resolveChannelTarget` 里的同名检查保留为兜底，宿主路径不会再把它降级成 `status=failed` 行；
+// `activation` 同样在这里校验（parameter schema 不再声明 enum，否则宿主会用自己的措辞拒绝并回显整份工具文档）；
+// body/channel/activation 以及 agents 的 agent/limit 的 parameter schema 不声明类型，正是为了不让宿主把数字/对象改写成本来看起来合法的值
+export function validateAgentsInput(params: Record<string, unknown>): { agent?: string; limit: number };
+// tools/agents.ts —— ace_agents 的入参校验：agent 必须是字符串、limit 必须是整数（`true`/`"5"` 报错并点名该值）；
+// agent 先 trim，空串/纯空白视为没有过滤（目录整体列出，不退化成像空目录的 count=0）；limit 保留 1..50 的钳制
+export interface TargetServer { server: ResolvedServer; sender: string; list(): Promise<RegistryEntry[]>; }
+export interface ResolvedChannelTarget { server: ResolvedServer; channel: string; sender: string; }
+export async function resolveChannelTarget(options: {
+	name: string;
+	active: readonly TargetServer[];
+	configured: readonly ResolvedServer[];   // .ace.json 里的全部 server（含没起来的）
+	username: string;
+}): Promise<ResolvedChannelTarget>;
+// `<server>:` 前缀按**已配置 server 名**匹配（含未上线 → serverNotUp，不再当短名补全）；前缀之后
+// 只接受 1 段（补全）或 ≥3 段（原样），**2 段残余报 ambiguousServerRemainder**（它既像含冒号的本地名、
+// 又像漏了 namespace 的全名，任选一种都会写出一条没人能读的 channel）；
+// 未加前缀的 ≥3 段是全名、首段是 namespace，只有它的 owner 能存（owner 没起来 → namespaceNotUp；无人拥有 → namespaceUnclaimed）；
+// 1–2 段是短名（单台在线 server 直接用它；首段不是已配置 server 名就不是前缀）；其余查目录。见 contracts §4.1。
 ```
 
 条目里没有地址可读：发布端拿到 channel 名后，自己用 `channelStreamKey(ns, channel)` 算 stream key
@@ -296,7 +334,7 @@ export function describeSender(facts: HostFacts): string;    // `agent=… | ses
 // 目录条目的自述就是这个字符串本身：加固定前缀只会让每个会话的自述都变得一样。
 
 // tools/listing.ts
-export function describeDiscovered(entry: RegistryEntry): string;  // `<channel> — <自述> (renews in Ns)`
+export function describeDiscovered(entry: RegistryEntry, options?: { server?; self? }): string;  // `channel=<target> renews_in=<Ns>s self=<yes|no> description="<自述>"`
 export function addressOf(endpoint: EndpointConfig): string;
 ```
 

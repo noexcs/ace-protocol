@@ -314,6 +314,9 @@ export function createBridge(options: BridgeOptions): AceCodexBridge {
 			subscribe: derived,
 			spool: { dir: join(cwd, ".ace", "spool") },
 			manual: resolved.manual,
+			// An event from one of these senders is this session's own publish echoed back by a channel it
+			// reads; the block says `self: yes` so an echo cannot masquerade as a peer's message.
+			selfSenders: activeServers.map((active) => active.sender),
 			transports,
 			...(resolved.defaultActivation ? { defaultActivation: resolved.defaultActivation } : {}),
 			logger,

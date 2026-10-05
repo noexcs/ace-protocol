@@ -27,6 +27,8 @@ export class AceRuntime {
     dispatcher;
     seenBySubscription = new Map();
     dedupCapacity;
+    /** This session's own sender names (see {@link AceRuntimeOptions.selfSenders}). */
+    selfSenders;
     spool;
     now;
     started = false;
@@ -65,6 +67,7 @@ export class AceRuntime {
         this.logger = options.logger ?? {};
         this.metrics = options.metrics ?? new AceMetrics();
         this.dedupCapacity = options.dedupCapacity ?? 1024;
+        this.selfSenders = new Set(options.selfSenders ?? []);
         this.now = options.now ?? (() => Date.now());
         if (options.spool) {
             const { rule, ...spoolOptions } = options.spool;
@@ -88,7 +91,7 @@ export class AceRuntime {
             onEvict: (event, reason) => this.logger.warn?.(`[ACE] dropped pending manual event id=${event.message.id} (${reason})`),
         });
         this.restorePendingEvents();
-        this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger, this.metrics);
+        this.dispatcher = new EventDispatcher(this.engine, this.pendingEventStore, this.logger, this.metrics, this.selfSenders);
         // Failures arrive after the fact and without saying which event was in flight, so they are
         // counted at runtime scope rather than charged to a subscription.
         this.engine.onRunError?.((error) => this.recordRunFailure(error));
@@ -188,6 +191,7 @@ export class AceRuntime {
         await this.engine.inject(event.message, "next_turn", {
             subscription: event.subscriptionName,
             ...(origin === undefined ? {} : { address: endpointAddress(origin) }),
+            ...(this.selfSenders.has(event.message.sender) ? { self: true } : {}),
         });
     }
     /** A turn this runtime started ended in failure; counted for `/ace stats` and logged. */

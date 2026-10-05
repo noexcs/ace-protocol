@@ -217,7 +217,7 @@ describe("startAce registration and inbox derivation", () => {
 		const inbox = seen.find((endpoint) => endpoint.name === SESSION_INBOX);
 		expect(inbox?.transport).toBe("redis-streams");
 		expect(inbox?.config).toMatchObject({ stream: STREAM_A, group: SENDER_A, url: URL_A });
-		expect(handle.tools.inbox?.name).toBe(SESSION_INBOX);
+		expect(handle.tools.inboxes[0]?.name).toBe(SESSION_INBOX);
 		expect(handle.tools.publish?.senders).toEqual([SENDER_A]);
 
 		await handle.stop();
@@ -252,6 +252,8 @@ describe("startAce registration and inbox derivation", () => {
 		expect(seen.map((endpoint) => endpoint.name)).toEqual(["primary:session-inbox", "secondary:session-inbox"]);
 		expect(seen[0]?.config).toMatchObject({ stream: STREAM_A, group: SENDER_A, url: URL_A });
 		expect(seen[1]?.config).toMatchObject({ stream: STREAM_B, group: SENDER_B, url: URL_B });
+		// Both own channels are carried, so `ace_channels` can mark both rows `self=yes`.
+		expect(handle.tools.inboxes.map((inbox) => inbox.channel)).toEqual([SENDER_A, SENDER_B]);
 		expect(handle.tools.publish?.senders).toEqual([SENDER_A, SENDER_B]);
 
 		await handle.stop();
@@ -316,6 +318,16 @@ describe("startAce when a server is unreachable", () => {
 		// is dropped with it.
 		expect(transports.subscriptions[0]?.map((endpoint) => endpoint.name)).toEqual(["primary:session-inbox"]);
 		expect(handle.tools.publish?.senders).toEqual([SENDER_A]);
+		// A `<server>:` prefix names a configured server even when it is down: the call fails instead of
+		// completing the prefix into a short name and publishing to another server under a mangled name.
+		await expect(handle.tools.publish?.resolve("secondary:thing")).rejects.toThrow(
+			'server "secondary" did not come up',
+		);
+		// A full name whose namespace belongs to the down server is refused for the same reason: no
+		// configured server is up to store or deliver it.
+		await expect(handle.tools.publish?.resolve(channelName(NS_B, USERNAME, "topic"))).rejects.toThrow(
+			'namespace "wan" belongs to server "secondary", which did not come up',
+		);
 
 		await handle.stop();
 	});
@@ -478,9 +490,9 @@ describe("publish surface", () => {
 			channel: full,
 			sender: SENDER_A,
 		});
-		// A full name whose namespace no live server owns is still the directory's to settle, and empty
-		// directories settle it with a failure.
-		await expect(surface.resolve("zzz:tester:nobody")).rejects.toThrow(/no live channel matches/);
+		// A full name whose namespace no configured server owns is refused: no server could store or
+		// deliver it, so accepting it would report a success nobody can verify.
+		await expect(surface.resolve("zzz:tester:nobody")).rejects.toThrow('no configured server owns namespace "zzz"');
 
 		await handle.stop();
 	});

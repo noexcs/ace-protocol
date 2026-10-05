@@ -1,3 +1,4 @@
+import type { ReaderFacts } from "../runtime/agent-registry.ts";
 /**
  * The text the tools hand back to the model. It is model-visible exactly like the tool descriptions,
  * so it lives with the spec: when a mechanism changes — a new transport, a renamed config key, a
@@ -6,29 +7,106 @@
  * The hosts keep only what is theirs: turning a core result into the host's tool-result shape.
  */
 /**
- * `channel "outbox"` — the target channel name an event was published to.
+ * One row of the `ace_publish` result: one input target and what happened to it. The result is a field
+ * list, so a caller reads `status` instead of scraping a sentence.
  *
- * `unknownSubscriber` adds the note that neither the live directory nor this session's own subscriptions
- * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox — but
- * it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
+ * A delivered row's `note` is set when the target is the transport's own stream key rather than an
+ * address (`isStreamKeyShaped`, `tools/publish.ts`); it renders as `note=stream-key`.
  */
-export declare function deliveredChannel(name: string, unknownSubscriber?: boolean): string;
-/** One entry of the failure list: `"<channel>": reason`. */
-export declare function failedTarget(target: string, detail: string): string;
-/** The `ace_publish` result: what went out, and what did not (with the memory of ids and sender). */
+export type PublishTargetRow = {
+    readonly target: string;
+    readonly status: "delivered";
+    readonly peerNamed: boolean;
+    readonly selfReads: boolean;
+    readonly note?: "stream-key";
+} | {
+    readonly target: string;
+    readonly status: "duplicate";
+    readonly of: string;
+} | {
+    readonly target: string;
+    readonly status: "failed";
+    readonly error: string;
+};
+/**
+ * A delivered target: the channel the event was written to, and what the two reader checks found.
+ *
+ * `peerNamed` and `selfReads` are the two independent answers from {@link readerFactsOf}, rendered as
+ * `peer_named=yes|no` and `self_reads=yes|no`. They are deliberately two fields named for the check
+ * they report, not one word drawn from them: `peer_named=yes` says a live directory entry names the
+ * channel (another session's own channel equals it), while `peer_named=no` does **not** say nobody
+ * else reads it — a peer's subscriptions are in its own file and are not visible here — and
+ * `self_reads=yes` does not say this session is the only reader. The single word this replaced read
+ * as a verdict on who reads the channel (`peer` = "a peer subscribed", `none` = "nobody"), which the
+ * name-equality check could not support. Publishing to a channel neither check names is legal (a
+ * channel is a name, not a mailbox) but it is what a typo looks like. What each field means is
+ * spelled out once in the tool description, not per result.
+ *
+ * `streamKey` marks a target whose channel has the transport's key shape; it is named, never refused.
+ */
+export declare function deliveredChannel(target: string, facts: ReaderFacts, options?: {
+    streamKey?: boolean;
+}): PublishTargetRow;
+/**
+ * An input target that failed to resolve or deliver, reported by the input string as written — after a
+ * failed resolution that is all that is known about it. `error` is the reason, quoted in the row.
+ */
+export declare function failedTarget(target: string, detail: string): PublishTargetRow;
+/**
+ * An input target dropped because an earlier input resolved to the same `(server, channel)` pair. It is
+ * a row of its own rather than silently absent, so `targets=` can count every input and a caller sees
+ * that its second name was the same delivery. `of` is the **resolved channel** the earlier input
+ * produced — the delivery identity, and the same value that earlier delivered row carries as its
+ * `target=` — never the earlier input string, which a delivered row does not show. Resolution and
+ * de-duplication run on the resolved pair (`resolvePublishTargets`), so the resolved channel is what
+ * the two rows share.
+ */
+export declare function duplicateTarget(target: string, of: string): PublishTargetRow;
+/**
+ * The `ace_publish` result: a header counting the call, then one row per input target, in input order.
+ *
+ * Rows, not prose: a caller reads `delivered=`/`duplicates=`/`failed=` and each row's `status` instead of
+ * parsing a sentence, and the non-atomic mixed list is visible in the counts as well as the rows.
+ * `duplicates=` is always present, `0` when there was none, so the header's arithmetic
+ * `targets = delivered + duplicates + failed` holds in every result: `targets=2 delivered=1` alone
+ * would look like a failure when the second input was merely a duplicate.
+ *
+ * This is also the text of the all-failed outcome, which a host throws instead of collapsing to a
+ * sentence: `delivered=0` with one `status=failed` row per input. The shape therefore does not depend
+ * on how many targets succeeded — a caller that parses it once parses every outcome.
+ *
+ * The one deliberate shape difference is `id=`/`sender=`: an all-failed call created no event, so the
+ * header carries neither and says `event=none` in their place. Printing an empty `sender=` beside a
+ * freshly minted `id=` made a failed-only call look like a stored event with no origin, which is
+ * exactly the reading the marker exists to prevent. `activation=` and the counts stay in every header.
+ */
 export declare function formatPublishResult(options: {
     id: string;
     sender: string;
     activation: string;
-    delivered: readonly string[];
-    failures: readonly string[];
-    /** Channels accepted with no known subscriber: the result spells out what that means. */
-    unknownSubscribers?: readonly string[];
+    rows: readonly PublishTargetRow[];
 }): string;
-/** The sentence the directory tool answers with when nobody else is online. */
+/** The sentence the directory tool adds under a `count=0` header when nobody else is online and no filter was given. */
 export declare const NO_LIVE_SESSIONS = "No other agent sessions are registered right now.";
-/** The `ace_agents`/directory result: one row per live session, or the sentence that says there are none. */
-export declare function formatDiscoveredSessions(rows: readonly string[]): string;
+/**
+ * The `ace_agents`/directory result: a header counting the rows, then one field row per live session
+ * (rendered by {@link describeDiscovered}). The header is always emitted — `count=0` when there are no
+ * rows, `servers=<name>,<name>` naming the live servers the lookup merged (in config order) and
+ * `filter=<agent>` when a filter was given — so a header-only parser never has to recognise a sentence
+ * to read the count, and a reader can tell a server that has no peers from one that was never searched.
+ * Under an empty header, a sentence says whether there are no sessions at all or the `agent` filter
+ * simply matched nothing — a real difference when a caller automates lookups, because "nothing
+ * registered" and "no "pi" here" call for different next steps.
+ *
+ * A filter that is empty or whitespace-only after trimming is **no filter**, not a filter that matches
+ * nothing: it cannot name a coding agent, and treating it as one turned a live directory into a
+ * `count=0` header that read exactly like an empty one. The rows passed here are then the whole
+ * directory (or an already-filtered one), so the `count=0` header and the sentence stay true.
+ */
+export declare function formatDiscoveredSessions(rows: readonly string[], options?: {
+    filter?: string;
+    servers?: readonly string[];
+}): string;
 /**
  * One server's directory as the lookup read it: its name and the channel names the entries carry.
  *
@@ -41,13 +119,43 @@ export interface LiveChannelDirectory {
     /** The channel names the server's directory listed, exactly as the entries carry them. */
     readonly channels: readonly string[];
 }
+/**
+ * Why a `channel` name cannot be used as written, appended to the message that names the value. A
+ * name is an address, so a name no reader can type back — one carrying whitespace or a control
+ * character, or one with an empty segment — is a usage error rather than something to complete.
+ */
+export declare const INVALID_NAME_REASON: {
+    readonly whitespace: "contains interior whitespace or a control character, which a channel name cannot carry";
+    readonly emptySegment: "has an empty segment — \":\" separates the segments, so every segment must be non-empty";
+};
 /** The messages the tools return when they cannot do their job — read by the model, so defined once. */
 export declare const TOOL_ERROR_TEXT: {
     readonly notRunning: "ACE is not running in this session; .ace.json is missing or did not load";
     readonly noDirectory: "no agent directory: no server from .ace.json is reachable";
-    readonly usagePublish: "ace_publish requires a non-empty `body` and a `channel` (string or list of strings)";
+    /** A `<server>:` prefix names a server that is configured but did not come up: never resolve it as a short name. */
+    readonly serverNotUp: (server: string) => string;
+    readonly namespaceNotUp: (namespace: string, server: string) => string;
+    /** A full name whose namespace no configured server owns: nothing can store or deliver it. */
+    readonly namespaceUnclaimed: (namespace: string) => string;
+    readonly invalidBody: (value: unknown) => string;
+    readonly invalidActivation: (value: unknown) => string;
+    readonly invalidChannel: (value: unknown) => string;
+    readonly invalidChannelEntry: (value: unknown, index: number, count: number) => string;
+    /** A name that is a string but not usable as an address: whitespace, a control character, an empty segment. */
+    readonly invalidChannelName: (value: string, reason: string) => string;
+    readonly invalidChannelEntryName: (value: string, index: number, count: number, reason: string) => string;
+    /**
+     * A `<server>:` prefix whose remainder has two segments: it reads as a local name that contains a
+     * colon *and* as a full name with its namespace left off, so completing it either way writes an
+     * event nobody can read. The earlier prefix defect published such a name as `<ns>:<user>:<remainder>`.
+     */
+    readonly ambiguousServerRemainder: (server: string, remainder: string) => string;
+    /** A tool argument the tool does not declare: an unhonoured argument must never look like an honoured one. */
+    readonly unknownArguments: (tool: string, unknown: readonly string[], known: readonly string[]) => string;
     readonly targetAmbiguous: (target: string, candidateCount: number, candidates: readonly string[]) => string;
     readonly targetNotFound: (target: string, live: readonly LiveChannelDirectory[]) => string;
-    readonly nothingPublished: (failures: readonly string[]) => string;
+    /** An `ace_agents` argument the tool cannot use: a wrong type is named, never coerced. */
+    readonly invalidAgent: (value: unknown) => string;
+    readonly invalidLimit: (value: unknown) => string;
 };
 //# sourceMappingURL=results.d.ts.map

@@ -20,6 +20,12 @@ export interface AceRuntimeOptions {
     transports: Readonly<Record<string, Transport>>;
     /** Fallback activation; ACE 0.1 requires `next_turn` when unset (RFC §8). */
     defaultActivation?: ConcreteActivation;
+    /**
+     * This session's own sender names, one per live server. A message whose `sender` is one of them was
+     * published by this session itself and comes back as an echo: the injected block marks it `self: yes`
+     * so a naive echo cannot turn into a self-loop.
+     */
+    selfSenders?: readonly string[];
     logger?: AceLogger;
     metrics?: AceMetrics;
     /** `(sender, id)` pairs remembered per subscription for deduplication (default 1024). */
@@ -60,6 +66,8 @@ export declare class AceRuntime {
     private readonly dispatcher;
     private readonly seenBySubscription;
     private readonly dedupCapacity;
+    /** This session's own sender names (see {@link AceRuntimeOptions.selfSenders}). */
+    private readonly selfSenders;
     private readonly spool;
     private readonly now;
     private started;

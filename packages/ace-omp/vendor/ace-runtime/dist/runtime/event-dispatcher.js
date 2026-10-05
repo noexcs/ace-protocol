@@ -4,11 +4,14 @@ export class EventDispatcher {
     pendingEvents;
     logger;
     metrics;
-    constructor(engine, pendingEvents, logger = {}, metrics) {
+    /** This session's own sender names: a message from one of them is its own event echoed back. */
+    selfSenders;
+    constructor(engine, pendingEvents, logger = {}, metrics, selfSenders = new Set()) {
         this.engine = engine;
         this.pendingEvents = pendingEvents;
         this.logger = logger;
         this.metrics = metrics;
+        this.selfSenders = selfSenders;
     }
     async dispatch(message, subscriptionName, activation, 
     /** Address the event arrived on, for the header; the subscription name is already here. */
@@ -24,6 +27,7 @@ export class EventDispatcher {
         await this.engine.inject(message, activation, {
             subscription: subscriptionName,
             ...(address === undefined ? {} : { address }),
+            ...(this.selfSenders.has(message.sender) ? { self: true } : {}),
         });
         this.metrics?.increment(subscriptionName, running ? "queued" : "injected");
         return { activation, disposition: running ? "queued" : "injected" };

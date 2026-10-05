@@ -13,6 +13,12 @@ export interface InjectionContext {
 	subscription: string;
 	/** Address it arrived on (e.g. `ace:lan:in.mac`), when the transport kind exposes one. */
 	address?: string;
+	/**
+	 * Whether this session published the event itself: publishing to a channel this session reads
+	 * delivers the event back into the publisher's own context, where it is an echo, not a peer's
+	 * message. Set by the runtime from its own sender names; the renderer marks the block with it.
+	 */
+	self?: boolean;
 }
 
 /**

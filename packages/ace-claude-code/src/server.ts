@@ -131,6 +131,7 @@ async function main(): Promise<void> {
 	const tools: ToolContext = {
 		config: undefined,
 		subscriptions: [],
+		inboxes: [],
 		sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? undefined,
 		codingAgent: CODING_AGENT,
 		cwd: projectDir(),

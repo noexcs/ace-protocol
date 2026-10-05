@@ -32,8 +32,17 @@ describe("tool text unity with the runtime spec", () => {
 	it("takes the publish parameter schema from the runtime", () => {
 		const schema = publishDef?.inputSchema as { required?: string[]; properties?: Record<string, unknown> };
 
-		expect(schema.required).toEqual(["body", "channel"]);
+		// Item 4: `body` and `channel` used to be declared required, so the host rejected a missing one in
+		// its own words and echoed the whole tool document before the tool ran. All three are optional in
+		// the schema; `validatePublishInput` names the missing value and refuses a bad activation itself.
+		expect(schema.required ?? []).toEqual([]);
 		expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["activation", "body", "channel"]);
+		// The declared activation node is untyped and has no `enum` keyword now, so the host has nothing to
+		// reject: a guard keeps the read checked rather than casting an `unknown` property.
+		const activation = schema.properties?.activation;
+		const activationEnum =
+			activation !== null && typeof activation === "object" && "enum" in activation ? activation.enum : undefined;
+		expect(activationEnum).toBeUndefined();
 	});
 
 	it("adds the directory channel to the shared text instead of rewording it", () => {
