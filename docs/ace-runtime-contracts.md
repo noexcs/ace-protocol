@@ -42,7 +42,7 @@
 |---|---|---|---|
 | `$schema` | string | 否 | 编辑器提示，运行时忽略 |
 | `username` | string | 否 | 真实用户名/昵称，命名层级的第二段（`<ns>:<username>:<name>`）。**不含冒号**。省略时按下面的继承链取值 |
-| `servers` | object（非空） | **是** | `{ "<name>": { url, namespace?, description?, subscribe? } }`；server 名与 `namespace` **不含冒号**，`namespace` 缺省 `ace`；`subscribe` 是该 server 上的频道名数组（非空、不得重复），缺省表示只收直投（派生收件箱） |
+| `servers` | object（非空） | **是** | `{ "<name>": { url, namespace?, description?, subscribe? } }`；server 名与 `namespace` **不含冒号**，`namespace` 缺省 `ace`；`subscribe` 是该 server 上的频道名数组（**可以为空数组，也可以整个省略** —— 两者等价于"只收直投（派生收件箱）"；有元素时每个必须是非空字符串且不得重复），缺省即只收直投 |
 | `defaultActivation` | enum | 否 | `immediate` \| `next_turn` \| `manual`；缺省由 runtime 取 `next_turn` |
 | `manual` | `{ max?, ttlMs? }` | 否 | manual 事件保留上限；缺省 100 条 / 24h |
 | `projectConfig` | `"ignore"` | 否 | **只在全局文件里有意义**：让该文件压过项目 `.ace.json`，使克隆下来的仓库不能改掉用户集中配置的会话 |

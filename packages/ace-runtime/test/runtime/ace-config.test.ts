@@ -82,6 +82,17 @@ describe("parseAceConfig", () => {
 		expect(() => parseAceConfig(server(["inbox", "inbox"]), ".ace.json")).toThrow(/configured twice/);
 	});
 
+	it("accepts an empty or omitted subscribe — both mean direct messages only", () => {
+		const omitted = parseAceConfig(minimal, ".ace.json");
+		expect(omitted.servers.local.subscribe).toBeUndefined();
+
+		const empty = parseAceConfig(
+			{ ...minimal, servers: { local: { url: "redis://127.0.0.1:6379", subscribe: [] } } },
+			".ace.json",
+		);
+		expect(empty.servers.local.subscribe).toEqual([]);
+	});
+
 	it("points a top-level subscribe at the per-server form", () => {
 		expect(() => parseAceConfig({ ...minimal, subscribe: ["inbox"] }, ".ace.json")).toThrow(
 			/subscribe belongs inside a server — servers: \{ "<name>": \{ url, subscribe: \["<channel>"\] \} \}/,

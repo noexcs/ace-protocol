@@ -23,6 +23,11 @@ describe("ACE local configuration JSON Schema", () => {
 				servers: { local: { url: "redis://127.0.0.1:6379", subscribe: ["inbox", "lan:ci-failures"] } },
 			},
 		],
+		[
+			"an empty subscribe list",
+			{ username: "u", servers: { local: { url: "redis://127.0.0.1:6379", subscribe: [] } } },
+		],
+		["a server with no subscribe key", { username: "u", servers: { local: { url: "redis://127.0.0.1:6379" } } }],
 		["a default activation", { username: "u", servers, defaultActivation: "manual" }],
 		["manual retention", { username: "u", servers, manual: { max: 5, ttlMs: 60_000 } }],
 		["a pinned global file", { username: "u", servers, projectConfig: "ignore" }],
