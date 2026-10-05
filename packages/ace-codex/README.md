@@ -106,40 +106,36 @@ The package declares a `bin` entry, so after install the launcher is on `PATH` a
 
 ## Configure
 
-`.ace.json` is read from the bridge's working directory — the same directory the Codex thread runs in — and carries the
-ACE subscription/publish channels exactly as for the Pi host (see `ace-runtime` for the full key set). A minimal example:
+`.ace.json` is read from the bridge's working directory — the same directory the Codex thread runs in — and declares a
+`username`, one or more `servers` (each a broker URL and the namespace it owns), and the `subscribe` channel names,
+exactly as for the Pi host (see `ace-runtime` for the full key set). A channel **name is the address**: a short
+subscribe entry is completed to `<namespace>:<username>:<name>`, and its Redis stream key and consumer group are
+derived from that name — there is no separate stream/group config, and no `publish` list to declare. A minimal example:
 
 ```json
 {
+  "username": "alice",
+  "servers": {
+    "lan": { "url": "redis://192.168.2.11:6379", "namespace": "ace" }
+  },
   "defaultActivation": "next_turn",
-  "registry": { "url": "redis://192.168.2.11:6379", "prefix": "ace:lan" },
-  "subscribe": [
-    {
-      "name": "from-ci",
-      "transport": "redis-streams",
-      "description": "CI results",
-      "config": { "stream": "ace:lan:in.codex", "group": "codex", "url": "redis://192.168.2.11:6379" }
-    }
-  ],
-  "publish": [
-    {
-      "name": "to-ci",
-      "transport": "redis-streams",
-      "description": "CI agent inbox",
-      "config": { "stream": "ace:lan:in.ci", "url": "redis://192.168.2.11:6379" }
-    }
-  ]
+  "subscribe": ["from-ci"]
 }
 ```
 
+`subscribe: ["from-ci"]` on the single `lan` server means the channel `ace:alice:from-ci`. With more than one server,
+qualify a subscription with the server name (`"lan:from-ci"`) so the runtime knows which directory to read it in.
+
 ### Agent directory (auto-registration)
 
-When the config carries a `registry` (a broker URL, optional `prefix`), the bridge **registers itself in the agent
-directory on start and unregisters on stop** — no extra step. It registers as `codex:<threadId>` (the thread id is the
-Codex UUIDv7 the session started or resumed with), publishes the member's own stream + consumer group as the session's
-address, and reads that inbox through a derived `session-inbox` subscription. Peers that discover the member through
-the directory can therefore send it a direct ACE event, which is delivered and acked like any other channel. When no
-`registry` is configured the bridge behaves exactly as before: nothing is registered, no inbox stream is created.
+Whenever servers are configured, the bridge **registers itself in the agent directory on every one of them, and
+unregisters on stop** — no extra step. On each server it registers the channel named by this session's **sender**:
+`<namespace>:<username>:codex:<threadId>` (the thread id is the Codex UUIDv7 the session started or resumed with).
+The sender name *is* the address — the stream key (`<ns>:ch:<name>`) and the consumer group (the channel name itself)
+are derived from it, so nothing here can disagree with what a peer computes — and the bridge reads that channel back
+through a derived `session-inbox` subscription. A peer that discovers the channel through the directory can send it a
+direct ACE event, delivered and acked like any other channel. An unreachable server is skipped with a warning and the
+rest of the session still runs; `registration()` and `sessionInbox()` expose the first server that came up.
 
 Bridge connection is configured by flags or `ACE_CODEX_*` env vars (flags win). The bridge does **not** read Codex's own
 `codex.json` — it is a thin driver and mixing in Codex internals would couple it to them.
@@ -187,18 +183,20 @@ Programmatic use: `createBridge({ config, cwd, logger })` returns a bridge with 
   - mode mapping — idle → `turn/start`, busy → `turn/steer` (including `expectedTurnId` mismatch), `manual` → held by the
     runtime with **no RPC** (asserts `turn/start` and `thread/queue/add` both stay at 0);
   - ack mapping — the `userMessage` echo is the ack point, `turn/completed` alone is not, and the delivery timeout rejects;
-  - **agent-directory registration** — the bridge registers `codex:<threadId>` with the right `cwd` / broker URL, appends
-    the derived `session-inbox` subscription *and* starts a reader for it, delivers + acks an event published straight to
-    the member's inbox, stops in the order `runtime.stop()` → `unregister()` → `close()`, registers nothing when no
-    `registry` is configured, and still starts (unregistered) if registration fails.
+  - **agent-directory registration** — the bridge registers the channel named by its sender
+    (`<ns>:<username>:codex:<threadId>`) on every server with the right `cwd`, derives the `session-inbox` subscription
+    from that channel name (stream `<ns>:ch:<name>`, group = the channel name) *and* starts a reader for it, delivers +
+    acks an event published straight to the channel's stream, isolates a server whose registration fails (skipped with a
+    warning; the rest of the session still runs), stops in the order `runtime.stop()` → `unregister()` → `close()`, and
+    still starts (unregistered) when its only server is unreachable.
 - **Live smoke** — `scripts/smoke.ts` talks to a **real** `codex app-server` (spawned over stdio) *only if* a `codex`
   binary is present; otherwise it prints why and exits `0` (skip), so CI without Codex is not blocked. It verifies the
   non-experimental path end to end: `initialize` handshake, `thread/start`, a `turn/start` that streams
   `turn/started` / item echo / `turn/completed`, and a best-effort `turn/steer` into the running turn. When a Redis
   broker is reachable (default `ACE_LIVE_REDIS_URL`, else `redis://127.0.0.1:6379`) it additionally runs the
-  **agent-directory** live check: the member appears in the directory (zset + entry hash), a direct publish to the
-  advertised stream is consumed and acked (leaves the group's pending list), and shutdown removes the entry and the
-  stream. It skips with a printed reason when `codex`, `redis-cli`, or the broker is missing.
+  **agent-directory** live check: the session's sender channel appears in the directory (zset + entry hash), a direct
+  publish to that channel's derived stream is consumed and acked (leaves the group's pending list), and shutdown removes
+  the entry and the stream. It skips with a printed reason when `codex`, `redis-cli`, or the broker is missing.
 
 ```sh
 bun run test     # vitest run
@@ -230,12 +228,12 @@ an **MCP server** (the host supports `codex mcp add`). Until it exists, this hos
 3. **The subcommand is experimental**, so the wire protocol may change without notice: pin the tested
    version, and fail loudly on a shape we do not recognize.
 
-**Verified on 0.153.0 + local Redis**: biome/tsc clean; vitest 40/40; `scripts/smoke.ts` green with
-the live registry half. Also verified by hand: the bridge registered as `codex:<threadId>` with the
-right stream/group/url in the directory, an `XADD` to the member stream was received, injected as a
-`next_turn`, and acknowledged after the observation (the PEL emptied). **Not verified**: registration
-failure and stop-while-register-in-flight against a real broker — both covered by in-memory unit
-tests only.
+**Verified locally**: biome/tsc clean; vitest 39/39. The live half runs through `scripts/smoke.ts` (and skips cleanly
+without a `codex` binary): the plumbing checks drive `initialize` / `thread/start` / `turn/start` / `turn/steer`; the
+directory check confirms the session's sender channel (`<ns>:<username>:codex:<threadId>`) is registered (zset + entry
+hash), an `XADD` to that channel's derived stream is received, injected as a `next_turn`, and acknowledged after the
+observation (the PEL empties), and shutdown removes both the entry and the stream. **Not verified against a real
+broker**: registration failure and stop-while-`register`-in-flight — both covered by in-memory unit tests only.
 
 ## Not verified here
 

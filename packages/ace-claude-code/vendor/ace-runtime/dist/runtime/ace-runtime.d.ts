@@ -1,6 +1,6 @@
 import type { AgentEngine } from "../agent/agent-engine.ts";
 import type { AceLogger } from "../logger.ts";
-import type { ConcreteActivation } from "../protocol/ace-message.ts";
+import { type ConcreteActivation } from "../protocol/ace-message.ts";
 import type { Transport } from "../transport/transport.ts";
 import { type EndpointConfig } from "./endpoint-config.ts";
 import { type DispatchResult } from "./event-dispatcher.ts";

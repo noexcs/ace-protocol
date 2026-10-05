@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { channelStreamKey, directoryEntryKey, directoryKey, senderName } from "ace-runtime";
 import { createClient } from "redis";
 import * as z from "zod/v4";
 import { ackFilePath, readNewTrail } from "../src/ack.ts";
@@ -78,11 +79,8 @@ function aceEventBlock(): string {
 async function brokerReachable(configText: string, timeoutMs = 500): Promise<boolean> {
 	let url: string | undefined;
 	try {
-		const config = JSON.parse(configText) as {
-			subscribe?: Array<{ config?: { url?: string } }>;
-			publish?: Array<{ config?: { url?: string } }>;
-		};
-		url = config.subscribe?.[0]?.config?.url ?? config.publish?.[0]?.config?.url;
+		const config = JSON.parse(configText) as { servers?: Record<string, { url?: string }> };
+		url = Object.values(config.servers ?? {})[0]?.url;
 	} catch {
 		return false;
 	}
@@ -175,8 +173,8 @@ async function main(): Promise<void> {
 	writeFileSync(join(configuredDir, ".ace.json"), exampleConfig);
 	if (await brokerReachable(exampleConfig)) {
 		const text = await waitForLiveChannels({ CLAUDE_PROJECT_DIR: configuredDir });
-		if (text.includes("subscribe inbox") && text.includes("publish outbox")) {
-			ok("ace_channels lists the resolved subscribe/publish channels");
+		if (text.includes("ace:claude:inbox")) {
+			ok("ace_channels lists the resolved channel names");
 		} else {
 			fail("ace_channels (resolved)", `got: ${text}`);
 		}
@@ -219,37 +217,37 @@ async function main(): Promise<void> {
 			if (output.ok) ok("manifest validation passed");
 			else fail("manifest validation", output.text.split("\n").pop() ?? "");
 		}
-		section("4b. Agent directory (broker-gated): register, member direct delivery, shutdown cleanup");
-		// The live half of the directory contract: the session registers in the agent directory, a peer
-		// delivers one event to the member's own stream, and the shutdown removes the entry and its
-		// stream. Gated on the broker; every step is bounded, so a slow broker fails the check instead
-		// of hanging the run.
+		section("4b. Agent directory (broker-gated): register, direct delivery, shutdown cleanup");
+		// The live half of the directory contract: the session registers the channel named by its
+		// sender in the agent directory, a peer delivers one event to that channel's stream, and the
+		// shutdown removes the entry and its stream. Gated on the broker; every step is bounded, so a
+		// slow broker fails the check instead of hanging the run.
 		const liveRedis = "redis://127.0.0.1:6379";
-		// A per-run prefix: two concurrent runs against one broker must not share keys, or one run's
-		// shutdown cleanup drops the stream out from under the other's reader.
-		const prefix = `ace:smoke:${Math.random().toString(16).slice(2)}`;
+		// A per-run namespace: two concurrent runs against one broker must not share keys, or one run's
+		// shutdown cleanup drops the stream out from under the other's reader. A namespace may not
+		// contain colons (it is the first name segment), so the run tag is a bare hex suffix.
+		const namespace = `acesmoke${Math.random().toString(16).slice(2)}`;
 		const registryConfigText = JSON.stringify({
-			subscribe: [
-				{
-					name: "inbox",
-					transport: "redis-streams",
-					config: { stream: `${prefix}:inbox`, group: "smoke", url: liveRedis },
-				},
-			],
-			publish: [
-				{ name: "outbox", transport: "redis-streams", config: { stream: `${prefix}:outbox`, url: liveRedis } },
-			],
-			registry: { url: liveRedis, prefix },
+			username: "smoke",
+			servers: { local: { url: liveRedis, namespace } },
+			subscribe: [],
+			defaultActivation: "next_turn",
 		});
 		if (!(await brokerReachable(registryConfigText))) {
 			console.log("  SKIP  no broker reachable for the registry smoke; the registration, direct-delivery and");
 			console.log("        shutdown-cleanup checks need one (start Redis and re-run).");
 		} else {
-			const member = "claude-code:smoke-1";
-			const memberStream = `${prefix}:events:${member}`;
-			const memberGroup = `ace:${member}`;
-			const registryPrefix = prefix;
-			const entriesKey = `${registryPrefix}:entry`;
+			// A channel name is the address: the session registers the channel named by its sender, and
+			// everything else — stream key, group, directory keys — is derived from that name.
+			const sender = senderName({
+				namespace,
+				username: "smoke",
+				codingAgent: "claude-code",
+				sessionId: "smoke-1",
+			});
+			const channelStream = channelStreamKey(namespace, sender);
+			const directoryMembers = directoryKey(namespace);
+			const directoryEntries = directoryEntryKey(namespace);
 			const registryDir = mkdtempSync(join(tmpdir(), "ace-smoke-reg-"));
 			try {
 				writeFileSync(join(registryDir, ".ace.json"), registryConfigText);
@@ -274,47 +272,43 @@ async function main(): Promise<void> {
 							content: Array<{ text: string }>;
 						};
 						const text = result.content.map((part) => part.text).join("\n");
-						registered = text.includes("subscribe session-inbox") && text.includes(`"${member}"`);
+						// The tool listing carries labels, not addresses (by design); the sender name is
+						// asserted against the channel instructions below.
+						registered = text.includes("session-inbox");
 						if (!registered) await sleep(100);
 					}
 					if (!registered) {
-						fail("directory registration", "ace_channels never listed the derived session-inbox for the member");
+						fail("directory registration", "ace_channels never listed the derived session-inbox for the sender");
 						return;
 					}
-					ok("ace_channels lists the derived session-inbox named after the member");
+					ok("ace_channels lists the derived session-inbox named by the sender");
 					const instructions = client.getInstructions() ?? "";
-					if (instructions.includes(`"${member}"`)) ok("channel instructions name the member for direct events");
-					else fail("channel instructions (member)", "the member name is not in the instructions");
+					if (instructions.includes(`"${sender}"`)) ok("channel instructions name the channel for direct events");
+					else fail("channel instructions (channel)", "the channel name is not in the instructions");
 
-					// Directory state, straight from Redis: the presence ZSet and the entry hash.
-					const zscore = await peer.zScore(registryPrefix, member);
-					const entryRaw = await peer.hGet(entriesKey, member);
-					let entry: { config?: { stream?: string; group?: string; url?: string } } | undefined;
-					try {
-						entry = JSON.parse(entryRaw ?? "undefined");
-					} catch {
-						entry = undefined;
-					}
+					// Directory state, straight from Redis: the presence ZSet, and the entry hash whose
+					// value is the channel's self-description.
+					const zscore = await peer.zScore(directoryMembers, sender);
+					const entryRaw = await peer.hGet(directoryEntries, sender);
 					if (
 						zscore !== null &&
 						zscore > Date.now() &&
-						entry?.config?.stream === memberStream &&
-						entry?.config?.group === memberGroup &&
-						entry?.config?.url === liveRedis
+						typeof entryRaw === "string" &&
+						entryRaw.includes("direct messages addressed to me")
 					) {
-						ok(`directory holds the member (zset score, ${entriesKey} hash, stream/group/url)`);
+						ok(`directory holds the channel (zset score, ${directoryEntries} hash)`);
 					} else {
 						fail("directory entry", `zscore=${String(zscore)} entry=${entryRaw ?? "(none)"}`);
 					}
-					const memberGroupInfo = await peer.xInfoGroups(memberStream).catch(() => undefined);
-					const groupCount = memberGroupInfo?.find((g) => g.name === memberGroup)?.consumers ?? -1;
-					if (groupCount >= 0) ok(`consumer group ${memberGroup} exists on ${memberStream}`);
-					else fail("consumer group", `${memberGroup} was not created on ${memberStream}`);
+					const memberGroupInfo = await peer.xInfoGroups(channelStream).catch(() => undefined);
+					const groupCount = memberGroupInfo?.find((g) => g.name === sender)?.consumers ?? -1;
+					if (groupCount >= 0) ok(`consumer group ${sender} exists on ${channelStream}`);
+					else fail("consumer group", `${sender} was not created on ${channelStream}`);
 
-					// Member direct delivery: a peer publishes to the member's own stream; the runtime
-					// must deliver it through the derived session-inbox subscription. The block the server
-					// pushes is exactly what the engine keyed the observation on, so the smoke captures it
-					// from the notification rather than re-deriving the render.
+					// Direct delivery: a peer publishes to the channel named by this session's sender; the
+					// runtime must deliver it through the derived session-inbox subscription. The block
+					// the server pushes is exactly what the engine keyed the observation on, so the smoke
+					// captures it from the notification rather than re-deriving the render.
 					const peerMessage = {
 						aceVersion: "0.1",
 						id: "evt_smoke_direct",
@@ -323,7 +317,7 @@ async function main(): Promise<void> {
 						activation: "next_turn",
 						body: "direct delivery check",
 					};
-					await peer.xAdd(memberStream, "*", { message: JSON.stringify(peerMessage) });
+					await peer.xAdd(channelStream, "*", { message: JSON.stringify(peerMessage) });
 					let rendered: string | undefined;
 					for (let attempt = 0; attempt < 150 && rendered === undefined; attempt++) {
 						const hit = channelEvents.find((text) => text.includes("id: evt_smoke_direct"));
@@ -331,15 +325,15 @@ async function main(): Promise<void> {
 						if (rendered === undefined) await sleep(100);
 					}
 					if (rendered === undefined) {
-						fail("direct delivery", "the member's stream produced no channel notification");
+						fail("direct delivery", "the channel stream produced no channel notification");
 						return;
 					}
-					ok("direct event from the member's stream became a channel notification");
+					ok("direct event from the sender's channel stream became a channel notification");
 					// First the entry must show up in the group's PEL (delivered, awaiting the
 					// observation), so a fast ack poll cannot be fooled by an entry that was never read.
 					let delivered = false;
 					for (let attempt = 0; attempt < 150 && !delivered; attempt++) {
-						delivered = ((await peer.xPending(memberStream, memberGroup).catch(() => null))?.pending ?? 0) >= 1;
+						delivered = ((await peer.xPending(channelStream, sender).catch(() => null))?.pending ?? 0) >= 1;
 						if (!delivered) await sleep(100);
 					}
 					// The host's observation step, simulated: the hook would have seen the block in the
@@ -352,7 +346,7 @@ async function main(): Promise<void> {
 					);
 					let acked = false;
 					for (let attempt = 0; attempt < 150 && !acked; attempt++) {
-						acked = (await peer.xPending(memberStream, memberGroup).catch(() => null))?.pending === 0;
+						acked = (await peer.xPending(channelStream, sender).catch(() => null))?.pending === 0;
 						if (!acked) await sleep(100);
 					}
 					if (!delivered) fail("direct delivery (PEL)", "the entry never entered the group's pending list");
@@ -363,19 +357,19 @@ async function main(): Promise<void> {
 				// stop -> unregister -> close, so the entry and the stream must both be gone from Redis.
 				let gone = false;
 				for (let attempt = 0; attempt < 100 && !gone; attempt++) {
-					const score = await peer.zScore(registryPrefix, member);
-					const entryLeft = await peer.hExists(entriesKey, member);
-					const streamLeft = await peer.exists(memberStream);
+					const score = await peer.zScore(directoryMembers, sender);
+					const entryLeft = await peer.hExists(directoryEntries, sender);
+					const streamLeft = await peer.exists(channelStream);
 					gone = score === null && entryLeft === 0 && streamLeft === 0;
 					if (!gone) await sleep(100);
 				}
-				if (gone) ok("shutdown removed the directory entry and dropped the member's stream");
+				if (gone) ok("shutdown removed the directory entry and dropped the channel's stream");
 				else
 					fail(
 						"shutdown cleanup",
-						`zscore=${String(await peer.zScore(registryPrefix, member))} entry=${String(
-							await peer.hExists(entriesKey, member),
-						)} stream=${String(await peer.exists(memberStream))}`,
+						`zscore=${String(await peer.zScore(directoryMembers, sender))} entry=${String(
+							await peer.hExists(directoryEntries, sender),
+						)} stream=${String(await peer.exists(channelStream))}`,
 					);
 				await peer.quit();
 			} finally {
@@ -414,8 +408,10 @@ async function main(): Promise<void> {
 			console.log(
 				`          claude --dangerously-load-development-channels plugin:ace-claude-code@inline --plugin-dir ${root}`,
 			);
-			console.log("        then publish an ACE event to the configured `ace:inbox:claude-code` stream and");
-			console.log('        watch it arrive as a <channel ... ace="event"> block that starts a turn.');
+			console.log("        then publish an ACE event to a subscribed channel's stream (or send this session a");
+			console.log(
+				'        direct event at the channel named by its sender) and watch it arrive as a <channel ... ace="event"> block that starts a turn.',
+			);
 		} else {
 			console.log(
 				"  OK    the host can load custom channels; run the command printed in the README for the live check.",

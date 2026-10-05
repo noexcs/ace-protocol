@@ -26,30 +26,30 @@ export declare const ACE_TOOL_NAMES: {
 export declare const TOOL_TEXT: {
     readonly publish: {
         readonly intro: string;
-        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the sessions that are online, then pass a member as target.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
+        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
         readonly params: {
             readonly body: "Event body; the peer's agent reads this";
             readonly activation: "How urgently the peer should process it (default: next_turn); pass \"default\" to let the receiver decide";
-            readonly target: "Where to publish: a configured channel name, an agent-directory member (or a prefix matching exactly one session), or a list of either";
+            readonly target: string;
         };
     };
     readonly agents: {
-        readonly description: "List the other agent sessions reachable right now — this session is not listed. Each row is a member you can pass to ace_publish as `target`.";
-        readonly guidelines: readonly ["Call ace_agents before ace_publish when the peer is not one of the configured channels."];
+        readonly description: "List the other sessions reachable right now — this session is not listed. Each row names a channel you can pass to ace_publish as `target`.";
+        readonly guidelines: readonly ["Call ace_agents before ace_publish when the peer is not a channel this session reads."];
         readonly params: {
             readonly agent: "Filter by coding agent, e.g. \"oh-my-pi\" or \"pi\"";
             readonly limit: "Maximum rows to return (default 20, cap 50)";
         };
     };
     readonly channels: {
-        readonly description: "List this session's ACE channels: what it subscribes to and where it can publish (read from .ace.json; broker settings are left out). A `publish` name is a valid ace_publish target; a `subscribe` name is not";
+        readonly description: "List this session's ACE channels: the channels it reads — its own inbox, named by its sender, plus the subscribed names from .ace.json (broker settings are left out). Any channel name is a valid ace_publish target, including the peers ace_agents lists";
         /**
          * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
          * has no directory tool), so it is a separate piece a host appends or drops. Compose with
          * {@link channelsToolText} rather than concatenating by hand.
          */
         readonly agentsPointer: "— address live peers with ace_agents.";
-        readonly guidelines: readonly ["Use a `publish` channel name, or a live member from ace_agents, as the ace_publish `target`."];
+        readonly guidelines: readonly ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `target`."];
     };
 };
 /**

@@ -1,20 +1,8 @@
 /**
  * `createBridge` agent-directory registration, driven by the scripted fake
- * app-server and an in-memory fake registry — no broker needed.
- *
- * Mirrors the reference assembly in `packages/ace-omp/extensions/ace.ts`
- * (and `docs/ace-runtime-api.md` §6): construct the registry →
- * `register({ codingAgent, sessionId, cwd, url })` with the Codex thread id as
- * `sessionId` → append the returned inbox as the derived `session-inbox`
- * subscription *and* give it a transport → `runtime.start()`. Stop is
- * `runtime.stop()` → `registry.unregister()` → `registry.close()`.
- *
- * The registry is injected through the `registry` seam (a factory) so the real
- * `AgentRegistry` derivation runs against an in-memory store. Both the
- * configured subscription and the derived `session-inbox` read through fake
- * transports, so the full start path runs with no broker: the delivery test
- * publishes straight to the member's inbox transport and the runtime turns it
- * into a turn.
+ * app-server and an injected registry factory: the bridge registers the channel named by this
+ * session's sender on every server, reads it back as a derived `session-inbox`, and a peer
+ * publishes straight to that channel's stream and the runtime turns it into a turn.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -24,47 +12,52 @@ import {
 	type AceLogger,
 	AgentRegistry,
 	type AgentRegistryStore,
+	channelName,
+	channelStreamKey,
 	InMemoryTransport,
-	type RegistryChannel,
 	type RegistryEntry,
+	senderName,
 } from "ace-runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { type AceCodexBridge, createBridge, SESSION_INBOX } from "../src/bridge.ts";
+import { type AceCodexBridge, createBridge, type RegistryFactory, SESSION_INBOX } from "../src/bridge.ts";
 import { createMemoryConnections } from "../src/memory-connection.ts";
 import { FakeAppServer } from "./support/fake-app-server.ts";
 
 const REGISTRY_URL = "redis://127.0.0.1:6379";
+const UP_URL = "redis://127.0.0.1:6379";
+const DOWN_URL = "redis://127.0.0.1:6390";
+const USERNAME = "tester";
 const SILENT: AceLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
-/** In-memory store backing the fake registry: presence index, entry hash, one stream per member. */
+/** In-memory store backing the fake registry: presence index, entry hash, one stream per channel. */
 class InMemoryRegistryStore implements AgentRegistryStore {
-	members = new Map<string, number>();
+	channels = new Map<string, number>();
 	entries = new Map<string, string>();
 	streams = new Set<string>();
 
 	async ensureStream(stream: string): Promise<void> {
 		this.streams.add(stream);
 	}
-	async put(member: string, channel: RegistryChannel, expiresAt: number): Promise<void> {
-		this.members.set(member, expiresAt);
-		this.entries.set(member, JSON.stringify(channel));
+	async put(channel: string, description: string, expiresAt: number): Promise<void> {
+		this.channels.set(channel, expiresAt);
+		this.entries.set(channel, description);
 	}
-	async refresh(member: string, expiresAt: number): Promise<void> {
-		this.members.set(member, expiresAt);
+	async refresh(channel: string, expiresAt: number): Promise<void> {
+		this.channels.set(channel, expiresAt);
 	}
-	async remove(member: string): Promise<void> {
-		this.members.delete(member);
-		this.entries.delete(member);
+	async remove(channel: string): Promise<void> {
+		this.channels.delete(channel);
+		this.entries.delete(channel);
 	}
 	async dropStream(stream: string): Promise<void> {
 		this.streams.delete(stream);
 	}
 	async list(now: number): Promise<RegistryEntry[]> {
 		const live: RegistryEntry[] = [];
-		for (const [member, expiresAt] of this.members) {
+		for (const [channel, expiresAt] of this.channels) {
 			if (expiresAt <= now) continue;
-			const raw = this.entries.get(member);
-			if (typeof raw === "string") live.push({ member, channel: JSON.parse(raw) as RegistryChannel, expiresAt });
+			const description = this.entries.get(channel);
+			if (typeof description === "string") live.push({ channel, description, expiresAt });
 		}
 		return live;
 	}
@@ -78,14 +71,21 @@ class FakeAgentRegistry extends AgentRegistry {
 	registerArgs: Parameters<AgentRegistry["register"]>[0][] = [];
 	#failRegister = false;
 	#registerGate: (() => Promise<void>) | undefined;
+	#onRegister: (() => void) | undefined;
 
 	constructor(
 		store: InMemoryRegistryStore,
 		callOrder: string[],
-		options: { failRegister?: boolean; registerGate?: () => Promise<void> } = {},
+		options: {
+			failRegister?: boolean;
+			registerGate?: () => Promise<void>;
+			onRegister?: () => void;
+			namespace?: string;
+		} = {},
 	) {
 		super({
 			store,
+			namespace: options.namespace,
 			ttlMs: 60_000,
 			// No heartbeat: a broker-free test should not run a refresh timer.
 			refreshMs: 0,
@@ -96,11 +96,13 @@ class FakeAgentRegistry extends AgentRegistry {
 		this.callOrder = callOrder;
 		this.#failRegister = options.failRegister ?? false;
 		this.#registerGate = options.registerGate;
+		this.#onRegister = options.onRegister;
 	}
 
 	async register(registration: Parameters<AgentRegistry["register"]>[0]) {
 		this.registerArgs.push({ ...registration });
 		this.callOrder.push("register");
+		this.#onRegister?.();
 		if (this.#failRegister) throw new Error("fake register failure");
 		// Lets a test hold the registration open across a concurrent `stop()`.
 		await this.#registerGate?.();
@@ -121,12 +123,23 @@ class FakeAgentRegistry extends AgentRegistry {
 interface Harness {
 	bridge: AceCodexBridge;
 	server: FakeAppServer;
-	registry: FakeAgentRegistry;
+	/** The first fake registry created (only valid once `start()` has run). */
+	readonly registry: FakeAgentRegistry;
+	registries: FakeAgentRegistry[];
+	/** Resolves the instant the first `register` is entered. */
+	registerCalled: Promise<void>;
 	store: InMemoryRegistryStore;
 	inboxTransport: InMemoryTransport;
 	peerTransport: InMemoryTransport;
 	callOrder: string[];
 	cwd: string;
+	namespace: string;
+}
+
+interface ServerSpec {
+	name: string;
+	url: string;
+	namespace: string;
 }
 
 let current: Harness | undefined;
@@ -139,63 +152,58 @@ afterEach(async () => {
 	}
 });
 
-function writeAceConfig(cwd: string, prefix: string, withRegistry: boolean, nameConflict: boolean): void {
+function writeAceConfig(cwd: string, servers: readonly ServerSpec[], subscribe: readonly string[]): void {
 	const config: Record<string, unknown> = {
-		subscribe: [
-			{
-				name: "from-peer",
-				transport: "redis-streams",
-				description: "a configured channel",
-				config: { stream: `${prefix}:in.peer`, group: "codex", url: REGISTRY_URL },
-				options: {},
-			},
-			...(nameConflict
-				? [
-						{
-							name: SESSION_INBOX,
-							transport: "redis-streams",
-							description: "a pre-existing subscription that collides with the directory inbox",
-							config: { stream: `${prefix}:in.inbox`, group: "codex", url: REGISTRY_URL },
-							options: {},
-						},
-					]
-				: []),
-		],
-		...(!withRegistry ? {} : { registry: { url: REGISTRY_URL, prefix } }),
+		username: USERNAME,
+		servers: Object.fromEntries(
+			servers.map((server) => [server.name, { url: server.url, namespace: server.namespace }]),
+		),
+		subscribe: [...subscribe],
 	};
 	writeFileSync(join(cwd, ".ace.json"), JSON.stringify(config));
 }
 
 /**
  * Assemble a bridge over the fake app-server with a temp working directory carrying `.ace.json`
- * (registry on/off). The registry is injected as a factory so no broker is needed, and both
- * subscriptions read through fake transports.
+ * (one or more servers). The registry is injected as a factory so no broker is needed, and every
+ * derived subscription reads through a fake transport.
  */
 async function setup(options: {
-	withRegistry?: boolean;
-	failRegister?: boolean;
+	servers?: readonly ServerSpec[];
+	subscribe?: readonly string[];
+	/** URLs whose registration must fail (a simulated unreachable broker). */
+	failUrls?: ReadonlySet<string>;
 	registerGate?: () => Promise<void>;
 	logger?: AceLogger;
 	/** When false, `start()` is returned un-awaited so a test can race `stop()` against it. */
 	startNow?: boolean;
-	/** When true, the configured `.ace.json` already declares a `session-inbox` subscription. */
-	nameConflict?: boolean;
 }): Promise<Harness> {
-	const withRegistry = options.withRegistry ?? true;
-	const failRegister = options.failRegister ?? false;
+	const namespace = `ace-test-${Math.random().toString(16).slice(2)}`;
+	const servers = options.servers ?? [{ name: "local", url: REGISTRY_URL, namespace }];
+	const subscribe = options.subscribe ?? ["from-peer"];
+	const failUrls = options.failUrls ?? new Set<string>();
 	const registerGate = options.registerGate;
 	const logger = options.logger ?? SILENT;
 	const startNow = options.startNow ?? true;
-	const nameConflict = options.nameConflict ?? false;
 	const cwd = mkdtempSync(join(tmpdir(), "ace-codex-bridge-"));
-	const prefix = `ace:test:${Math.random().toString(16).slice(2)}`;
-	writeAceConfig(cwd, prefix, withRegistry, nameConflict);
+	writeAceConfig(cwd, servers, subscribe);
 
 	const { a, b } = createMemoryConnections();
 	const server = new FakeAppServer(b);
 	const store = new InMemoryRegistryStore();
 	const callOrder: string[] = [];
-	const registry = new FakeAgentRegistry(store, callOrder, { failRegister, registerGate });
+	const registries: FakeAgentRegistry[] = [];
+	const { promise: registerCalled, resolve: markRegisterCalled } = Promise.withResolvers<void>();
+	const registry: RegistryFactory = ({ url, namespace }) => {
+		const fake = new FakeAgentRegistry(store, callOrder, {
+			namespace,
+			failRegister: failUrls.has(url),
+			registerGate,
+			onRegister: markRegisterCalled,
+		});
+		registries.push(fake);
+		return fake;
+	};
 	const inboxTransport = new InMemoryTransport();
 	const peerTransport = new InMemoryTransport();
 	// Record when the runtime's transport stop ran, so the order is
@@ -205,6 +213,21 @@ async function setup(options: {
 		callOrder.push("runtime.stop:transport-stop");
 		return originalStop();
 	};
+
+	// Transport keys follow the derived subscription names.
+	const multi = servers.length > 1;
+	const transportByName: Record<string, InMemoryTransport> = {};
+	for (const spec of servers) {
+		transportByName[multi ? `${spec.name}:${SESSION_INBOX}` : SESSION_INBOX] = inboxTransport;
+	}
+	for (const name of subscribe) {
+		const [maybeServer, ...rest] = name.split(":");
+		const owner = multi ? servers.find((spec) => spec.name === maybeServer) : servers[0];
+		if (owner === undefined) continue;
+		const short = multi ? rest.join(":") : name;
+		const channel = channelName(owner.namespace, USERNAME, short);
+		transportByName[multi ? `${owner.name}:${channel}` : channel] = peerTransport;
+	}
 
 	const env: Record<string, string | undefined> = { ...process.env };
 	// Keep the resolver pointed at the temp workspace, not a host-configured ACE_CONFIG.
@@ -216,44 +239,58 @@ async function setup(options: {
 		connection: a,
 		logger,
 		env,
-		// Registry seam: the recording fake, built from the in-memory store.
+		// Registry seam: the recording factory, built from the in-memory store.
 		registry,
-		transports: { "from-peer": peerTransport, [SESSION_INBOX]: inboxTransport },
+		transports: transportByName,
 	});
 
 	current = {
 		bridge,
 		server,
-		registry,
+		get registry() {
+			return registries[0] as FakeAgentRegistry;
+		},
+		registries,
+		registerCalled,
 		store,
 		inboxTransport,
 		peerTransport,
 		callOrder,
 		cwd,
+		namespace,
 	};
 	if (startNow) await bridge.start();
 	return current;
 }
 
 describe("createBridge agent-directory registration", () => {
-	it("registers with codingAgent=codex, the Codex thread id, cwd and the registry url", async () => {
-		const harness = await setup({ withRegistry: true });
+	it("registers the sender channel with codingAgent=codex, the Codex thread id and cwd", async () => {
+		const harness = await setup({});
 		const threadId = harness.bridge.threadId();
 		expect(threadId).toBeDefined();
 		const registration = harness.bridge.registration();
 		expect(registration).toBeDefined();
-		expect(registration?.member).toBe(`codex:${threadId}`);
+		const expectedSender = senderName({
+			namespace: harness.namespace,
+			username: USERNAME,
+			codingAgent: "codex",
+			sessionId: threadId as string,
+		});
+		// The channel *is* the sender; the stream and group are derived from it.
+		expect(registration?.channel).toBe(expectedSender);
+		expect(registration?.stream).toBe(channelStreamKey(harness.namespace, expectedSender));
+		expect(registration?.group).toBe(expectedSender);
 		expect(harness.registry.registerArgs).toHaveLength(1);
 		expect(harness.registry.registerArgs[0]).toMatchObject({
+			sender: expectedSender,
 			codingAgent: "codex",
 			sessionId: threadId,
 			cwd: harness.cwd,
-			url: REGISTRY_URL,
 		});
 	});
 
 	it("appends the derived session-inbox subscription and gives it a transport", async () => {
-		const harness = await setup({ withRegistry: true });
+		const harness = await setup({});
 		const registration = harness.bridge.registration();
 		expect(registration).toBeDefined();
 		expect(harness.bridge.sessionInbox()).toMatchObject({
@@ -269,13 +306,14 @@ describe("createBridge agent-directory registration", () => {
 		expect(transports?.[SESSION_INBOX]).toBeDefined();
 		// The runtime started it: the advertised inbox is actually being read.
 		expect(harness.inboxTransport.started).toBe(true);
-		// The configured subscription still has its own transport.
-		expect(transports?.["from-peer"]).toBeDefined();
+		// The configured subscription still has its own transport, named by its channel.
+		const peerName = channelName(harness.namespace, USERNAME, "from-peer");
+		expect(transports?.[peerName]).toBeDefined();
 		expect(harness.peerTransport.started).toBe(true);
 	});
 
-	it("delivers an event published straight to the member's stream, and acks it", async () => {
-		const harness = await setup({ withRegistry: true });
+	it("delivers an event published straight to the channel's stream, and acks it", async () => {
+		const harness = await setup({});
 		const message = JSON.stringify({
 			aceVersion: "0.1",
 			id: "evt_direct_1",
@@ -284,7 +322,7 @@ describe("createBridge agent-directory registration", () => {
 			body: "Direct message from the directory test.",
 		});
 		// A peer that resolved this session through the directory publishes an ACE event to the
-		// stream the directory advertised. `publish` awaits the runtime's full delivery (validate →
+		// stream the channel name derives. `publish` awaits the runtime's full delivery (validate →
 		// inject → delivery ack), so a resolved publish is the ack.
 		await harness.inboxTransport.publish(message);
 		expect(harness.server.count("turn/start")).toBe(1);
@@ -293,7 +331,7 @@ describe("createBridge agent-directory registration", () => {
 	});
 
 	it("stops in the order runtime.stop → unregister → close", async () => {
-		const harness = await setup({ withRegistry: true });
+		const harness = await setup({});
 		expect(harness.callOrder).toEqual(["register"]);
 		await harness.bridge.stop();
 		const runtimeStop = harness.callOrder.indexOf("runtime.stop:transport-stop");
@@ -304,52 +342,36 @@ describe("createBridge agent-directory registration", () => {
 		expect(close).toBeGreaterThan(unregister);
 	});
 
-	it("does not register when the config has no registry", async () => {
-		const harness = await setup({ withRegistry: false });
-		expect(harness.bridge.registration()).toBeUndefined();
-		expect(harness.bridge.sessionInbox()).toBeUndefined();
-		expect(harness.registry.registerArgs).toHaveLength(0);
-		expect(harness.callOrder).toEqual([]);
-		expect(harness.store.members.size).toBe(0);
-		// No derived subscription, so no reader is started for it.
-		expect(harness.inboxTransport.started).toBe(false);
-	});
-
 	it("survives a failed registration: the bridge still starts, unregistered", async () => {
-		const harness = await setup({ withRegistry: true, failRegister: true });
+		const harness = await setup({ failUrls: new Set([REGISTRY_URL]) });
 		expect(harness.bridge.registration()).toBeUndefined();
 		expect(harness.bridge.sessionInbox()).toBeUndefined();
 		expect(harness.registry.registerArgs).toHaveLength(1);
-		// No derived subscription, so the inbox reader was never started.
+		// No derived subscription for a server that did not come up, so no reader started for it.
 		expect(harness.inboxTransport.started).toBe(false);
-		// Still reading its configured channel.
-		expect(harness.peerTransport.started).toBe(true);
+		expect(harness.store.channels.size).toBe(0);
 	});
 
 	it("cleans up when `register` completes after `stop()` (no dangling registration)", async () => {
 		let releaseGate: (() => void) | undefined;
-		const gate = () =>
-			new Promise<void>((resolve) => {
-				releaseGate = resolve;
-			});
+		const gate = () => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			releaseGate = resolve;
+			return promise;
+		};
 		// Build without auto-starting, so `start()` and `stop()` can be raced deterministically.
-		const harness = await setup({ withRegistry: true, registerGate: gate, startNow: false });
+		const harness = await setup({ registerGate: gate, startNow: false });
 		const startPromise = harness.bridge.start();
-		// Wait until the registration is actually held open at the gate (in flight).
-		const deadline = Date.now() + 2_000;
-		while (harness.registry.registerArgs.length < 1 && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
-		expect(harness.registry.registerArgs.length).toBe(1);
+		// Wait until `register` is actually held open at the gate (in flight).
+		await harness.registerCalled;
+		expect(harness.registries[0]?.registerArgs.length).toBe(1);
 		// `stop()` lands while `register` is still in flight. It cannot unregister a registration
 		// that does not exist yet, so the post-register cleanup must remove it when the gate opens.
 		await harness.bridge.stop();
 		releaseGate?.();
 		await startPromise;
-		// Give the in-flight `register` continuation a tick to reach its post-register cleanup.
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		// No dangling registration: the member and its stream were removed from the directory.
-		expect(harness.store.members.size).toBe(0);
+		// No dangling registration: the channel and its stream were removed from the directory.
+		expect(harness.store.channels.size).toBe(0);
 		expect(harness.store.streams.size).toBe(0);
 		// And the cleanup path actually ran the unregister (not just `stop()`'s no-op one).
 		expect(harness.callOrder.filter((call) => call === "unregister")).toHaveLength(2);
@@ -363,28 +385,49 @@ describe("createBridge agent-directory registration", () => {
 			warn: (message) => warnings.push(message),
 			error: (message) => errors.push(message),
 		};
-		await setup({ withRegistry: true, failRegister: true, logger });
+		await setup({ failUrls: new Set([REGISTRY_URL]), logger });
 		// The bridge degraded and continued, surfacing the failure once via `warn`.
 		expect(warnings.length).toBe(1);
 		expect(warnings[0]).toContain("agent directory");
+		expect(warnings[0]).toContain("unreachable");
 		expect(errors).toHaveLength(0);
 	});
 
-	it("degrades (still reads configured channels) when a subscription is already named session-inbox", async () => {
+	it("isolates servers: an unreachable one is skipped and the rest of the session still runs", async () => {
 		const warnings: string[] = [];
 		const logger: AceLogger = {
 			info: () => {},
 			warn: (message) => warnings.push(message),
 			error: () => {},
 		};
-		const harness = await setup({ withRegistry: true, nameConflict: true, logger });
-		// No directory registration and no derived subscription…
-		expect(harness.bridge.registration()).toBeUndefined();
-		expect(harness.bridge.sessionInbox()).toBeUndefined();
-		expect(harness.store.members.size).toBe(0);
-		// …but the configured channel is still being read (the runtime started).
+		const up: ServerSpec = { name: "up", url: UP_URL, namespace: `ace-up-${Math.random().toString(16).slice(2)}` };
+		const down: ServerSpec = {
+			name: "down",
+			url: DOWN_URL,
+			namespace: `ace-down-${Math.random().toString(16).slice(2)}`,
+		};
+		const harness = await setup({
+			servers: [up, down],
+			subscribe: ["up:from-peer"],
+			failUrls: new Set([DOWN_URL]),
+			logger,
+		});
+		// The reachable server registered; the unreachable one did not.
+		const registration = harness.bridge.registration();
+		expect(registration).toBeDefined();
+		expect(registration?.channel).toBe(
+			senderName({
+				namespace: up.namespace,
+				username: USERNAME,
+				codingAgent: "codex",
+				sessionId: harness.bridge.threadId() as string,
+			}),
+		);
+		expect(harness.store.channels.size).toBe(1);
+		// The failed server was reported once, never as an error, and never took the session down.
+		expect(warnings.filter((w) => w.includes("down") && w.includes("unreachable"))).toHaveLength(1);
+		expect(harness.bridge.transports()?.["up:session-inbox"]).toBeDefined();
+		expect(harness.inboxTransport.started).toBe(true);
 		expect(harness.peerTransport.started).toBe(true);
-		// The collision was surfaced once, and not as an error.
-		expect(warnings.some((w) => w.includes("already named"))).toBe(true);
 	});
 });

@@ -25,7 +25,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registryGroup, registryMember, registryStream } from "ace-runtime";
+import { channelStreamKey, directoryEntryKey, directoryKey, senderName } from "ace-runtime";
 import { type AceCodexBridge, createBridge } from "../src/bridge.ts";
 import { AppServerClient } from "../src/client.ts";
 import { createStdioConnection } from "../src/connection.ts";
@@ -51,10 +51,11 @@ function redisCli(url: string, ...args: string[]): string {
 const redisCliPresent = (): boolean => spawnSync("redis-cli", ["--version"], { stdio: "ignore" }).error === undefined;
 
 /**
- * The agent-directory live check: a real `createBridge` registers `codex:<threadId>` in a real
- * Redis broker, a direct publish to the advertised stream is turned into a turn and acked, and
- * shutdown removes the directory entry and the session stream. Skips (exit 0) when the `codex`
- * binary, a reachable broker, or `redis-cli` is missing.
+ * The agent-directory live check: a real `createBridge` registers its sender channel
+ * (`<ns>:<username>:codex:<threadId>`) in a real Redis broker, a direct publish to that channel's
+ * derived stream is turned into a turn and acked, and shutdown removes the directory entry and the
+ * channel stream. Skips (exit 0) when the `codex` binary, a reachable broker, or `redis-cli` is
+ * missing.
  */
 async function runRegistry(executable: string): Promise<boolean> {
 	if (!binaryPresent(executable)) {
@@ -81,32 +82,27 @@ async function runRegistry(executable: string): Promise<boolean> {
 		if (!passed) ok = false;
 		report(passed, `registry: ${label}`, detail);
 	};
-	const prefix = `ace:smoke:${Math.random().toString(16).slice(2)}`;
+	const namespace = `ace-smoke-${Math.random().toString(16).slice(2)}`;
+	const username = "smoke";
 	const cwd = mkdtempSync(join(tmpdir(), "ace-codex-registry-"));
 	// Filled in once the thread is known; read by the shutdown assertion in `finally`.
-	let memberKey = "codex:";
-	let stream = `${prefix}:events:codex:`;
-	let group = "ace:codex:";
+	let channel = `${namespace}:${username}:codex:`;
+	let stream = "";
+	let group = "";
+	let registered = false;
 	let bridge: AceCodexBridge | undefined;
 	try {
-		// A minimal `.ace.json` in a temp workspace: one configured channel plus the directory.
+		// A minimal `.ace.json` in a temp workspace: one configured channel on one server.
 		const aceConfig = {
+			username,
+			servers: { local: { url, namespace } },
 			defaultActivation: "next_turn",
-			registry: { url, prefix },
-			subscribe: [
-				{
-					name: "from-ci",
-					transport: "redis-streams",
-					description: "CI results",
-					config: { stream: `${prefix}:in.smoke`, group: "codex", url },
-					options: {},
-				},
-			],
+			subscribe: ["from-ci"],
 		};
 		writeFileSync(join(cwd, ".ace.json"), JSON.stringify(aceConfig));
 
 		// Keep the resolver on the temp workspace's `.ace.json`, not a host-configured ACE_CONFIG
-		// (which would register under the real prefix while we assert this one).
+		// (which would register under the real namespace while we assert this one).
 		const env: Record<string, string | undefined> = { ...process.env };
 		delete env.ACE_CONFIG;
 		bridge = createBridge({ config: { listener: "stdio", command: executable, cwd }, cwd, env });
@@ -115,34 +111,25 @@ async function runRegistry(executable: string): Promise<boolean> {
 		check(threadId !== undefined, "bridge started with a thread", `thread=${threadId ?? "?"}`);
 		if (threadId === undefined) throw new Error("no thread id after bridge.start()");
 
-		memberKey = registryMember("codex", threadId);
-		stream = registryStream(prefix, memberKey);
-		group = registryGroup(memberKey);
+		// The channel name *is* the address: the session's sender name. The stream and the group are
+		// derived from it, so nothing here can disagree with what a peer computes.
+		channel = senderName({ namespace, username, codingAgent: "codex", sessionId: threadId });
+		stream = channelStreamKey(namespace, channel);
+		group = channel;
+		const membersKey = directoryKey(namespace);
+		const entriesKey = directoryEntryKey(namespace);
 
-		// 1. The directory entry appeared: zset member + entry hash (stream/group/url correct).
-		const zscore = await untilRedis(() => redisCli(url, "ZSCORE", prefix, memberKey) !== "", 15_000);
-		check(zscore, "member present in the zset", `member=${memberKey}`);
-		const entryRaw = await untilRedis(() => redisCli(url, "HGET", `${prefix}:entry`, memberKey) !== "", 15_000);
+		// 1. The directory entry appeared: zset member (the channel) + entry hash describing it.
+		const zscore = await untilRedis(() => redisCli(url, "ZSCORE", membersKey, channel) !== "", 15_000);
+		registered = zscore;
+		check(zscore, "channel present in the zset", `channel=${channel}`);
+		const entryRaw = await untilRedis(() => redisCli(url, "HGET", entriesKey, channel) !== "", 15_000);
 		check(entryRaw, "entry hash present");
-		let channel: { name?: string; transport?: string; config?: { stream?: string; group?: string; url?: string } } =
-			{};
-		try {
-			channel = JSON.parse(redisCli(url, "HGET", `${prefix}:entry`, memberKey)) as typeof channel;
-		} catch {
-			// leave the assertion below to report the missing/garbled entry
-		}
-		check(
-			channel.name === memberKey &&
-				channel.transport === "redis-streams" &&
-				channel.config?.stream === stream &&
-				channel.config?.group === group &&
-				channel.config?.url === url,
-			"entry channel advertises the right stream/group/url",
-			`stream=${channel.config?.stream ?? "?"} group=${channel.config?.group ?? "?"}`,
-		);
-		// The member's stream exists with the advertised group.
+		const description = redisCli(url, "HGET", entriesKey, channel);
+		check(description.includes("agent=codex"), "entry advertises the coding agent", description);
+		// The channel's stream exists with the group derived from its name.
 		const groups = await untilRedis(() => redisCli(url, "XINFO", "GROUPS", stream).includes(group), 15_000);
-		check(groups, "member stream exists with its group", `stream=${stream} group=${group}`);
+		check(groups, "channel stream exists with its group", `stream=${stream} group=${group}`);
 
 		// 2. A direct publish to the advertised stream is read by the bridge's reader and acked.
 		const message = JSON.stringify({
@@ -153,7 +140,11 @@ async function runRegistry(executable: string): Promise<boolean> {
 			body: "Live directory direct message. Reply with the single word: ping",
 		});
 		const entryId = redisCli(url, "XADD", stream, "*", "message", message);
-		check(entryId.length > 0 && /^\d+-\d+$/.test(entryId), "direct publish to the member stream", `entry=${entryId}`);
+		check(
+			entryId.length > 0 && /^\d+-\d+$/.test(entryId),
+			"direct publish to the channel stream",
+			`entry=${entryId}`,
+		);
 		// In the group's pending-entries list = the reader consumed it (a `turn/start` was fired);
 		// gone from it = the delivery was confirmed and the entry acked. Both are model-independent.
 		const inPel = (): boolean =>
@@ -165,7 +156,7 @@ async function runRegistry(executable: string): Promise<boolean> {
 		// consumes — so the in-PEL window can close between polls. Missing it says nothing about the
 		// delivery; the acked check below is the evidence. Report, never fail, on this one.
 		const read = await untilRedis(inPel, 30_000, 50);
-		if (read) report(true, "registry: the member reader picked up the event (in the PEL)");
+		if (read) report(true, "registry: the channel reader picked up the event (in the PEL)");
 		else
 			console.log(
 				"[note] registry: in-PEL window missed (ack landed between polls); the acked check below is the evidence",
@@ -180,12 +171,13 @@ async function runRegistry(executable: string): Promise<boolean> {
 		rmSync(cwd, { recursive: true, force: true });
 		// Cleanup is asserted whenever a registration actually happened, independent of the earlier
 		// checks (a failure above must not hide a leak here).
-		if (memberKey !== "codex:") {
+		if (registered) {
+			const membersKey = directoryKey(namespace);
 			const gone = await untilRedis(
-				() => redisCli(url, "ZSCORE", prefix, memberKey) === "" && redisCli(url, "EXISTS", stream) === "0",
+				() => redisCli(url, "ZSCORE", membersKey, channel) === "" && redisCli(url, "EXISTS", stream) === "0",
 				15_000,
 			);
-			check(gone, "member and stream removed on shutdown");
+			check(gone, "channel and stream removed on shutdown");
 		}
 	}
 	return ok;

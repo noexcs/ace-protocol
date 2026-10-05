@@ -1,30 +1,12 @@
 {
-	"defaultActivation": "next_turn",
-	"subscribe": [
-		{
-			"name": "inbox",
-			"transport": "redis-streams",
-			"description": "Events other agents or services publish to this session",
-			"activation": "default",
-			"config": {
-				"stream": "ace:inbox:claude-code",
-				"group": "claude-code",
-				"consumer": "claude-code",
-				"url": "redis://127.0.0.1:6379",
-				"field": "message"
-			}
+	"username": "claude",
+	"servers": {
+		"local": {
+			"url": "redis://127.0.0.1:6379",
+			"namespace": "ace",
+			"description": "The ACE server this machine talks to"
 		}
-	],
-	"publish": [
-		{
-			"name": "outbox",
-			"transport": "redis-streams",
-			"description": "Where the ace_publish tool sends this session's events",
-			"config": {
-				"stream": "ace:outbox:claude-code",
-				"url": "redis://127.0.0.1:6379",
-				"field": "message"
-			}
-		}
-	]
+	},
+	"subscribe": ["inbox"],
+	"defaultActivation": "next_turn"
 }

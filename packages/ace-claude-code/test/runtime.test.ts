@@ -1,101 +1,108 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-	AgentRegistration,
 	AgentRegistryStore,
 	EndpointConfig,
-	RegistryChannel,
+	RedisStreamsAddClient,
+	RegistryEntry,
 	Transport,
 	TransportFactoryOptions,
 } from "ace-runtime";
-import { AgentRegistry, registryGroup, registryMember, registryStream } from "ace-runtime";
+import { AgentRegistry, channelName, channelStreamKey, SESSION_INBOX, senderName } from "ace-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SESSION_INBOX, startAce } from "../src/runtime.ts";
+import { startAce } from "../src/runtime.ts";
 
 /**
- * The agent-directory wiring of `startAce`, without a broker: the registry store and the
- * subscribe transports are injected stand-ins that record their calls, so the tests assert the
- * registration parameters, the derived subscription, and the stop order directly.
+ * The agent-directory wiring of `startAce`, without a broker: the registry store, the subscribe
+ * transports and the publish writers are injected stand-ins that record their calls, so the tests
+ * assert the registration channel, the derived subscriptions, per-server isolation and the stop
+ * order directly.
  */
+const USERNAME = "tester";
 const SESSION_ID = "sess-42";
 const CODING_AGENT = "claude-code";
-const REGISTRY_URL = "redis://127.0.0.1:6379";
-const REGISTRY_PREFIX = "ace:test";
-const MEMBER = registryMember(CODING_AGENT, SESSION_ID);
-const STREAM = registryStream(REGISTRY_PREFIX, MEMBER);
-const GROUP = registryGroup(MEMBER);
+const URL_A = "redis://127.0.0.1:6379";
+const URL_B = "redis://127.0.0.1:6380";
+const NS_A = "lan";
+const NS_B = "wan";
+const senderFor = (namespace: string) =>
+	senderName({ namespace, username: USERNAME, codingAgent: CODING_AGENT, sessionId: SESSION_ID });
+const SENDER_A = senderFor(NS_A);
+const SENDER_B = senderFor(NS_B);
+const STREAM_A = channelStreamKey(NS_A, SENDER_A);
+const STREAM_B = channelStreamKey(NS_B, SENDER_B);
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 
 const directories: string[] = [];
 
-function configDirectory(withRegistry: boolean): string {
+interface ServerSpec {
+	url: string;
+	namespace?: string;
+}
+
+function configDirectory(servers: Record<string, ServerSpec>, subscribe: string[] = []): string {
 	const directory = mkdtempSync(join(tmpdir(), "ace-cc-runtime-"));
 	directories.push(directory);
-	const base = {
-		subscribe: [
-			{
-				name: "inbox",
-				transport: "redis-streams",
-				config: { stream: "ace:test:in", group: "claude-code", url: REGISTRY_URL },
-			},
-		],
-		publish: [{ name: "outbox", transport: "redis-streams", config: { stream: "ace:test:out", url: REGISTRY_URL } }],
-	};
 	writeFileSync(
 		join(directory, ".ace.json"),
-		JSON.stringify(withRegistry ? { ...base, registry: { url: REGISTRY_URL, prefix: REGISTRY_PREFIX } } : base),
+		JSON.stringify({ username: USERNAME, servers, subscribe, defaultActivation: "next_turn" }),
 	);
 	return directory;
 }
 
 interface StoreRecording {
 	calls: Array<readonly unknown[]>;
-	store: AgentRegistryStore;
-	factoryCalls: Array<{ url: string; prefix?: string }>;
+	factoryCalls: Array<{ url: string; namespace?: string }>;
 }
 
-/** A recording stand-in for `AgentRegistryStore`: every method logs its arguments in order. */
-function recordingStoreFactory() {
-	const recording: StoreRecording = {
-		calls: [],
-		store: {
-			ensureStream: async (stream, group) => {
-				recording.calls.push(["ensureStream", stream, group]);
-			},
-			put: async (member, channel, expiresAt) => {
-				recording.calls.push(["put", member, channel, expiresAt]);
-			},
-			refresh: async (member, expiresAt) => {
-				recording.calls.push(["refresh", member, expiresAt]);
-			},
-			remove: async (member) => {
-				recording.calls.push(["remove", member]);
-			},
-			dropStream: async (stream) => {
-				recording.calls.push(["dropStream", stream]);
-			},
-			list: async (now) => {
-				recording.calls.push(["list", now]);
-				return [];
-			},
-			close: async () => {
-				recording.calls.push(["close"]);
-			},
-		},
-		factoryCalls: [],
-	};
-	const factory = (options: {
+/**
+ * A recording stand-in for `AgentRegistryStore`, one per server URL: every method logs its
+ * arguments, and `failStream` makes a registration fail like an unreachable broker.
+ */
+function recordingStores(
+	options: { failStream?: (url: string) => boolean; entries?: Record<string, RegistryEntry[]> } = {},
+): {
+	recording: StoreRecording;
+	factory: (options: { url: string; namespace?: string; onError: (error: unknown) => void }) => AgentRegistryStore;
+} {
+	const recording: StoreRecording = { calls: [], factoryCalls: [] };
+	const factory = (storeOptions: {
 		url: string;
-		prefix?: string;
+		namespace?: string;
 		onError: (error: unknown) => void;
 	}): AgentRegistryStore => {
+		const url = storeOptions.url;
 		recording.factoryCalls.push({
-			url: options.url,
-			...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+			url,
+			...(storeOptions.namespace === undefined ? {} : { namespace: storeOptions.namespace }),
 		});
-		return recording.store;
+		return {
+			ensureStream: async (stream, group) => {
+				recording.calls.push(["ensureStream", url, stream, group]);
+				if (options.failStream?.(url)) throw new Error(`connect ECONNREFUSED ${url}`);
+			},
+			put: async (channel, description, expiresAt) => {
+				recording.calls.push(["put", url, channel, description, expiresAt]);
+			},
+			refresh: async (channel, expiresAt) => {
+				recording.calls.push(["refresh", url, channel, expiresAt]);
+			},
+			remove: async (channel) => {
+				recording.calls.push(["remove", url, channel]);
+			},
+			dropStream: async (stream) => {
+				recording.calls.push(["dropStream", url, stream]);
+			},
+			list: async (now) => {
+				recording.calls.push(["list", url, now]);
+				return options.entries?.[url] ?? [];
+			},
+			close: async () => {
+				recording.calls.push(["close", url]);
+			},
+		};
 	};
 	return { recording, factory };
 }
@@ -127,26 +134,48 @@ function fakeTransports(recording: TransportRecording) {
 	};
 }
 
+interface WriterRecording {
+	adds: Array<{ stream: string; field: string; value: string }>;
+	closed: boolean;
+}
+
+/** Records what each lazily-opened writer is asked to append, so publish stays broker-free. */
+function recordingAddClients(): {
+	writers: Map<string, WriterRecording>;
+	factory: (url: string, onError: (error: unknown) => void) => RedisStreamsAddClient;
+} {
+	const writers = new Map<string, WriterRecording>();
+	const factory = (url: string, _onError: (error: unknown) => void): RedisStreamsAddClient => {
+		const writer: WriterRecording = { adds: [], closed: false };
+		writers.set(url, writer);
+		return {
+			add: async (stream, field, value) => {
+				writer.adds.push({ stream, field, value });
+				return "1-1";
+			},
+			close: async () => {
+				writer.closed = true;
+			},
+		};
+	};
+	return { writers, factory };
+}
+
+function entry(channel: string): RegistryEntry {
+	return { channel, description: "", expiresAt: Date.now() + 60_000 };
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	while (directories.length > 0) rmSync(directories.pop() as string, { recursive: true, force: true });
 });
 
-describe("startAce with a configured registry", () => {
-	it("registers with the session identity and broker, and appends the derived session-inbox", async () => {
-		const originalRegister = AgentRegistry.prototype.register;
-		const registeredArgs: AgentRegistration[] = [];
-		vi.spyOn(AgentRegistry.prototype, "register").mockImplementation(function (
-			this: AgentRegistry,
-			registration: AgentRegistration,
-		) {
-			registeredArgs.push(registration);
-			return originalRegister.call(this, registration);
-		});
-
-		const cwd = configDirectory(true);
-		const { recording, factory } = recordingStoreFactory();
+describe("startAce registration and inbox derivation", () => {
+	it("registers the channel named by its sender and reads it back as the inbox", async () => {
+		const cwd = configDirectory({ primary: { url: URL_A, namespace: NS_A } }, ["inbox"]);
+		const { recording, factory } = recordingStores();
 		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
 		const handle = await startAce({
 			cwd,
 			push: async () => {},
@@ -155,201 +184,305 @@ describe("startAce with a configured registry", () => {
 			env: {},
 			registryStoreFactory: factory,
 			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
 		});
-		expect(handle).toBeDefined();
+		if (!handle) throw new Error("startAce returned undefined");
 
-		// The store came from the configured broker and prefix.
-		expect(recording.factoryCalls).toEqual([{ url: REGISTRY_URL, prefix: REGISTRY_PREFIX }]);
-		// `register()` received this session's identity, its working directory, and its broker.
-		expect(registeredArgs).toEqual([{ codingAgent: CODING_AGENT, sessionId: SESSION_ID, cwd, url: REGISTRY_URL }]);
-		// The stream existed before the entry advertised it; the entry names the member and the address.
+		// The store came from the configured server and its namespace.
+		expect(recording.factoryCalls).toEqual([{ url: URL_A, namespace: NS_A }]);
+		// The stream existed before the entry advertised it; the entry names the sender channel, and
+		// the group it is read in is the channel name itself.
 		const order = recording.calls.map((call) => call[0]);
 		expect(order.indexOf("ensureStream")).toBeGreaterThanOrEqual(0);
 		expect(order.indexOf("ensureStream")).toBeLessThan(order.indexOf("put"));
-		expect(recording.calls.find((call) => call[0] === "ensureStream")).toEqual(["ensureStream", STREAM, GROUP]);
-		const put = recording.calls.find((call) => call[0] === "put") as
-			| readonly ["put", string, RegistryChannel, number]
-			| undefined;
-		expect(put?.[1]).toBe(MEMBER);
-		expect(put?.[2].config).toEqual({ stream: STREAM, group: GROUP, url: REGISTRY_URL });
+		expect(recording.calls.find((call) => call[0] === "ensureStream")).toEqual([
+			"ensureStream",
+			URL_A,
+			STREAM_A,
+			SENDER_A,
+		]);
+		const put = recording.calls.find((call) => call[0] === "put");
+		expect(put?.[2]).toBe(SENDER_A);
 
-		// The derived subscription the runtime actually reads: named `session-inbox`, on the
-		// registered stream/group, alongside the configured channels.
+		// The derived subscriptions: the inbox (the channel named by the sender) plus the configured
+		// channel, read on the same server with the same reading sender.
 		const seen = transports.subscriptions[0] ?? [];
-		expect(seen.map((endpoint) => endpoint.name)).toEqual(["inbox", SESSION_INBOX]);
+		expect(seen.map((endpoint) => endpoint.name)).toEqual([SESSION_INBOX, "lan:tester:inbox"]);
 		const inbox = seen.find((endpoint) => endpoint.name === SESSION_INBOX);
 		expect(inbox?.transport).toBe("redis-streams");
-		expect(inbox?.config).toMatchObject({ stream: STREAM, group: GROUP, url: REGISTRY_URL });
-		// The member name reaches the tool surface the model reads.
-		expect(handle?.tools.member).toBe(MEMBER);
+		expect(inbox?.config).toMatchObject({ stream: STREAM_A, group: SENDER_A, url: URL_A });
+		expect(handle.tools.inbox?.name).toBe(SESSION_INBOX);
+		expect(handle.tools.publish?.senders).toEqual([SENDER_A]);
 
-		await handle?.stop();
+		await handle.stop();
 	});
 
-	it("keeps running when registration fails, exposing no member and no derived subscription", async () => {
-		vi.spyOn(AgentRegistry.prototype, "register").mockRejectedValue(
-			new Error("connect ECONNREFUSED 127.0.0.1:59999"),
-		);
-		const directory = configDirectory(true);
-		const warnings: string[] = [];
-		const { recording, factory } = recordingStoreFactory();
-		const transports: TransportRecording = { subscriptions: [], order: [] };
-		const handle = await startAce({
-			cwd: directory,
-			push: () => Promise.resolve(),
-			logger: {
-				warn: (m) => warnings.push(m),
-				error: (m) => warnings.push(m),
-			},
-			sessionId: SESSION_ID,
-			codingAgent: CODING_AGENT,
-			transportsFactory: fakeTransports(transports),
-			registryStoreFactory: factory,
+	it("keeps one registration, inbox and sender per server", async () => {
+		const cwd = configDirectory({
+			primary: { url: URL_A, namespace: NS_A },
+			secondary: { url: URL_B, namespace: NS_B },
 		});
-		expect(handle).toBeDefined();
-		// The store was built (the configured broker and prefix); registration failed before any
-		// entry was written, and the failed registry closed its client on the way out.
-		expect(recording.factoryCalls).toEqual([{ url: REGISTRY_URL, prefix: REGISTRY_PREFIX }]);
-		expect(recording.calls.map((call) => call[0])).toEqual(["close"]);
-		// The runtime degrades to the configured channels: the list it reads holds no session-inbox,
-		// and the tool surface does not advertise a name no peer could resolve.
-		expect(transports.subscriptions[0]?.map((endpoint) => endpoint.name)).toEqual(["inbox"]);
-		expect(handle?.tools.member).toBeUndefined();
-		expect(warnings.some((message) => message.includes("ECONNREFUSED"))).toBe(true);
-		await handle?.stop();
+		const { recording, factory } = recordingStores();
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: quiet,
+			sessionId: SESSION_ID,
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+
+		expect(recording.factoryCalls).toEqual([
+			{ url: URL_A, namespace: NS_A },
+			{ url: URL_B, namespace: NS_B },
+		]);
+		// Each inbox is derived from that server's namespace, and local labels stay unique across servers.
+		const seen = transports.subscriptions[0] ?? [];
+		expect(seen.map((endpoint) => endpoint.name)).toEqual(["primary:session-inbox", "secondary:session-inbox"]);
+		expect(seen[0]?.config).toMatchObject({ stream: STREAM_A, group: SENDER_A, url: URL_A });
+		expect(seen[1]?.config).toMatchObject({ stream: STREAM_B, group: SENDER_B, url: URL_B });
+		expect(handle.tools.publish?.senders).toEqual([SENDER_A, SENDER_B]);
+
+		await handle.stop();
 	});
 
-	it("stops the reader before unregister, and closes the registry last", async () => {
+	it("reads a configured subscription with its server's namespace and the reading sender", async () => {
+		const cwd = configDirectory({ primary: { url: URL_A, namespace: NS_A } }, ["ci-failures"]);
+		const { factory } = recordingStores();
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: quiet,
+			sessionId: SESSION_ID,
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+
+		const channel = channelName(NS_A, USERNAME, "ci-failures");
+		const seen = transports.subscriptions[0] ?? [];
+		expect(seen.map((endpoint) => endpoint.name)).toEqual([SESSION_INBOX, channel]);
+		expect(seen[1]?.config).toMatchObject({
+			stream: channelStreamKey(NS_A, channel),
+			group: SENDER_A,
+			url: URL_A,
+		});
+
+		await handle.stop();
+	});
+});
+
+describe("startAce when a server is unreachable", () => {
+	it("skips that server and keeps the rest of the session running", async () => {
+		const cwd = configDirectory(
+			{ primary: { url: URL_A, namespace: NS_A }, secondary: { url: URL_B, namespace: NS_B } },
+			["secondary:ci"],
+		);
+		const warnings: string[] = [];
+		const { recording, factory } = recordingStores({ failStream: (url) => url === URL_B });
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: { ...quiet, warn: (message: string) => warnings.push(message) },
+			sessionId: SESSION_ID,
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+
+		expect(warnings.join(" ")).toMatch(/ECONNREFUSED/);
+		// The failed registry closed its client on the way out.
+		expect(recording.calls).toContainEqual(["close", URL_B]);
+		// Only the reachable server's inbox is read; the configured subscription on the failed server
+		// is dropped with it.
+		expect(transports.subscriptions[0]?.map((endpoint) => endpoint.name)).toEqual(["primary:session-inbox"]);
+		expect(handle.tools.publish?.senders).toEqual([SENDER_A]);
+
+		await handle.stop();
+	});
+
+	it("registers nothing and reads only configured channels without a session id", async () => {
+		const cwd = configDirectory({ primary: { url: URL_A, namespace: NS_A } }, ["inbox"]);
+		const warnings: string[] = [];
+		const { recording, factory } = recordingStores();
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: { ...quiet, warn: (message: string) => warnings.push(message) },
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+
+		expect(warnings.join(" ")).toMatch(/no session id/i);
+		expect(recording.factoryCalls).toEqual([]);
+		expect(transports.subscriptions[0]?.map((endpoint) => endpoint.name)).toEqual(["lan:tester:inbox"]);
+		expect(handle.tools.publish?.senders).toEqual([]);
+
+		await handle.stop();
+	});
+});
+
+describe("startAce shutdown order", () => {
+	it("stops the reader, then unregisters and closes the registry, then the writers", async () => {
+		const order: string[] = [];
 		const originalUnregister = AgentRegistry.prototype.unregister;
 		const originalClose = AgentRegistry.prototype.close;
-		const order: string[] = [];
-		vi.spyOn(AgentRegistry.prototype, "unregister").mockImplementation(function (this: AgentRegistry) {
+		vi.spyOn(AgentRegistry.prototype, "unregister").mockImplementation(async function (this: AgentRegistry) {
 			order.push("unregister");
 			return originalUnregister.call(this);
 		});
-		vi.spyOn(AgentRegistry.prototype, "close").mockImplementation(function (this: AgentRegistry) {
+		vi.spyOn(AgentRegistry.prototype, "close").mockImplementation(async function (this: AgentRegistry) {
 			order.push("close");
 			return originalClose.call(this);
 		});
 
-		const { recording, factory } = recordingStoreFactory();
+		const cwd = configDirectory({ primary: { url: URL_A, namespace: NS_A } }, ["inbox"]);
+		const { recording, factory } = recordingStores();
 		const transports: TransportRecording = { subscriptions: [], order };
+		const writers = recordingAddClients();
 		const handle = await startAce({
-			cwd: configDirectory(true),
+			cwd,
 			push: async () => {},
 			logger: quiet,
 			sessionId: SESSION_ID,
 			env: {},
 			registryStoreFactory: factory,
 			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
 		});
-		expect(handle).toBeDefined();
-		await handle?.stop();
+		if (!handle) throw new Error("startAce returned undefined");
+		// Open the lazy writer so shutdown has one to close.
+		const surface = handle.tools.publish;
+		if (!surface) throw new Error("no publish surface");
+		const target = await surface.resolve("outbox");
+		await surface.send(target, {
+			aceVersion: "0.1",
+			id: "evt_1",
+			sender: target.sender,
+			activation: "next_turn",
+			body: "hi",
+		});
+		await handle.stop();
 
-		// `unregister` drops this session's own stream, so every reader has to be gone first
-		// (the 0.1.3 ordering), and the registry's client is released last of all.
+		// `unregister` drops this session's own stream, so every reader has to be gone first, and the
+		// registry's client is released after that; the publish writers go last of all.
 		const firstStop = order.findIndex((step) => step.startsWith("stop:"));
-		const lastStop = [...order.keys()].findLast((index) => order[index]?.startsWith("stop:"));
 		expect(firstStop).toBeGreaterThanOrEqual(0);
-		expect(lastStop).toBeGreaterThanOrEqual(0);
 		expect(firstStop).toBeLessThan(order.indexOf("unregister"));
-		expect(lastStop).toBeLessThan(order.indexOf("unregister"));
 		expect(order.indexOf("unregister")).toBeLessThan(order.indexOf("close"));
-		const subscriptions = transports.subscriptions[0] ?? [];
-		for (const endpoint of subscriptions) expect(order).toContain(`stop:${endpoint.name}`);
-
-		// The real `unregister` ran against the recording store: entry removed, stream dropped,
-		// store closed once — after both.
-		const storeOrder = recording.calls.map((call) => call[0]);
-		expect(storeOrder).toContain("remove");
-		expect(storeOrder).toContain("dropStream");
-		expect(storeOrder[storeOrder.length - 1]).toBe("close");
-		expect(recording.calls.find((call) => call[0] === "remove")).toEqual(["remove", MEMBER]);
-		expect(recording.calls.find((call) => call[0] === "dropStream")).toEqual(["dropStream", STREAM]);
+		expect(recording.calls).toContainEqual(["remove", URL_A, SENDER_A]);
+		expect(recording.calls).toContainEqual(["dropStream", URL_A, STREAM_A]);
+		expect(recording.calls[recording.calls.length - 1]).toEqual(["close", URL_A]);
+		expect([...writers.writers.values()].every((writer) => writer.closed)).toBe(true);
 	});
 });
 
-describe("startAce without a registry", () => {
-	it("registers nothing and adds no derived subscription", async () => {
-		const { recording, factory } = recordingStoreFactory();
+describe("publish surface", () => {
+	it("completes a short channel name on a single server and writes to its derived stream", async () => {
+		const cwd = configDirectory({ primary: { url: URL_A, namespace: NS_A } });
+		const { factory } = recordingStores();
 		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
 		const handle = await startAce({
-			cwd: configDirectory(false),
+			cwd,
 			push: async () => {},
 			logger: quiet,
 			sessionId: SESSION_ID,
 			env: {},
 			registryStoreFactory: factory,
 			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
 		});
-		expect(handle).toBeDefined();
-		expect(recording.factoryCalls).toEqual([]);
-		expect(recording.calls).toEqual([]);
-		const seen = transports.subscriptions[0] ?? [];
-		expect(seen.map((endpoint) => endpoint.name)).toEqual(["inbox"]);
-		expect(handle?.tools.member).toBeUndefined();
-		await handle?.stop();
+		if (!handle) throw new Error("startAce returned undefined");
+		const surface = handle.tools.publish;
+		if (!surface) throw new Error("no publish surface");
+
+		// A short name is completed to `<ns>:<username>:<name>`; the sender is that server's channel.
+		const target = await surface.resolve("outbox");
+		expect(target.channel).toBe(channelName(NS_A, USERNAME, "outbox"));
+		expect(target.sender).toBe(SENDER_A);
+		expect(target.server).toEqual({ name: "primary", url: URL_A, namespace: NS_A });
+		// An explicit `<server>:<channel>` prefix picks the server.
+		expect((await surface.resolve("primary:thing")).channel).toBe(channelName(NS_A, USERNAME, "thing"));
+
+		const message = {
+			aceVersion: "0.1" as const,
+			id: "evt_1",
+			sender: target.sender,
+			activation: "next_turn" as const,
+			body: "hi",
+		};
+		await surface.send(target, message);
+		const writer = writers.writers.get(URL_A);
+		expect(writer?.adds).toHaveLength(1);
+		expect(writer?.adds[0]?.stream).toBe(channelStreamKey(NS_A, target.channel));
+		expect(writer?.adds[0]?.field).toBe("message");
+		expect(JSON.parse(writer?.adds[0]?.value ?? "{}")).toMatchObject({ id: "evt_1", body: "hi" });
+
+		await handle.stop();
+		expect(writer?.closed).toBe(true);
 	});
 
-	it("runs without the directory when a configured subscription already owns the inbox name", async () => {
-		// A configured channel named `session-inbox` plus a `registry` would make the runtime refuse
-		// to start (duplicate subscription names), so this session must run on the configured
-		// channels instead — registering nothing — rather than fail over the naming collision.
-		const directory = configDirectory(true);
-		const config = JSON.parse(readFileSync(join(directory, ".ace.json"), "utf8")) as {
-			subscribe: EndpointConfig[];
-		};
-		config.subscribe.push({
-			name: SESSION_INBOX,
-			transport: "redis-streams",
-			config: { stream: "ace:test:mine", group: "claude-code", url: REGISTRY_URL },
-			options: {},
+	it("resolves a peer channel through the directories and rejects ambiguity across servers", async () => {
+		const entries: Record<string, RegistryEntry[]> = { [URL_A]: [], [URL_B]: [] };
+		const cwd = configDirectory({
+			primary: { url: URL_A, namespace: NS_A },
+			secondary: { url: URL_B, namespace: NS_B },
 		});
-		writeFileSync(join(directory, ".ace.json"), JSON.stringify(config));
-
-		const warnings: string[] = [];
-		const { recording, factory } = recordingStoreFactory();
+		const { factory } = recordingStores({ entries });
 		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
 		const handle = await startAce({
-			cwd: directory,
+			cwd,
 			push: async () => {},
-			logger: { ...quiet, warn: (message: string) => warnings.push(message) },
+			logger: quiet,
 			sessionId: SESSION_ID,
 			env: {},
 			registryStoreFactory: factory,
 			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
 		});
-		expect(handle).toBeDefined();
-		expect(warnings.join(" ")).toMatch(/already named session-inbox/i);
-		expect(recording.factoryCalls).toEqual([]);
-		expect(recording.calls).toEqual([]);
-		// The configured channel is what the runtime reads; no derived duplicate is appended.
-		const seen = transports.subscriptions[0] ?? [];
-		expect(seen.map((endpoint) => endpoint.name)).toEqual(["inbox", SESSION_INBOX]);
-		expect(handle?.tools.member).toBeUndefined();
-		await handle?.stop();
-	});
+		if (!handle) throw new Error("startAce returned undefined");
+		const surface = handle.tools.publish;
+		if (!surface) throw new Error("no publish surface");
 
-	it("skips registration with a warning when the host injected no session id", async () => {
-		const warnings: string[] = [];
-		const { recording, factory } = recordingStoreFactory();
-		const transports: TransportRecording = { subscriptions: [], order: [] };
-		const handle = await startAce({
-			cwd: configDirectory(true),
-			push: async () => {},
-			logger: { ...quiet, warn: (message: string) => warnings.push(message) },
-			env: {},
-			registryStoreFactory: factory,
-			transportsFactory: fakeTransports(transports),
-		});
-		expect(handle).toBeDefined();
-		expect(recording.factoryCalls).toEqual([]);
-		expect(warnings.join(" ")).toMatch(/no session id/i);
-		expect(handle?.tools.member).toBeUndefined();
-		await handle?.stop();
+		const peer = channelName(NS_A, USERNAME, "peer");
+		entries[URL_A] = [entry(peer)];
+		expect((await surface.resolve(peer)).server.name).toBe("primary");
+
+		// The same channel live on two servers is ambiguous: guessing would address the wrong agent.
+		entries[URL_B] = [entry(peer)];
+		await expect(surface.resolve(peer)).rejects.toThrow(/matches 2 live channels/);
+
+		// The same prefix narrowed to one server still resolves.
+		entries[URL_B] = [];
+		await expect(surface.resolve("lan:tester:pe")).resolves.toMatchObject({ server: { name: "primary" } });
+
+		// Nothing live matches: the error names what was looked for.
+		await expect(surface.resolve("lan:tester:nobody")).rejects.toThrow(/no live channel matches/);
+
+		await handle.stop();
 	});
 });
 
-it("names the derived subscription session-inbox", () => {
+it("names the derived inbox session-inbox", () => {
 	expect(SESSION_INBOX).toBe("session-inbox");
 });

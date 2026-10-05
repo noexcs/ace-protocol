@@ -95,15 +95,16 @@ redis-cli ping                              # PONG
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
 omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.10/ace-runtime-0.1.10.tgz
 cat > .ace.json <<'JSON'
-{ "defaultActivation": "next_turn",
-  "subscribe": [ { "name": "inbox", "transport": "redis-streams",
-    "config": { "stream": "ace:in.wsl", "group": "wsl", "url": "redis://127.0.0.1:6379" } } ] }
+{ "username": "ana",
+  "servers": { "local": { "url": "redis://127.0.0.1:6379" } },
+  "subscribe": [ "inbox" ] }
 JSON
 omp                                          # the installed plugin loads the extension itself
 
 # in another terminal, once the session printed "listening"
-redis-cli XADD ace:in.wsl '*' message \
-  '{"aceVersion":"0.1","id":"e1","sender":"me:demo","activation":"next_turn","body":"hello from WSL"}'
+# A channel name is the address; its stream is derived as `<namespace>:ch:<channel>`.
+redis-cli XADD ace:ch:ace:ana:inbox '*' message \
+  '{"aceVersion":"0.1","id":"e1","sender":"ace:ana:ci","activation":"next_turn","body":"hello from WSL"}'
 ```
 
 Publish **after** the session says `listening`: a consumer group starts at the stream's tail, so an event
@@ -112,19 +113,14 @@ published before the subscription exists is skipped.
 ### Two agents, two machines (LAN)
 
 One machine can host the broker for both sessions: expose Redis on that machine and point every
-`.ace.json` at its LAN address. The two configs are mirror images:
+`.ace.json` at its LAN address. Each side names the channel it reads, and a peer is reached by
+publishing to the channel that peer's own sender names:
 
 ```jsonc
-// mac/.ace.json                             // wsl/.ace.json
-{ "defaultActivation": "next_turn",          { "defaultActivation": "next_turn",
-  "registry":  { "url": "redis://<lan-ip>:6379",   "registry":  { "url": "redis://<lan-ip>:6379",
-                 "prefix": "ace:lan" },                            "prefix": "ace:lan" },
-  "subscribe": [ { "name": "from-wsl",          "subscribe": [ { "name": "from-mac",
-      "transport": "redis-streams",                 "transport": "redis-streams",
-      "config": { "stream": "ace:lan:in.mac",       "config": { "stream": "ace:lan:in.wsl",
-                  "group": "mac",                               "group": "wsl",
-                  "url": "redis://<lan-ip>:6379" } } ],         "url": "redis://<lan-ip>:6379" } } ],
-  "publish":   [ { "name": "to-wsl", … } ] }    "publish":   [ { "name": "to-mac", … } ] }
+// mac/.ace.json                                    // wsl/.ace.json
+{ "username": "ana",                               { "username": "ana",
+  "servers": { "lan": { "url": "redis://<lan-ip>:6379" } },   "servers": { "lan": { "url": "redis://<lan-ip>:6379" } },
+  "subscribe": [ "from-wsl" ] }                      "subscribe": [ "from-mac" ] }
 ```
 
 ```bash
@@ -138,14 +134,15 @@ redis-cli -h <lan-ip> ping                               # PONG = the network pa
 # on each machine, from its own directory (install once: see "Install")
 omp                                                      # the plugin loads the extension; cwd holds .ace.json
 
-# then, from either side, once the other side printed "listening"
-redis-cli -h <lan-ip> XADD ace:lan:in.wsl '*' message \
-  '{"aceVersion":"0.1","id":"e1","sender":"me:demo","senderDescription":"agent=pi | cwd=/home/u/ace","activation":"next_turn","body":"hello from WSL"}'
+# then, from either side, once the other side printed "listening": publish to the channel name
+redis-cli -h <lan-ip> XADD ace:ch:ace:ana:from-mac '*' message \
+  '{"aceVersion":"0.1","id":"e1","sender":"ace:ana:pi","senderDescription":"agent=pi | cwd=/home/u/ace","activation":"next_turn","body":"hello from WSL"}'
 ```
 
-With `registry` configured on both sides, each session also auto-subscribes its own
-`<prefix>:events:<member>`, so `ace_agents` lists the peer and `ace_publish` can target its member —
-the entry names the address it is reachable at.
+Each session also auto-subscribes the channel its own sender names (`<namespace>:<username>:<coding-agent>:<sessionId>`),
+so `ace_agents` lists the peer under exactly that channel name and `ace_publish` addresses it directly — a channel
+name is the whole address, derived to a stream as `<namespace>:ch:<channel>` on both sides. Nothing about an
+address is configured, advertised or stored in the entry.
 
 > **Exposing Redis has teeth.** `protected-mode no` plus no password means anyone on the network can
 > read and write the whole database, and Redis can write files on the host. On a network you do not
@@ -402,7 +399,8 @@ must get the user's approval for a sender before acting on its requests, offerin
 event from that sender", or "every ACE event". That is a soft constraint, not a boundary: the runtime keeps no
 approvals and blocks no events, and the user's answer stays in the conversation.
 
-`ace_publish` stamps `sender` as `<coding-agent>:<sessionId>` (its directory member) and adds
+`ace_publish` stamps `sender` with this session's sender name — `<namespace>:<username>:<coding-agent>:<sessionId>`,
+the same name as the channel it auto-registers — and adds
 `senderDescription`, so a receiver shows who and where it is without looking anything up: a sender never has
 to be registered anywhere to send. Both lines are the sender's own account and never an authorization.
 
@@ -433,8 +431,8 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
   capability (RFC §17); the runtime consumes from now on.
 - The agent directory is not part of ACE 0.1 (RFC §22 item 1) and carries no authentication: an entry
   states its own identity, and a peer's registration only decides where *that peer* is reached — this
-  session still publishes to the broker it was configured with. The entry names the coding agent and the
-  session, not the ACE `sender`, so mapping a member to a sender means reading its description.
+  session still publishes to the broker it was configured with. An entry's identity **is** its channel
+  name, so a peer discovered through the directory is addressed by publishing to that channel.
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
 - A reclaimed entry that fails `reclaimAttempts` times is recorded in the dead-letter file and then acknowledged, so

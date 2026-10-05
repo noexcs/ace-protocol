@@ -1,13 +1,12 @@
-import { SESSION_INBOX } from "../runtime/agent-registry.js";
 import { endpointAddress } from "../runtime/endpoint-config.js";
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export function addressOf(endpoint) {
     return `${endpoint.transport} ${endpointAddress(endpoint) ?? "(no address)"}`;
 }
-/** One directory row: the member to address, what it says about itself (never shortened), and how fresh it is. */
+/** One directory row: the channel to address, what it says about itself (never shortened), and how fresh it is. */
 export function describeDiscovered(entry) {
     const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
-    return `${entry.member} — ${entry.channel.description} (renews in ${renewsIn}s)`;
+    return `${entry.channel} — ${entry.description} (renews in ${renewsIn}s)`;
 }
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 export function describeEndpoint(endpoint) {
@@ -16,8 +15,12 @@ export function describeEndpoint(endpoint) {
 /**
  * The listing `ace_channels` returns: this session's channels as the model needs them — name, transport,
  * description, activation — without the deployment plumbing (`config`/`options`) or the burst internals.
+ *
+ * One section only: with channels living on a server and addresses derived from names, "what I publish
+ * to" is any channel name the model chooses (a peer's sender name for a direct message), not a separate
+ * configured list.
  */
-export function formatChannelListing(subscriptions, publications, options = {}) {
+export function formatChannelListing(subscriptions, options = {}) {
     const line = (endpoint) => [
         endpoint.name,
         endpoint.transport,
@@ -27,27 +30,18 @@ export function formatChannelListing(subscriptions, publications, options = {}) 
     ]
         .filter((part) => part !== undefined)
         .join(" · ");
-    return [
-        "subscribe:",
-        ...subscriptions.map((endpoint) => `  ${line(endpoint)}`),
-        "publish:",
-        ...(publications.length === 0 ? ["  (none)"] : publications.map((endpoint) => `  ${line(endpoint)}`)),
-        ...(options.disabled === undefined || options.disabled.length === 0
-            ? []
-            : [`disabled: ${options.disabled.join(", ")}`]),
-    ].join("\n");
+    return ["subscribe:", ...subscriptions.map((endpoint) => `  ${line(endpoint)}`)].join("\n");
 }
 /**
- * The inputs every channel surface lists: the configured channels plus the inbox the agent directory
- * registered for this session. One function keeps `ace_channels`, `/ace list` and the manager from
+ * The inputs every channel surface lists: the channels this session subscribes to, plus the inbox the
+ * agent directory registered for it. One function keeps `ace_channels`, `/ace list` and the manager from
  * disagreeing about what this session is wired to.
  */
-export function channelListingInput(config, inbox) {
+export function channelListingInput(subscriptions, inbox) {
+    const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
     return {
-        subscriptions: inbox === undefined ? config.subscribe : [...config.subscribe, inbox],
-        publications: config.publish,
-        ...(inbox === undefined ? {} : { derivedName: SESSION_INBOX }),
-        disabled: config.disabled,
+        subscriptions: all,
+        ...(inbox === undefined ? {} : { derivedName: inbox.name }),
     };
 }
 /**
@@ -71,9 +65,6 @@ export function formatChannelReport(report) {
         `${report.identity} (agent ${report.agentState})${report.source === undefined ? "" : ` — ${report.source}`}`,
         "subscribe:",
         ...lines(report.subscriptions),
-        "publish:",
-        ...lines(report.publications),
-        `disabled: ${report.disabled.length === 0 ? "(none)" : report.disabled.join(", ")}`,
         `manual: ${report.pendingManual} pending, ${letters}`,
     ].join("\n");
 }

@@ -8,14 +8,9 @@ import { ACE_CONFIG_FILENAME } from "../runtime/ace-config.ts";
  * The hosts keep only what is theirs: turning a core result into the host's tool-result shape.
  */
 
-/** `channel "outbox"` — a configured channel an event was published to. */
+/** `channel "outbox"` — the target channel name an event was published to. */
 export function deliveredChannel(name: string): string {
 	return `channel "${name}"`;
-}
-
-/** `member "a:b"`, or `member "a:b" (already sent)` when the same call targeted it twice. */
-export function deliveredMember(member: string, alreadySent = false): string {
-	return `member "${member}"${alreadySent ? " (already sent)" : ""}`;
 }
 
 /** One entry of the failure list: `"target": reason`. */
@@ -48,15 +43,11 @@ export function formatDiscoveredSessions(rows: readonly string[]): string {
 /** The messages the tools return when they cannot do their job — read by the model, so defined once. */
 export const TOOL_ERROR_TEXT = {
 	notRunning: `ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`,
-	noDirectory: `no agent directory configured; add "registry" to ${ACE_CONFIG_FILENAME}`,
+	noDirectory: `no agent directory: no server from ${ACE_CONFIG_FILENAME} is reachable`,
 	usagePublish: "ace_publish requires a non-empty `body` and a `target` (string or list of strings)",
-	targetUnknown: (target: string, configured: readonly string[]): string =>
-		`unknown target "${target}" (configured: ${configured.join(", ") || "none"}; no agent directory configured)`,
 	targetAmbiguous: (target: string, candidateCount: number, candidates: readonly string[]): string =>
-		`target "${target}" matches ${candidateCount} sessions; pass the full member: ${candidates.join(", ")}`,
+		`target "${target}" matches ${candidateCount} live channels; pass the full channel name: ${candidates.join(", ")}`,
 	targetNotFound: (target: string, live: readonly string[]): string =>
-		`no live session matches "${target}"${live.length === 0 ? "" : ` (live: ${live.join(", ")})`}`,
-	transportUnsupported: (member: string, transport: string): string =>
-		`member "${member}" advertises transport "${transport}", which this runtime cannot publish to`,
+		`no live channel matches "${target}"${live.length === 0 ? "" : ` (live: ${live.join(", ")})`}`,
 	nothingPublished: (failures: readonly string[]): string => `nothing published: ${failures.join("; ")}`,
 } as const;

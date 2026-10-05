@@ -19,8 +19,6 @@ export interface EndpointConfig {
 	description?: string;
 	/** Subscriptions only: activation this receiver forces; `default` delegates to the message. */
 	activation?: Activation;
-	/** Whether the runtime starts this channel at all; defaults to `true`. */
-	enabled?: boolean;
 	/** Transport-specific settings, validated by that transport. */
 	config: Record<string, unknown>;
 	/** Raw options handed to the transport's client library; never validated, never interpreted. */

@@ -27,34 +27,31 @@ afterAll(() => {
 });
 
 describe("resolveAceConfig over the shipped example", () => {
-	it("resolves one subscription and one publication, with no warnings", () => {
+	it("resolves the user, the server and the subscribed channel name, with no warnings", () => {
 		const resolved = resolveAceConfig({ cwd: exampleDir, env: {} });
-		expect(resolved.subscribe.map((endpoint) => endpoint.name)).toEqual(["inbox"]);
-		expect(resolved.publish.map((endpoint) => endpoint.name)).toEqual(["outbox"]);
-		expect(resolved.disabled).toEqual([]);
-		// No `sender` in the file: identity is the directory member, so there is nothing to warn about.
-		expect(resolved.sender).toBeUndefined();
+		expect(resolved.username).toBe("claude");
+		expect(resolved.servers.map((server) => server.name)).toEqual(["local"]);
+		// A short subscribe name is completed to the uploaded channel name `<ns>:<username>:<name>`.
+		expect(resolved.subscriptions.map((subscription) => subscription.name)).toEqual(["ace:claude:inbox"]);
+		expect(resolved.subscriptions[0]?.server.name).toBe("local");
 		expect(resolved.warnings).toEqual([]);
 	});
 
-	it("keeps the activation of the inbox as the runtime default", () => {
+	it("keeps the configured activation as the runtime default", () => {
 		const resolved = resolveAceConfig({ cwd: exampleDir, env: {} });
-		expect(resolved.subscribe[0]?.activation).toBe("default");
+		expect(resolved.defaultActivation).toBe("next_turn");
 	});
 });
 
 describe("resolveAceConfig without a configuration file", () => {
 	it("throws a broker-free error naming the directory", () => {
 		const cwd = temporaryDirectory();
-		expect(() => resolveAceConfig({ cwd, env: {} })).toThrow(/no \.ace\.json in/);
+		expect(() => resolveAceConfig({ cwd, env: {} })).toThrow(/no \.ace\.json found/);
 	});
 
-	it("rejects a document missing a subscribe stream", () => {
+	it("rejects a document with no servers", () => {
 		const cwd = temporaryDirectory();
-		writeFileSync(
-			join(cwd, ACE_CONFIG_FILENAME),
-			JSON.stringify({ subscribe: [{ name: "inbox", transport: "redis-streams", config: { group: "g" } }] }),
-		);
+		writeFileSync(join(cwd, ACE_CONFIG_FILENAME), JSON.stringify({ username: "claude", subscribe: ["inbox"] }));
 		expect(() => resolveAceConfig({ cwd, env: {} })).toThrow();
 	});
 });

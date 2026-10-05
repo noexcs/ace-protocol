@@ -1,6 +1,7 @@
+import { isActivation } from "../protocol/ace-message.js";
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.js";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.js";
-import { AceConfigError, endpointAddress, validateEndpointConfig } from "./endpoint-config.js";
+import { AceConfigError, endpointAddress } from "./endpoint-config.js";
 import { EventDispatcher } from "./event-dispatcher.js";
 import { DEFAULT_SPOOL_RULE, EventSpool, } from "./event-spool.js";
 import { AceMetrics } from "./metrics.js";
@@ -30,7 +31,18 @@ export class AceRuntime {
     now;
     started = false;
     constructor(options) {
-        this.subscribe = options.subscribe.map((endpoint) => validateEndpointConfig(endpoint, "subscribe"));
+        this.subscribe = options.subscribe.map((endpoint) => {
+            if (typeof endpoint.name !== "string" || endpoint.name.length === 0) {
+                throw new AceConfigError("subscribe entry requires a non-empty name");
+            }
+            if (typeof endpoint.transport !== "string" || endpoint.transport.length === 0) {
+                throw new AceConfigError(`subscribe "${endpoint.name}" requires a transport`);
+            }
+            if (endpoint.activation !== undefined && !isActivation(endpoint.activation)) {
+                throw new AceConfigError(`subscribe "${endpoint.name}" has an invalid activation: ${endpoint.activation}`);
+            }
+            return endpoint;
+        });
         const transportByName = new Map();
         const usedTransports = new Set();
         for (const subscription of this.subscribe) {

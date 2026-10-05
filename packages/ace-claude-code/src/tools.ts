@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { AcePublisher, PendingAceEvent, ResolvedAceConfig } from "ace-runtime";
+import type { AceMessage, EndpointConfig, PendingAceEvent, ResolvedAceConfig, ResolvedServer } from "ace-runtime";
 import {
 	ACE_TOOL_NAMES,
 	CHANNELS_PARAMETERS,
+	channelListingInput,
+	channelStreamKey,
 	channelsToolText,
+	deliveredChannel,
 	describeSender,
+	failedTarget,
+	formatChannelListing,
+	formatPublishResult,
 	hostFacts,
+	NO_SESSION_LABEL,
 	PUBLISH_PARAMETERS,
+	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
 } from "ace-runtime";
@@ -35,33 +43,54 @@ export interface AceRuntimeSurface {
 	pendingEvents: readonly PendingAceEvent[];
 	activatePendingEvent(sender: string, id: string): Promise<void>;
 }
+
+/** Where a publish call goes: a channel on one of the servers this session is live on. */
+export interface PublishedTarget {
+	server: ResolvedServer;
+	/** The uploaded channel name the event is addressed to. */
+	channel: string;
+	/** The sender name to publish as on that server (its inbox channel). */
+	sender: string;
+}
+
+/**
+ * Publishing is a channel name resolved to a server: the surface `startAce` hands the tools. The
+ * event is built per target, because the sender name belongs to one server.
+ */
+export interface PublishSurface {
+	/** The senders this session publishes as, one per live server (= its inbox channel names). */
+	senders: string[];
+	/** Live server names, for messages that name where a target was looked for. */
+	serverNames: string[];
+	/** Resolve a channel name (or `<server>:<channel>`) to a server and its uploaded channel. */
+	resolve(name: string): Promise<PublishedTarget>;
+	/** Derive the stream from the channel name and append the message with the server's writer. */
+	send(target: PublishedTarget, message: AceMessage): Promise<void>;
+}
+
 /**
  * Everything a tool handler needs, built once at startup in {@link server.ts} and read live by the
  * handlers so a tool call reflects the current runtime state.
  *
- * When `.ace.json` configures a `registry`, this session registers in the agent directory and
- * `member` carries its name there: what other sessions pass as the `target` of `ace_publish` to
- * send this session a direct event. Publishing itself stays scoped to the channels named in
- * `.ace.json` (this host does not read the directory's live entries, so the Pi host's
- * `ace_agents` tool has no counterpart here). `sessionId` is carried as the ACE `sessionId`
- * (RFC §5.4), which names the sender's instance — the session id is exactly that, and it is
- * display-only, never an authorization.
+ * A channel name is the address: this session's inbox is the channel named by its sender, in
+ * `subscriptions` alongside the configured ones. `publish` resolves a target channel name to a
+ * server and writes to it; `sessionId` is carried as the ACE `sessionId` (RFC §5.4), which names
+ * the sender's instance — display-only, never an authorization.
  */
 export interface ToolContext {
 	config?: ResolvedAceConfig;
-	/** This session's sender identity, from `.ace.json`; absent when there are no publish channels. */
-	sender: string | undefined;
+	/** The channels the runtime reads (derived): configured subscriptions plus one inbox per live server. */
+	subscriptions: EndpointConfig[];
+	/** The derived inbox the agent directory registered for this session, when there is one. */
+	inbox?: EndpointConfig;
 	/** The host session id, when Claude Code exposes it; carried as the ACE `sessionId` (RFC §5.4). */
 	sessionId?: string;
 	codingAgent: string;
-	/** Publishers keyed by `publish` channel name. */
-	publishers: Record<string, AcePublisher>;
+	/** Session working directory, carried into the sender description. */
+	cwd: string;
 	runtime?: AceRuntimeSurface;
-	/**
-	 * This session's name in the agent directory, when `.ace.json` configures a `registry`: the
-	 * `target` other sessions pass to send this session a direct event.
-	 */
-	member?: string;
+	/** The publishing surface; absent when ACE is not running. */
+	publish?: PublishSurface;
 }
 
 /**
@@ -81,11 +110,11 @@ const HOST_TOOL_TEXT = {
 } as const;
 
 /**
- * The four ACE tools, as `tools/list` returns them. When `member` is set, `ace_publish` names it:
- * this session's address in the agent directory, what other sessions pass as `target` for a
- * direct event to this one.
+ * The four ACE tools, as `tools/list` returns them. When this session registered in the agent
+ * directory, `senders` names the channel(s) it answers to: what other sessions pass as `target` for
+ * a direct event to this one.
  */
-export function buildToolDefinitions(member?: string): McpTool[] {
+export function buildToolDefinitions(senders: readonly string[] = []): McpTool[] {
 	return [
 		{
 			name: ACE_TOOL_NAMES.channels,
@@ -96,7 +125,7 @@ export function buildToolDefinitions(member?: string): McpTool[] {
 		},
 		{
 			name: ACE_TOOL_NAMES.publish,
-			description: member === undefined ? TOOL_TEXT.publish.intro : publishDescription(member),
+			description: senders.length === 0 ? TOOL_TEXT.publish.intro : publishDescription(senders),
 			inputSchema: PUBLISH_PARAMETERS as unknown as JsonSchema,
 		},
 		{
@@ -119,11 +148,12 @@ export function buildToolDefinitions(member?: string): McpTool[] {
 	];
 }
 
-/** The `ace_publish` description with this session's directory address appended, when it has one. */
-function publishDescription(member: string): string {
+/** The `ace_publish` description with this session's directory channel(s) appended, when it has any. */
+function publishDescription(senders: readonly string[]): string {
+	const listed = senders.map((sender) => `"${sender}"`).join(", ");
 	return (
 		TOOL_TEXT.publish.intro +
-		` This session is in the agent directory as "${member}"; other agent sessions can send it a ` +
+		` This session is in the agent directory as ${listed}; other agent sessions can send it a ` +
 		`direct event by passing that name as their target.`
 	);
 }
@@ -151,38 +181,19 @@ export async function executeTool(ctx: ToolContext, name: string, args: Record<s
 function requireRuntime(ctx: ToolContext): AceRuntimeSurface {
 	const runtime = ctx.runtime;
 	if (!runtime) {
-		throw new Error(`ACE is not running in this session; .ace.json is missing or did not load`);
+		throw new Error(TOOL_ERROR_TEXT.notRunning);
 	}
 	return runtime;
 }
 
 function channelsTool(ctx: ToolContext): ToolResult {
-	const config = ctx.config;
-	if (!config) {
-		return errorResult(`ACE is not running in this session; .ace.json is missing or did not load`);
-	}
-	const lines: string[] = [];
-	if (config.subscribe.length === 0) lines.push("subscribes to no channels");
-	for (const endpoint of config.subscribe) {
-		const parts = [`subscribe ${endpoint.name}`];
-		if (endpoint.description) parts.push(`(${endpoint.description})`);
-		if (endpoint.activation) parts.push(`activation=${endpoint.activation}`);
-		lines.push(parts.join(" "));
-	}
-	if (ctx.member !== undefined) {
-		// The directory registered a per-session inbox subscription that is not in `.ace.json`; list it
-		// so the model knows how other sessions reach this one directly.
-		lines.push(
-			`subscribe session-inbox (this session's inbox from the agent directory; peers address it as "${ctx.member}")`,
-		);
-	}
-	if (config.publish.length === 0) lines.push("can publish to no channels");
-	for (const endpoint of config.publish) {
-		const parts = [`publish ${endpoint.name}`];
-		if (endpoint.description) parts.push(`(${endpoint.description})`);
-		lines.push(parts.join(" "));
-	}
-	return textResult(`${ctx.sender ?? "(no sender)"}\n${lines.join("\n")}`);
+	if (!ctx.config) return errorResult(TOOL_ERROR_TEXT.notRunning);
+	const listing = channelListingInput(ctx.subscriptions, ctx.inbox);
+	return textResult(
+		formatChannelListing(listing.subscriptions, {
+			...(listing.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
+		}),
+	);
 }
 
 function pendingTool(ctx: ToolContext): ToolResult {
@@ -207,55 +218,59 @@ async function publishTool(ctx: ToolContext, args: Record<string, unknown>): Pro
 	const rawTarget = args.target;
 	const target = typeof rawTarget === "string" ? [rawTarget] : Array.isArray(rawTarget) ? rawTarget : undefined;
 	if (body === undefined || body.length === 0 || target === undefined || target.length === 0) {
-		throw new Error("ace_publish requires a non-empty `body` and a `target` (string or list of strings)");
+		throw new Error(TOOL_ERROR_TEXT.usagePublish);
 	}
-	if (ctx.sender === undefined) {
-		throw new Error("no `sender` is configured for this session; add one to .ace.json to publish");
-	}
+	const surface = ctx.publish;
+	if (surface === undefined) throw new Error(TOOL_ERROR_TEXT.notRunning);
 	const activation =
 		typeof args.activation === "string" && args.activation !== "default" ? args.activation : "next_turn";
 
-	const message = validateAceMessage({
-		aceVersion: "0.1",
-		id: `evt_${randomUUID()}`,
-		sender: ctx.sender,
-		...(ctx.sessionId === undefined ? {} : { sessionId: ctx.sessionId }),
-		senderDescription: describeSender(
-			hostFacts({
-				codingAgent: ctx.codingAgent,
-				sessionId: ctx.sessionId ?? "(channel session)",
-				cwd: process.cwd(),
-			}),
-		),
-		activation,
-		body,
-	});
+	// The id is the runtime's: the caller reads it back from the result instead of choosing it. The
+	// sender carries a self-description, so a receiver can show who and where it is without any lookup.
+	const id = `evt_${randomUUID()}`;
+	const description = describeSender(
+		hostFacts({
+			codingAgent: ctx.codingAgent,
+			sessionId: ctx.sessionId ?? NO_SESSION_LABEL,
+			cwd: ctx.cwd,
+		}),
+	);
 
 	const delivered: string[] = [];
 	const failures: string[] = [];
+	const sentStreams = new Set<string>();
+	const senders: string[] = [];
 	for (const name of [...new Set(target.filter((t): t is string => typeof t === "string"))]) {
-		const publisher = ctx.publishers[name];
-		if (publisher === undefined) {
-			failures.push(
-				`"${name}": not a configured publish channel (${Object.keys(ctx.publishers).join(", ") || "none"})`,
-			);
-			continue;
-		}
 		try {
-			await publisher.publish(message);
-			delivered.push(`channel "${name}"`);
+			const resolved = await surface.resolve(name);
+			const stream = channelStreamKey(resolved.server.namespace, resolved.channel);
+			// The same channel twice in one call is one delivery.
+			const address = `${resolved.server.url}#${stream}`;
+			if (sentStreams.has(address)) {
+				delivered.push(deliveredChannel(resolved.channel));
+				continue;
+			}
+			sentStreams.add(address);
+			if (!senders.includes(resolved.sender)) senders.push(resolved.sender);
+			// A sender name belongs to one server, so the event is built per target rather than once.
+			const message = validateAceMessage({
+				aceVersion: "0.1",
+				id,
+				sender: resolved.sender,
+				...(ctx.sessionId === undefined ? {} : { sessionId: ctx.sessionId }),
+				senderDescription: description,
+				activation,
+				body,
+			});
+			await surface.send(resolved, message);
+			delivered.push(deliveredChannel(resolved.channel));
 		} catch (error) {
-			failures.push(`"${name}": ${describeError(error)}`);
+			failures.push(failedTarget(name, describeError(error)));
 		}
 	}
 
-	if (delivered.length === 0) throw new Error(`nothing published: ${failures.join("; ")}`);
-	return textResult(
-		[
-			`Published id=${message.id} from ${message.sender} to ${delivered.length} target(s): ${delivered.join(", ")} (activation: ${message.activation}).`,
-			...(failures.length > 0 ? [`Failed: ${failures.join("; ")}`] : []),
-		].join("\n"),
-	);
+	if (delivered.length === 0) throw new Error(TOOL_ERROR_TEXT.nothingPublished(failures));
+	return textResult(formatPublishResult({ id, sender: senders.join(", "), activation, delivered, failures }));
 }
 
 function errorResult(message: string): ToolResult {

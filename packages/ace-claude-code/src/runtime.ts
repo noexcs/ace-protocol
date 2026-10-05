@@ -2,9 +2,12 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	AceLogger,
+	AceMessage,
 	AgentRegistryStore,
 	EndpointConfig,
+	RedisStreamsAddClient,
 	ResolvedAceConfig,
+	ResolvedServer,
 	Transport,
 	TransportFactoryOptions,
 } from "ace-runtime";
@@ -13,24 +16,28 @@ import {
 	AceMetrics,
 	AceRuntime,
 	AgentRegistry,
-	createPublishers,
+	channelName,
+	channelStreamKey,
 	createRedisAgentRegistry,
+	createRedisStreamsAddClient,
 	createTransports,
 	DeadLetterSink,
+	describeEndpoint,
+	NO_SESSION_LABEL,
+	REDIS_STREAMS_DEFAULTS,
 	resolveAceConfig,
+	resolveTarget,
+	SESSION_INBOX,
+	senderName,
+	shutdownAce,
+	subscriptionEndpoint,
+	TOOL_ERROR_TEXT,
 } from "ace-runtime";
 import { readNewTrail } from "./ack.ts";
 import type { ChannelPush } from "./engine.ts";
 import { ClaudeCodeEngine } from "./engine.ts";
 import { ChannelObserver } from "./observer.ts";
-import type { ToolContext } from "./tools.ts";
-
-/**
- * The subscription name of the inbox the agent directory registers for this session: peers find
- * the session in the directory and publish to its stream, which the runtime consumes like any
- * other subscription.
- */
-export const SESSION_INBOX = "session-inbox";
+import type { PublishedTarget, PublishSurface, ToolContext } from "./tools.ts";
 
 /** How often the acknowledgement poller re-reads the trail the hook appends to. */
 const ACK_POLL_MS = 250;
@@ -44,21 +51,22 @@ export interface StartAceOptions {
 	logger: AceLogger;
 	/** Wait for observation before acknowledging, in ms. */
 	ackTimeoutMs?: number;
-	/** Coding agent name shown in the sender description. */
+	/** Coding agent name shown in the sender description and carried in the sender name. */
 	codingAgent?: string;
 	env?: Readonly<Record<string, string | undefined>>;
 	/** Injectable timers for tests. */
 	setInterval?: (callback: () => void, ms: number) => { cancel: () => void };
 	setTimeout?: (callback: () => void, ms: number) => { cancel: () => void };
 	/**
-	 * The host session id (`CLAUDE_CODE_SESSION_ID`), when the host injected it. The agent directory
-	 * builds the member name from it, so registration is skipped without one.
+	 * The host session id (`CLAUDE_CODE_SESSION_ID`), when the host injected it. The sender name — the
+	 * channel this session registers and reads its inbox on — is built from it, so registration is
+	 * skipped without one.
 	 */
 	sessionId?: string;
-	/** Build the agent directory store; tests inject a recording stand-in. Production uses `createRedisAgentRegistry`. */
+	/** Build the agent directory store per server; tests inject a recording stand-in. Production uses `createRedisAgentRegistry`. */
 	registryStoreFactory?: (options: {
 		url: string;
-		prefix?: string;
+		namespace?: string;
 		onError: (error: unknown) => void;
 	}) => AgentRegistryStore;
 	/** Build the transport per subscription; tests inject a no-op stand-in so the runtime starts without a broker. */
@@ -66,6 +74,8 @@ export interface StartAceOptions {
 		subscriptions: readonly EndpointConfig[],
 		options: TransportFactoryOptions,
 	) => Record<string, Transport>;
+	/** Open the Redis writer for a server URL; tests inject a recording stand-in so publish stays broker-free. */
+	addClientFactory?: (url: string, onError: (error: unknown) => void) => RedisStreamsAddClient;
 }
 
 export interface AceHandle {
@@ -77,16 +87,26 @@ export interface AceHandle {
 	stop(): Promise<void>;
 }
 
+/** One server this session is live on: its connection, and the channel named by this session there. */
+interface ActiveServer {
+	server: ResolvedServer;
+	/** This session's sender name on that server — which is also its inbox channel there. */
+	sender: string;
+	registry: AgentRegistry;
+}
+
 /**
  * Start the ACE runtime for this Claude Code session.
  *
  * Every piece is the vendored runtime: configuration from `resolveAceConfig`, one transport per
- * subscription from `createTransports`, one publisher per publication from `createPublishers`, and
- * the delivery policy (dedup, allowlists, burst spilling, `manual` retention) from {@link AceRuntime}.
+ * derived subscription from `createTransports`, one lazily-opened Redis writer per server for
+ * publishing, and the delivery policy (dedup, allowlists, burst spilling, `manual` retention) from
+ * {@link AceRuntime}. A channel name is the address: this session registers the channel named by its
+ * sender on every configured server, reads it back as its inbox, and addresses peers by channel name.
  * Only two things are host-specific: the {@link ClaudeCodeEngine}, which pushes events over the
  * channel and waits for observation, and the acknowledgement poller below, which turns the
- * `UserPromptSubmit` hook's trail into the "observed" signal the runtime needs before it
- * acknowledges the broker.
+ * `UserPromptSubmit` hook's trail into the "observed" signal the runtime needs before it acknowledges
+ * the broker.
  *
  * Returns `undefined` — the caller reports the reason — when there is no usable configuration: an
  * absent or unreadable `.ace.json`. The server still runs then, its tools answer "not configured",
@@ -97,6 +117,7 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 	const env = options.env ?? process.env;
 	const logger = options.logger;
 	const codingAgent = options.codingAgent ?? "claude-code";
+	const sessionId = options.sessionId;
 	const configPath = env.ACE_CONFIG ?? join(cwd, ACE_CONFIG_FILENAME);
 	if (!existsSync(configPath)) {
 		logger.warn?.(
@@ -124,9 +145,6 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		...(options.ackTimeoutMs === undefined ? {} : { ackTimeoutMs: options.ackTimeoutMs }),
 		...(options.setTimeout === undefined ? {} : { setTimer: options.setTimeout }),
 	});
-	const publishers = createPublishers(resolved.publish, {
-		onError: (error) => logger.error?.(`[ace] publish transport error: ${describeError(error)}`),
-	});
 	const deadLetters = new DeadLetterSink({
 		dir: aceDir,
 		logger,
@@ -145,75 +163,164 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		registryErrorReported = text;
 		logger.warn?.(text);
 	};
-	let registry: AgentRegistry | undefined;
-	let registration: { member: string; stream: string; group: string } | undefined;
-	// The configured channels, plus the inbox the directory registers for this session when one is
-	// configured — the runtime consumes that inbox like any other subscription.
-	let subscriptions = resolved.subscribe;
-	// A configured channel that already takes the derived name would make the runtime refuse to start
-	// (duplicate subscription names), so in that case this session runs without the directory instead
-	// of failing over a naming collision; a configured stream is not one nobody reads anyway.
-	const inboxNameTaken = resolved.subscribe.some((endpoint) => endpoint.name === SESSION_INBOX);
-	if (inboxNameTaken) {
+
+	const storeFactory =
+		options.registryStoreFactory ??
+		((registryOptions: { url: string; namespace?: string; onError: (error: unknown) => void }) =>
+			createRedisAgentRegistry(registryOptions));
+	const makeTransports = options.transportsFactory ?? createTransports;
+	const makeAddClient = options.addClientFactory ?? createRedisStreamsAddClient;
+
+	// Register on every configured server, each with this session's own channel there, and read that
+	// channel back. A server that is unreachable is skipped with a warning: the rest of the session
+	// still runs. Nothing about the address is advertised — the channel name is the address.
+	const multi = resolved.servers.length > 1;
+	const activeServers: ActiveServer[] = [];
+	const derived: EndpointConfig[] = [];
+	let sessionInbox: EndpointConfig | undefined;
+	/**
+	 * A server's sender name with the session label this host has: the injected session id, or the
+	 * runtime's no-session label when the host gave none.
+	 */
+	const readingSender = (server: ResolvedServer): string =>
+		senderName({
+			namespace: server.namespace,
+			username: resolved.username,
+			codingAgent,
+			sessionId: sessionId ?? NO_SESSION_LABEL,
+		});
+	if (sessionId === undefined) {
+		// Without a session id there is no channel to register under; the host (Claude Code) injects it
+		// into the server environment as `CLAUDE_CODE_SESSION_ID`. Configured channels are still read.
 		logger.warn?.(
-			`[ace] a subscription is already named ${SESSION_INBOX}; not registering in the agent directory (the derived inbox would collide with it)`,
+			"[ace] no session id was injected (CLAUDE_CODE_SESSION_ID); not registering in the agent directory",
 		);
-	}
-	// Register before the runtime starts, so the entry advertises the stream the runtime will read.
-	// A down broker is reported and the session runs without a directory, like a down subscription.
-	if (resolved.registry !== undefined && !inboxNameTaken) {
-		const storeFactory =
-			options.registryStoreFactory ??
-			((registryOptions: { url: string; prefix?: string; onError: (error: unknown) => void }) =>
-				createRedisAgentRegistry(registryOptions));
-		// Without a session id there is no member name to register under; the host (Claude Code)
-		// injects it into the server environment as `CLAUDE_CODE_SESSION_ID`.
-		const sessionId = options.sessionId;
-		if (sessionId === undefined) {
-			logger.warn?.(
-				"[ace] registry is configured but no session id was injected (CLAUDE_CODE_SESSION_ID); not registering in the agent directory",
-			);
-		} else {
+	} else {
+		for (const server of resolved.servers) {
+			const sender = readingSender(server);
+			const registry = new AgentRegistry({
+				store: storeFactory({ url: server.url, namespace: server.namespace, onError: reportRegistryError }),
+				namespace: server.namespace,
+				logger,
+				onError: reportRegistryError,
+			});
 			try {
-				registry = new AgentRegistry({
-					store: storeFactory({
-						url: resolved.registry.url,
-						...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
-						onError: reportRegistryError,
-					}),
-					...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
-					logger,
-					onError: reportRegistryError,
-				});
-				registration = await registry.register({
-					codingAgent,
-					sessionId,
-					cwd,
-					url: resolved.registry.url,
-				});
-				const inbox: EndpointConfig = {
-					name: SESSION_INBOX,
-					transport: "redis-streams",
-					description: "this session's inbox (agent directory)",
-					config: {
-						stream: registration.stream,
-						group: registration.group,
-						url: resolved.registry.url,
-					},
-					options: {},
-				};
-				subscriptions = [...resolved.subscribe, inbox];
+				await registry.register({ sender, codingAgent, sessionId, cwd });
 			} catch (error) {
 				// Registration failed (e.g. the broker is down): leave the directory and run anyway —
 				// a peer that finds this session cannot reach it while the broker is down.
-				registration = undefined;
-				await registry?.close().catch(() => {});
-				registry = undefined;
-				logger.warn?.(`[ace] not registered in the agent directory: ${describeError(error)}`);
+				await registry.close().catch(() => {});
+				logger.warn?.(`[ace] server "${server.name}" unreachable, skipping it: ${describeError(error)}`);
+				continue;
 			}
+			activeServers.push({ server, sender, registry });
+			const inbox = subscriptionEndpoint({
+				channel: sender,
+				// With more than one server the local inbox labels would collide; prefix them with the
+				// server name so every transport key stays unique.
+				name: multi ? `${server.name}:${SESSION_INBOX}` : SESSION_INBOX,
+				url: server.url,
+				namespace: server.namespace,
+				sender,
+				description: "this session's inbox — the channel named by its sender",
+			});
+			sessionInbox ??= inbox;
+			derived.push(inbox);
 		}
 	}
-	const makeTransports = options.transportsFactory ?? createTransports;
+	// Subscribed channel names are read on the server they were configured for, with that server's
+	// sender as the reading identity; a subscription whose server did not come up is dropped.
+	for (const subscribed of resolved.subscriptions) {
+		const owner = activeServers.find((active) => active.server.name === subscribed.server.name);
+		// Without a session id nothing was registered, but a configured channel is still readable under
+		// the no-session sender; when registration was attempted and failed, the server is down — drop it.
+		const sender = owner?.sender ?? (sessionId === undefined ? readingSender(subscribed.server) : undefined);
+		if (sender === undefined) continue;
+		derived.push(
+			subscriptionEndpoint({
+				channel: subscribed.channel,
+				name: multi ? `${subscribed.server.name}:${subscribed.channel}` : subscribed.channel,
+				url: subscribed.server.url,
+				namespace: subscribed.server.namespace,
+				sender,
+				...(subscribed.server.description === undefined ? {} : { description: subscribed.server.description }),
+			}),
+		);
+	}
+	const subscriptions = derived;
+
+	// Lazily opened writer per server URL: publishing needs no configured list of publications — the
+	// stream is derived from the target channel's name.
+	const addClients = new Map<string, RedisStreamsAddClient>();
+	/** Complete a short channel name with this server's namespace and the user's name. */
+	function complete(name: string, namespace: string): string {
+		return name.includes(":") && name.split(":").length >= 3 ? name : channelName(namespace, resolved.username, name);
+	}
+	/**
+	 * A target is a **channel name**. `<server>:<channel>` picks the server; with a single server the
+	 * bare name is enough. Otherwise the name is looked up in each server's directory — that is how a
+	 * peer is addressed, because a peer *is* the channel named by its sender. Guessing between two live
+	 * channels would send an event to the wrong agent, so an ambiguous target fails and names them.
+	 */
+	async function resolvePublishTarget(name: string): Promise<PublishedTarget> {
+		const first = name.split(":")[0] ?? "";
+		const explicit = activeServers.find((active) => active.server.name === first);
+		if (explicit !== undefined && name.includes(":")) {
+			return {
+				server: explicit.server,
+				channel: complete(name.slice(first.length + 1), explicit.server.namespace),
+				sender: explicit.sender,
+			};
+		}
+		const only = activeServers.length === 1 ? activeServers[0] : undefined;
+		if (only !== undefined) {
+			return { server: only.server, channel: complete(name, only.server.namespace), sender: only.sender };
+		}
+		const matches: PublishedTarget[] = [];
+		for (const active of activeServers) {
+			const resolution = resolveTarget(await active.registry.list(), name);
+			if (resolution.ok)
+				matches.push({ server: active.server, channel: resolution.entry.channel, sender: active.sender });
+		}
+		const unique = matches[0];
+		if (unique !== undefined && matches.length === 1) return unique;
+		if (matches.length > 1) {
+			throw new Error(
+				TOOL_ERROR_TEXT.targetAmbiguous(
+					name,
+					matches.length,
+					matches.map((match) => `${match.server.name}:${match.channel}`),
+				),
+			);
+		}
+		throw new Error(
+			TOOL_ERROR_TEXT.targetNotFound(
+				name,
+				activeServers.map((active) => `${active.server.name}:<channel>`),
+			),
+		);
+	}
+	/** Publish to a channel: the stream is derived from the name, and one writer per server is opened on first use. */
+	async function sendToChannel(target: PublishedTarget, message: AceMessage): Promise<void> {
+		const url = target.server.url;
+		let writer = addClients.get(url);
+		if (writer === undefined) {
+			writer = makeAddClient(url, reportRegistryError);
+			addClients.set(url, writer);
+		}
+		await writer.add(
+			channelStreamKey(target.server.namespace, target.channel),
+			REDIS_STREAMS_DEFAULTS.field,
+			JSON.stringify(message),
+		);
+	}
+	const publish: PublishSurface = {
+		senders: activeServers.map((active) => active.sender),
+		serverNames: activeServers.map((active) => active.server.name),
+		resolve: resolvePublishTarget,
+		send: sendToChannel,
+	};
+
 	const runtime = new AceRuntime({
 		engine,
 		subscribe: subscriptions,
@@ -242,13 +349,19 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		await runtime.start();
 	} catch (error) {
 		shuttingDown = true;
-		await runtime.stop().catch(() => {});
-		// Nothing is running: leave the directory so a dead session is not discoverable, and release
-		// the registry's client, so the next start in this process may try again.
-		if (registry !== undefined && registration !== undefined) await registry.unregister().catch(() => {});
-		await registry?.close().catch(() => {});
-		registry = undefined;
-		registration = undefined;
+		// Nothing is running: stop the reader, leave every directory so a dead session is not
+		// discoverable, and release the writers, so the next start in this process may try again.
+		await shutdownAce({
+			runtime,
+			onError: (step, cause) => logger.warn?.(`[ace] ${step}: ${describeError(cause)}`),
+		});
+		for (const active of activeServers) {
+			await shutdownAce({
+				registry: active.registry,
+				onError: (step, cause) => logger.warn?.(`[ace] ${step} (${active.server.name}): ${describeError(cause)}`),
+			});
+		}
+		for (const writer of addClients.values()) await writer.close().catch(() => {});
 		logger.error?.(
 			`[ace] could not start: ${describeError(error)} (check the broker in ${ACE_CONFIG_FILENAME}, then restart the session)`,
 		);
@@ -258,13 +371,13 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 
 	const tools: ToolContext = {
 		config: resolved,
-		sender: resolved.sender,
-		// The session id is only known to the server (which spawns with the session env); the runtime
-		// resolves the sender identity from the config, and the server layers the id on top.
+		subscriptions,
+		...(sessionInbox === undefined ? {} : { inbox: sessionInbox }),
+		...(sessionId === undefined ? {} : { sessionId }),
 		codingAgent,
-		publishers,
+		cwd,
 		runtime,
-		...(registration === undefined ? {} : { member: registration.member }),
+		publish,
 	};
 
 	// The hook writes here; the runtime acknowledges only when the event shows up in the
@@ -276,11 +389,11 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		...(options.setInterval === undefined ? {} : { setInterval: options.setInterval }),
 	});
 
+	const senders = activeServers.map((active) => active.sender);
+	const servers = activeServers.map((active) => `${active.server.name} (${active.sender})`).join(", ");
 	logger.info?.(
-		`[ace] ${resolved.sender ?? "(no sender)"} listening (${resolved.source}): ` +
-			`subscribe ${subscriptions.map((e) => e.name).join(", ") || "(none)"}; ` +
-			`publish ${resolved.publish.map((e) => e.name).join(", ") || "(none)"}; ` +
-			`registered as ${registration?.member ?? "(none)"}`,
+		`[ace] ${senders.join(", ") || "(no sender)"} listening (${resolved.source}): ` +
+			`servers ${servers || "(none)"}; reading ${subscriptions.map(describeEndpoint).join(", ") || "(none)"}`,
 	);
 
 	return {
@@ -288,18 +401,29 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 		tools,
 		async stop() {
 			poller.cancel();
-			// Order matters (0.1.3): `unregister` deletes this session's stream (and group), so the
-			// reader has to be gone first — otherwise it wakes up to a deleted group and reports
-			// NOGROUP on the way out.
+			// The order (reader → directory entry and stream → client) and its best-effort error
+			// handling live in the runtime, so every host gets it right by construction. The reader is
+			// shared by every server, so it stops once; each server's registration is then dropped and
+			// closed, and the publish writers are released last of all.
 			shuttingDown = true;
 			try {
+				await shutdownAce({
+					runtime,
+					onError: (step, error) => logger.warn?.(`[ace] ${step}: ${describeError(error)}`),
+				});
+				for (const active of activeServers) {
+					await shutdownAce({
+						registry: active.registry,
+						onError: (step, error) =>
+							logger.warn?.(`[ace] ${step} (${active.server.name}): ${describeError(error)}`),
+					});
+				}
+			} finally {
 				// In-flight injections are the engine's own: each waits out its observation with a
 				// bounded timer that releases itself, so stopping the runtime never strands an
 				// unhandled promise.
-				await runtime.stop();
-			} finally {
-				if (registry !== undefined && registration !== undefined) await registry.unregister().catch(() => {});
-				await registry?.close().catch(() => {});
+				for (const writer of addClients.values()) await writer.close().catch(() => {});
+				addClients.clear();
 			}
 		},
 	};

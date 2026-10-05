@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AceMessage } from "ace-runtime";
+import { channelName, channelStreamKey } from "ace-runtime";
 import { createClient } from "redis";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -30,7 +31,9 @@ const extensionPath = new URL("../extensions/ace.ts", import.meta.url).pathname;
 const probePath = new URL("./probe-system-prompt.ts", import.meta.url).pathname;
 const run = `${Date.now().toString(36)}`;
 const scratch = mkdtempSync(join(tmpdir(), "ace-omp-"));
-const group = "verify";
+/** The namespace and username the scratch config declares; the channel names derive from them. */
+const namespace = "verify";
+const username = "verify";
 
 interface Result {
 	scenario: string;
@@ -43,12 +46,12 @@ const results: Result[] = [];
 const check = (scenario: string, expectation: string, actual: unknown, ok: boolean): void =>
 	void results.push({ scenario, expectation, actual: String(actual), ok });
 
-/** One scenario: a stream, a live session, events published into it, assertions on what came back. */
+/** One scenario: a channel, a live session, events published into it, assertions on what came back. */
 interface Scenario {
 	name: string;
 	event: AceMessage;
-	/** Frame types, and fragments the injected user message must contain. */
-	expect: { frame?: string; userMessage?: string[] };
+	/** Frame types, and fragments the injected user message must contain given the channel's stream. */
+	expect: { frame?: string; userMessage?: (stream: string) => string[] };
 	/** Whether a turn is expected at all — `manual` events are stored, not injected. */
 	turn: boolean;
 }
@@ -59,9 +62,9 @@ const scenarios: Scenario[] = [
 		event: {
 			aceVersion: "0.1",
 			id: "evt_next_turn",
-			// The sender and its description are what our own publisher stamps: member-shaped sender,
+			// The sender and its description are what our own publisher stamps: a channel-shaped sender,
 			// plus the sender's own account of where it runs.
-			sender: "ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
+			sender: "verify:verify:ci",
 			sessionId: "01a102b6-9dac-75b6-80ca-21cbbf58e914",
 			senderDescription: "agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 			activation: "next_turn",
@@ -69,10 +72,10 @@ const scenarios: Scenario[] = [
 		},
 		expect: {
 			frame: "message_start",
-			userMessage: [
+			userMessage: (stream) => [
 				"<ace_event>",
-				"sender: ci:01a102b6-9dac-75b6-80ca-21cbbf58e914",
-				"channel: ace:verify:omp:",
+				"sender: verify:verify:ci",
+				`channel: ${stream}`,
 				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 				"id: evt_next_turn",
 			],
@@ -106,20 +109,20 @@ try {
 	process.exit(1);
 }
 
-function writeConfig(stream: string): string {
+/** The channel's stream is derived from its name; nothing about the address is configured. */
+function streamOf(local: string): string {
+	return channelStreamKey(namespace, channelName(namespace, username, local));
+}
+
+function writeConfig(local: string): string {
 	const path = join(scratch, ".ace.json");
 	writeFileSync(
 		path,
 		`${JSON.stringify(
 			{
-				subscribe: [
-					{
-						name: "inbox",
-						transport: "redis-streams",
-						description: "verify:omp",
-						config: { stream, group, url, blockMs: 200 },
-					},
-				],
+				username,
+				servers: { local: { url, namespace } },
+				subscribe: [local],
 			},
 			null,
 			2,
@@ -243,8 +246,10 @@ function textOf(content: unknown): string | undefined {
 }
 
 for (const scenario of scenarios) {
-	const stream = `ace:verify:omp:${run}:${scenario.name}`;
-	writeConfig(stream);
+	// A unique channel per scenario keeps them isolated without configuring any address.
+	const local = `inbox-${run}-${scenario.name}`;
+	const stream = streamOf(local);
+	writeConfig(local);
 	const session = new OmpSession(scratch);
 	try {
 		const ready = await session.waitForFrame("ready", 60_000);
@@ -267,10 +272,10 @@ for (const scenario of scenarios) {
 		await new Promise((resolve) => setTimeout(resolve, scenario.turn ? 0 : 2_000));
 
 		const injected = session.userMessages.some((text) =>
-			(scenario.expect.userMessage ?? []).every((fragment) => text.includes(fragment)),
+			(scenario.expect.userMessage?.(stream) ?? []).every((fragment) => text.includes(fragment)),
 		);
 		const turns = session.frames.filter((frame) => frame.type === "turn_start").length;
-		const outstanding = await pending(stream, group);
+		const outstanding = await pending(stream);
 		const length = await admin.xLen(stream);
 
 		if (scenario.turn) {
@@ -312,10 +317,25 @@ for (const scenario of scenarios) {
 	}
 }
 
-async function pending(stream: string, consumerGroup: string): Promise<number> {
-	const summary = await admin.xPending(stream, consumerGroup);
+/**
+ * How many entries the session has read but not acknowledged. The reading group is the subscribing
+ * session's own sender name — derived, never configured — so it is discovered from the stream.
+ */
+async function pending(stream: string): Promise<number> {
+	const groups: unknown = await admin.xInfoGroups(stream);
+	if (!Array.isArray(groups)) return 0;
+	const name = groupName(groups[0]);
+	if (name === undefined) return 0;
+	const summary = await admin.xPending(stream, name);
 	if (typeof summary !== "object" || summary === null || !("pending" in summary)) return 0;
 	return Number(summary.pending);
+}
+
+/** `XINFO GROUPS` reports `{ name, consumers, pending, … }` per group. */
+function groupName(group: unknown): string | undefined {
+	if (typeof group !== "object" || group === null) return undefined;
+	const record = group as Record<string, unknown>;
+	return typeof record.name === "string" ? record.name : undefined;
 }
 
 const ok = results.every((result) => result.ok);

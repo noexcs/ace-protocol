@@ -1,274 +1,89 @@
 {
-	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://github.com/noexcs/pi/packages/ace-runtime/schema/ace-config.schema.json",
-	"title": "ACE runtime configuration (.ace.json)",
-	"description": "Which channels this agent subscribes to and publishes on (RFC §10). Every MQ setting lives here; ACE messages never carry it (RFC §4).",
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://raw.githubusercontent.com/noexcs/ace-protocol/main/packages/ace-runtime/schema/ace-config.schema.json",
+	"title": "ACE local configuration (.ace.json)",
+	"description": "Local deployment information only: who this user is, and which servers this machine talks to. Channels, subscriptions and presence live on a server.",
 	"type": "object",
-	"required": [
-		"subscribe"
-	],
+	"required": ["servers"],
 	"properties": {
-		"sender": {
+		"$schema": {
 			"type": "string",
-			"pattern": "^[A-Za-z0-9._@:-]{1,128}$",
-			"description": "Deprecated and unused: a session publishes as \"<coding-agent>:<sessionId>\", which is also its directory member. Accepted so existing files keep loading; a warning is reported when present."
+			"description": "Editor autocomplete hint; ignored by the runtime."
+		},
+		"username": {
+			"type": "string",
+			"minLength": 1,
+			"pattern": "^[^:]+$",
+			"description": "The real user's name or nick. It is the second level of the naming hierarchy (<ns>:<username>:<name>): prepended to names, never stored as a field. May be omitted when a host-global file (or $USER) provides it. No colons."
+		},
+		"servers": {
+			"type": "object",
+			"minProperties": 1,
+			"propertyNames": {
+				"type": "string",
+				"pattern": "^[^:]+$",
+				"description": "Server name: a local handle (never uploaded). No colons."
+			},
+			"additionalProperties": {
+				"$ref": "#/definitions/server"
+			},
+			"description": "Servers this machine talks to. Each one is a complete ACE domain: Redis, a member directory, and the channels on it."
+		},
+		"subscribe": {
+			"type": "array",
+			"items": {
+				"type": "string",
+				"minLength": 1
+			},
+			"description": "Channel names this session subscribes to. A short name (ci-failures) is completed to <ns>:<username>:ci-failures; with several servers, qualify it as <server>:<name>. Omit for direct messages only."
 		},
 		"defaultActivation": {
 			"type": "string",
-			"enum": [
-				"immediate",
-				"next_turn",
-				"manual"
-			],
+			"enum": ["immediate", "next_turn", "manual"],
 			"description": "Fallback activation when neither the subscription nor the message decides (RFC §8)."
-		},
-		"subscribe": {
-			"type": "array",
-			"minItems": 1,
-			"description": "Channels this agent receives ACE events from.",
-			"items": {
-				"$ref": "#/$defs/subscribe"
-			}
-		},
-		"publish": {
-			"type": "array",
-			"minItems": 1,
-			"description": "Channels the ace_publish tool may send ACE events to (RFC §19).",
-			"items": {
-				"$ref": "#/$defs/publish"
-			}
 		},
 		"manual": {
 			"type": "object",
-			"description": "Retention limits for manual events (defaults: 100 events, 24h).",
+			"additionalProperties": false,
 			"properties": {
 				"max": {
-					"type": "integer",
-					"minimum": 1
+					"type": "number",
+					"description": "How many manual events to retain (default 100)."
 				},
 				"ttlMs": {
-					"type": "integer",
-					"minimum": 1
+					"type": "number",
+					"description": "How long a retained manual event lives (default 24h)."
 				}
 			},
-			"additionalProperties": false
+			"description": "Retention for manual events."
 		},
-		"registry": {
+		"projectConfig": {
+			"const": "ignore",
+			"description": "Host-global files only: \"ignore\" makes this file win over a project .ace.json, so a cloned repository cannot redirect the session."
+		}
+	},
+	"definitions": {
+		"server": {
 			"type": "object",
-			"description": "Agent directory this session registers itself in (RFC §22 item 1); omitted means no registration.",
-			"required": [
-				"url"
-			],
+			"required": ["url"],
+			"additionalProperties": false,
 			"properties": {
 				"url": {
 					"type": "string",
 					"minLength": 1,
-					"description": "Broker URL of the directory, e.g. redis://127.0.0.1:6379."
+					"description": "Redis connection string, e.g. redis://user:${PASS}@host:6379 or rediss://… . ${VAR} is interpolated from the environment. Credentials stay in this file and are never broadcast."
 				},
-				"prefix": {
+				"namespace": {
 					"type": "string",
 					"minLength": 1,
-					"description": "Key namespace, default ace:agents."
-				}
-			},
-			"additionalProperties": false
-		}
-	},
-	"additionalProperties": false,
-	"$defs": {
-		"channel": {
-			"type": "object",
-			"required": [
-				"name",
-				"transport"
-			],
-			"properties": {
-				"name": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Channel name: the key its transport is registered under, and the tool's target."
-				},
-				"transport": {
-					"type": "string",
-					"enum": [
-						"redis-streams"
-					],
-					"description": "Transport kind; the settings below live in `config`."
+					"pattern": "^[^:]+$",
+					"description": "Namespace this server owns; keys live under it (<ns>:agents, <ns>:entry, <ns>:ch:<name>). Defaults to \"ace\". No colons."
 				},
 				"description": {
 					"type": "string",
-					"minLength": 1,
-					"description": "Who or what sits on the other end; shown to the model in the ace_publish tool description."
-				},
-				"enabled": {
-					"type": "boolean",
-					"description": "Set false to keep the channel configured but not started."
-				},
-				"config": {
-					"type": "object",
-					"description": "Transport-specific settings, validated against the kind.",
-					"additionalProperties": true
-				},
-				"options": {
-					"type": "object",
-					"description": "Raw options passed through to the transport's client library; not validated.",
-					"additionalProperties": true
-				},
-				"activation": {
-					"type": "string",
-					"enum": [
-						"immediate",
-						"next_turn",
-						"manual",
-						"default"
-					],
-					"description": "Subscribe only: receiver override for this channel (RFC §8); default delegates to the message."
+					"description": "Free-form note about this server, for humans."
 				}
-			},
-			"additionalProperties": false
-		},
-		"redisStreamsPublish": {
-			"type": "object",
-			"description": "Append-only target: the publisher needs an address and a field, nothing to read.",
-			"properties": {
-				"stream": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Stream to append to."
-				},
-				"url": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Broker URL, default redis://127.0.0.1:6379."
-				},
-				"field": {
-					"type": "string",
-					"minLength": 1,
-					"description": "Entry field carrying the ACE JSON, default message."
-				}
-			},
-			"additionalProperties": false,
-			"required": [
-				"stream"
-			]
-		},
-		"redisStreamsSubscribe": {
-			"type": "object",
-			"properties": {
-				"stream": {
-					"type": "string",
-					"minLength": 1
-				},
-				"group": {
-					"type": "string",
-					"minLength": 1
-				},
-				"url": {
-					"type": "string",
-					"minLength": 1
-				},
-				"consumer": {
-					"type": "string",
-					"minLength": 1
-				},
-				"field": {
-					"type": "string",
-					"minLength": 1
-				},
-				"count": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"blockMs": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "Block window per read, default 1000."
-				},
-				"reclaimIdleMs": {
-					"type": "integer",
-					"minimum": 0,
-					"description": "Claim entries another consumer left pending this long; 0 disables reclaiming. Default 60000."
-				},
-				"reclaimAttempts": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "Give up on a reclaimed entry after this many deliveries. Default 3."
-				},
-				"retryDelayMs": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "First reconnect delay after a read failure; doubles up to maxRetryDelayMs. Default 200."
-				},
-				"maxRetryDelayMs": {
-					"type": "integer",
-					"minimum": 1,
-					"description": "Cap for the reconnect delay. Default 5000."
-				}
-			},
-			"additionalProperties": false,
-			"required": [
-				"stream",
-				"group"
-			]
-		},
-		"subscribe": {
-			"allOf": [
-				{
-					"$ref": "#/$defs/channel"
-				},
-				{
-					"if": {
-						"properties": {
-							"transport": {
-								"const": "redis-streams"
-							}
-						},
-						"required": [
-							"transport"
-						]
-					},
-					"then": {
-						"properties": {
-							"config": {
-								"$ref": "#/$defs/redisStreamsSubscribe"
-							}
-						}
-					}
-				}
-			]
-		},
-		"publish": {
-			"allOf": [
-				{
-					"$ref": "#/$defs/channel"
-				},
-				{
-					"not": {
-						"required": [
-							"activation"
-						]
-					}
-				},
-				{
-					"if": {
-						"properties": {
-							"transport": {
-								"const": "redis-streams"
-							}
-						},
-						"required": [
-							"transport"
-						]
-					},
-					"then": {
-						"properties": {
-							"config": {
-								"$ref": "#/$defs/redisStreamsPublish"
-							}
-						}
-					}
-				}
-			]
+			}
 		}
 	}
 }

@@ -1,152 +1,129 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isConcreteActivation } from "../protocol/ace-message.js";
-import { RedisStreamsPublisher } from "../transport/redis-streams-publisher.js";
 import { REDIS_STREAMS_DEFAULTS, RedisStreamsTransport, redisStreamsConfigFrom, } from "../transport/redis-streams-transport.js";
 import { describeValue, isPlainObject } from "../utils.js";
-import { AceConfigError, optionalStringField, rejectUnknownKeys, requiredStringField, validateEndpointConfig, validateSender, } from "./endpoint-config.js";
+import { AceConfigError, rejectUnknownKeys } from "./endpoint-config.js";
+import { assertNoColon, channelName, channelStreamKey, NAMESPACE_DEFAULT, resolveLocalName } from "./naming.js";
 /**
  * Name of the runtime configuration file read from the session working directory.
  *
- * Every MQ setting (addresses, streams, groups, targets, identity) lives here; the code holds only
- * the generic mechanisms and the defaults a transport falls back to.
+ * The file holds **only local deployment information**: who this user is, and which servers this
+ * machine talks to. Channels, subscriptions and presence all live on a server.
  */
 export const ACE_CONFIG_FILENAME = ".ace.json";
-/** Transport kinds this runtime can build from configuration (RFC §4.1 lists the others). */
-export const SUPPORTED_TRANSPORTS = ["redis-streams"];
-/** The key that identifies a channel inside its broker; used to spot duplicated subscriptions. */
-const ADDRESS_KEY_BY_TRANSPORT = { "redis-streams": "stream" };
 /** Validate a parsed `.ace.json` document. */
 export function parseAceConfig(value, source) {
     if (!isPlainObject(value)) {
         throw new AceConfigError(`${source} must contain a JSON object, received ${describeValue(value)}`);
     }
-    const { defaultActivation, subscribe, sender } = value;
+    const { defaultActivation, username } = value;
     if (defaultActivation !== undefined && !isConcreteActivation(defaultActivation)) {
         throw new AceConfigError(`${source}: defaultActivation must be immediate|next_turn|manual, received ${describeValue(defaultActivation)}`);
     }
     if (value.projectConfig !== undefined && value.projectConfig !== "ignore") {
         throw new AceConfigError(`${source}: projectConfig must be "ignore" when present, received ${describeValue(value.projectConfig)}`);
     }
-    if (!Array.isArray(subscribe) || subscribe.length === 0) {
-        throw new AceConfigError(`${source}: subscribe must be a non-empty array`);
+    if (username !== undefined) {
+        if (typeof username !== "string") {
+            throw new AceConfigError(`${source}: username must be a string, received ${describeValue(username)}`);
+        }
+        refuseColon(username, `${source}: username`);
     }
-    const subscriptions = parseEndpoints(subscribe, source, "subscribe");
-    for (const subscription of subscriptions)
-        validateSubscriptionSettings(subscription);
-    const publications = value.publish === undefined ? undefined : parseEndpoints(value.publish, source, "publish");
-    if (publications) {
-        for (const publication of publications)
-            validatePublicationSettings(publication);
-    }
-    if (value.registry !== undefined) {
-        if (!isPlainObject(value.registry)) {
-            throw new AceConfigError(`${source}: registry must be an object, received ${describeValue(value.registry)}`);
-        }
-        rejectUnknownKeys(value.registry, ["url", "prefix"], `${source}: registry`);
-        if (typeof value.registry.url !== "string" || value.registry.url.length === 0) {
-            throw new AceConfigError(`${source}: registry.url must be a non-empty string, received ${describeValue(value.registry.url)}`);
-        }
-        if (value.registry.prefix !== undefined &&
-            (typeof value.registry.prefix !== "string" || value.registry.prefix.length === 0)) {
-            throw new AceConfigError(`${source}: registry.prefix must be a non-empty string, received ${describeValue(value.registry.prefix)}`);
-        }
-    }
-    if (value.manual !== undefined) {
-        if (!isPlainObject(value.manual)) {
-            throw new AceConfigError(`${source}: manual must be an object, received ${describeValue(value.manual)}`);
-        }
-        rejectUnknownKeys(value.manual, ["max", "ttlMs"], `${source}: manual`);
-        for (const key of ["max", "ttlMs"]) {
-            const limit = value.manual[key];
-            if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
-                throw new AceConfigError(`${source}: manual.${key} must be a positive integer, received ${describeValue(limit)}`);
-            }
-        }
-    }
-    if (sender !== undefined)
-        validateSender(sender, source);
+    const servers = parseServers(value.servers, source);
+    const subscribe = parseSubscriptions(value.subscribe, source);
+    const manual = parseManual(value.manual, source);
     return {
-        defaultActivation,
-        ...(sender === undefined ? {} : { sender: sender }),
-        subscribe: subscriptions,
-        ...(publications ? { publish: publications } : {}),
-        ...(value.manual === undefined ? {} : { manual: value.manual }),
-        ...(value.registry === undefined ? {} : { registry: value.registry }),
+        username: typeof username === "string" ? username : "",
+        servers,
+        ...(subscribe === undefined ? {} : { subscribe }),
+        ...(defaultActivation === undefined ? {} : { defaultActivation }),
+        ...(manual === undefined ? {} : { manual }),
+        ...(value.projectConfig === undefined ? {} : { projectConfig: value.projectConfig }),
     };
 }
-function parseEndpoints(value, source, role) {
-    if (!Array.isArray(value) || value.length === 0) {
-        throw new AceConfigError(`${source}: ${role} must be a non-empty array when present`);
+/** `server name` / `namespace` / `username` are colon-free: they are the fixed segments of a name. */
+function refuseColon(value, subject) {
+    try {
+        assertNoColon(value, subject);
     }
-    const endpoints = value.map((entry) => validateEndpointConfig(entry, role));
-    const names = new Set();
-    for (const endpoint of endpoints) {
-        if (names.has(endpoint.name))
-            throw new AceConfigError(`${source}: ${role} name "${endpoint.name}" is configured twice`);
-        names.add(endpoint.name);
-    }
-    return endpoints;
-}
-/** Reject unknown transport kinds and invalid settings for one subscription. */
-function validateSubscriptionSettings(subscription) {
-    switch (subscription.transport) {
-        case "redis-streams":
-            redisStreamsConfigFrom(subscription);
-            return;
-        default:
-            throw new AceConfigError(`subscribe "${subscription.name}" uses unsupported transport ${describeValue(subscription.transport)} (available: ${SUPPORTED_TRANSPORTS.join(", ")})`);
+    catch (error) {
+        throw new AceConfigError(error instanceof Error ? error.message : String(error));
     }
 }
-/** Reject unknown transport kinds and invalid settings for one publication. */
-function validatePublicationSettings(publication) {
-    const subject = `publish "${publication.name}" config`;
-    switch (publication.transport) {
-        case "redis-streams":
-            requiredStringField(publication.config, "stream", subject);
-            optionalStringField(publication.config, "url", REDIS_STREAMS_DEFAULTS.url, subject);
-            optionalStringField(publication.config, "field", REDIS_STREAMS_DEFAULTS.field, subject);
-            rejectUnknownKeys(publication.config, ["stream", "url", "field"], subject);
-            return;
-        default:
-            throw new AceConfigError(`publish "${publication.name}" uses unsupported transport ${describeValue(publication.transport)} (available: ${SUPPORTED_TRANSPORTS.join(", ")})`);
+function parseServers(value, source) {
+    if (!isPlainObject(value) || Object.keys(value).length === 0) {
+        throw new AceConfigError(`${source}: servers must be a non-empty object of { "<name>": { url } }`);
     }
+    const servers = {};
+    for (const [name, entry] of Object.entries(value)) {
+        const subject = `${source}: servers["${name}"]`;
+        refuseColon(name, `${source}: server name "${name}"`);
+        if (!isPlainObject(entry)) {
+            throw new AceConfigError(`${subject} must be an object, received ${describeValue(entry)}`);
+        }
+        rejectUnknownKeys(entry, ["url", "namespace", "description"], subject);
+        if (typeof entry.url !== "string" || entry.url.length === 0) {
+            throw new AceConfigError(`${subject}.url must be a non-empty string, received ${describeValue(entry.url)}`);
+        }
+        if (entry.namespace !== undefined) {
+            if (typeof entry.namespace !== "string") {
+                throw new AceConfigError(`${subject}.namespace must be a string, received ${describeValue(entry.namespace)}`);
+            }
+            refuseColon(entry.namespace, `${subject}.namespace`);
+        }
+        if (entry.description !== undefined && typeof entry.description !== "string") {
+            throw new AceConfigError(`${subject}.description must be a string, received ${describeValue(entry.description)}`);
+        }
+        servers[name] = {
+            url: entry.url,
+            ...(typeof entry.namespace === "string" ? { namespace: entry.namespace } : {}),
+            ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+        };
+    }
+    return servers;
+}
+function parseSubscriptions(value, source) {
+    if (value === undefined)
+        return undefined;
+    if (!Array.isArray(value)) {
+        throw new AceConfigError(`${source}: subscribe must be an array of channel names, received ${describeValue(value)}`);
+    }
+    for (const name of value) {
+        if (typeof name !== "string" || name.length === 0) {
+            throw new AceConfigError(`${source}: subscribe entries must be non-empty strings, received ${describeValue(name)}`);
+        }
+    }
+    // JSON Schema cannot express uniqueness of array items, so this rule lives here (see the schema test).
+    if (new Set(value).size !== value.length) {
+        throw new AceConfigError(`${source}: a subscription name is configured twice`);
+    }
+    return [...value];
+}
+function parseManual(value, source) {
+    if (value === undefined)
+        return undefined;
+    if (!isPlainObject(value)) {
+        throw new AceConfigError(`${source}: manual must be an object, received ${describeValue(value)}`);
+    }
+    rejectUnknownKeys(value, ["max", "ttlMs"], `${source}: manual`);
+    const manual = {};
+    if (value.max !== undefined) {
+        if (typeof value.max !== "number")
+            throw new AceConfigError(`${source}: manual.max must be a number`);
+        manual.max = value.max;
+    }
+    if (value.ttlMs !== undefined) {
+        if (typeof value.ttlMs !== "number")
+            throw new AceConfigError(`${source}: manual.ttlMs must be a number`);
+        manual.ttlMs = value.ttlMs;
+    }
+    return manual;
 }
 /**
- * Configuration smells that are legal but almost always mistakes: more than one subscription reading
- * the same address from one agent either splits the events or delivers every event twice.
- */
-export function channelWarnings(config) {
-    const byAddress = new Map();
-    for (const subscription of config.subscribe) {
-        const addressKey = ADDRESS_KEY_BY_TRANSPORT[subscription.transport];
-        if (!addressKey)
-            continue;
-        const address = subscription.config[addressKey];
-        if (typeof address !== "string")
-            continue;
-        const key = `${subscription.transport} ${address}`;
-        byAddress.set(key, [...(byAddress.get(key) ?? []), subscription]);
-    }
-    const warnings = [];
-    if (config.sender !== undefined) {
-        warnings.push(`sender "${config.sender}" is unused: this session publishes as "<coding-agent>:<sessionId>" (the same value as its directory member)`);
-    }
-    for (const [key, subscriptions] of byAddress) {
-        if (subscriptions.length < 2)
-            continue;
-        const names = subscriptions.map((subscription) => `"${subscription.name}"`).join(" and ");
-        const groups = new Set(subscriptions.map((subscription) => String(subscription.config.group)));
-        warnings.push(groups.size === 1
-            ? `subscribe ${names} read ${key} in the same group: events are split between them`
-            : `subscribe ${names} read ${key} with different groups: this agent receives every event twice`);
-    }
-    return warnings;
-}
-/**
- * Load `.ace.json` from `ACE_CONFIG` or `<cwd>/.ace.json`.
+ * Load `.ace.json` from `$ACE_CONFIG`, `<cwd>/.ace.json`, then the host's global candidates.
  *
- * Returns `undefined` when neither exists; {@link resolveAceConfig} turns that into an error.
+ * Returns `undefined` when none exists; {@link resolveAceConfig} turns that into an error.
  */
 export function loadAceConfig(options) {
     const env = options.env ?? process.env;
@@ -161,18 +138,16 @@ export function loadAceConfig(options) {
     const source = candidates.find((candidate) => existsSync(candidate));
     if (source === undefined)
         return undefined;
-    let parsed;
-    try {
-        parsed = JSON.parse(readFileSync(source, "utf8"));
-    }
-    catch (error) {
-        throw new AceConfigError(`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    const parsed = readJsonFile(source);
     const shadowed = candidates.slice(candidates.indexOf(source) + 1).find((candidate) => existsSync(candidate));
+    const config = parseAceConfig(interpolateEnv(parsed, env, source), source);
+    // `username` is the one field that inherits: a project file need not repeat who the user is.
+    const usernameFallback = config.username !== "" ? undefined : globalUsername(globals, env, source);
     return {
         source,
-        config: parseAceConfig(interpolateEnv(parsed, env, source), source),
+        config,
         ...(shadowed === undefined ? {} : { shadowed }),
+        ...(usernameFallback === undefined ? {} : { usernameFallback }),
     };
 }
 /** The `projectConfig` a file declares, read without validating the rest of it. */
@@ -187,86 +162,146 @@ function declaredPolicy(path) {
         return undefined;
     }
 }
+function readJsonFile(path) {
+    try {
+        return JSON.parse(readFileSync(path, "utf8"));
+    }
+    catch (error) {
+        throw new AceConfigError(`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+/** The username a global candidate declares, for a project file that omitted one. */
+function globalUsername(globals, env, source) {
+    for (const candidate of globals) {
+        if (candidate === source || !existsSync(candidate))
+            continue;
+        const parsed = interpolateEnv(readJsonFile(candidate), env, candidate);
+        if (isPlainObject(parsed) && typeof parsed.username === "string" && parsed.username !== "")
+            return parsed.username;
+    }
+    return undefined;
+}
 /**
  * Resolve everything a host needs to run ACE in a session.
  *
- * MQ configuration comes from `.ace.json` only — `ACE_CONFIG` selects a different file path, but
- * there is no environment-variable fallback for addresses, streams, or groups. Disabled channels are
- * filtered out here so no transport is ever started for them.
+ * The `username` chain is the one place a file inherits from another: this file → the global file →
+ * `$USER` → error. Every other field is taken whole from the winning file.
  */
 export function resolveAceConfig(options) {
+    const env = options.env ?? process.env;
     const loaded = loadAceConfig(options);
     if (!loaded) {
         const looked = [join(options.cwd, ACE_CONFIG_FILENAME), ...(options.globalConfigPaths ?? [])];
-        throw new AceConfigError(`no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG): create one with the ` +
-            `subscribe channels to consume and any optional publish channels`);
+        throw new AceConfigError(`no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG): create one with ` +
+            `"username", "servers", and any channels to subscribe to`);
     }
-    const { config, source, shadowed } = loaded;
-    const isEnabled = (endpoint) => endpoint.enabled !== false;
-    const disabled = [...config.subscribe, ...(config.publish ?? [])]
-        .filter((endpoint) => !isEnabled(endpoint))
-        .map((endpoint) => endpoint.name);
+    const { config, source, shadowed, usernameFallback } = loaded;
+    const username = config.username !== "" ? config.username : (usernameFallback ?? env.USER ?? "");
+    if (username === "") {
+        throw new AceConfigError(`${source}: username is required — set it in the file, in a host-global file, or in $USER`);
+    }
+    const servers = Object.entries(config.servers).map(([name, entry]) => ({
+        name,
+        url: entry.url,
+        namespace: entry.namespace ?? NAMESPACE_DEFAULT,
+        ...(entry.description === undefined ? {} : { description: entry.description }),
+    }));
+    const subscriptions = (config.subscribe ?? []).map((name) => {
+        const { server, channel } = resolveSubscription({ servers, username, name });
+        return { server, channel, name: channel };
+    });
     return {
-        subscribe: config.subscribe.filter(isEnabled),
-        publish: (config.publish ?? []).filter(isEnabled),
-        disabled,
-        defaultActivation: config.defaultActivation,
-        ...(config.sender === undefined ? {} : { sender: config.sender }),
-        warnings: [
-            ...channelWarnings(config),
-            ...(shadowed === undefined ? [] : [`${source} overrides the global ${shadowed}`]),
-        ],
+        username,
+        servers,
+        subscriptions,
+        ...(config.defaultActivation === undefined ? {} : { defaultActivation: config.defaultActivation }),
         manual: config.manual ?? {},
-        ...(config.registry === undefined ? {} : { registry: config.registry }),
+        warnings: [
+            ...(shadowed === undefined ? [] : [`${source} overrides the global ${shadowed}`]),
+            ...islandWarnings(servers),
+        ],
         source,
+    };
+}
+/**
+ * Two entries pointing at the same Redis with different namespaces are *not* two servers: they are one
+ * server seen twice, with two disjoint directories. That is legal (and useful for isolation), but it is
+ * the one way to get "I registered, why can't they see me" — so say it out loud.
+ */
+function islandWarnings(servers) {
+    const byUrl = new Map();
+    for (const server of servers)
+        byUrl.set(server.url, [...(byUrl.get(server.url) ?? []), server]);
+    const warnings = [];
+    for (const [, sharing] of byUrl) {
+        if (sharing.length < 2)
+            continue;
+        const names = sharing.map((server) => `"${server.name}" (${server.namespace})`).join(", ");
+        warnings.push(`servers ${names} share one Redis: each namespace is its own directory, so they cannot see each other`);
+    }
+    return warnings;
+}
+/**
+ * Resolve one configured subscription name to a server and its uploaded channel name.
+ *
+ * A short name (`ci-failures`) needs a single server to default to; with several, qualify it
+ * (`lan:ci-failures`) rather than let the runtime guess which one was meant.
+ */
+export function resolveSubscription(options) {
+    const { servers, username, name } = options;
+    const first = servers[0];
+    if (first === undefined)
+        throw new AceConfigError("no servers configured");
+    const qualified = name.includes(":");
+    if (!qualified) {
+        if (servers.length > 1) {
+            const names = servers.map((server) => `"${server.name}"`).join(", ");
+            throw new AceConfigError(`subscribe "${name}" is ambiguous with several servers configured (${names}): qualify it as "<server>:${name}"`);
+        }
+        return { server: first, channel: channelName(first.namespace, username, name) };
+    }
+    const [serverName, ...rest] = name.split(":");
+    const server = servers.find((candidate) => candidate.name === serverName);
+    if (server === undefined) {
+        const names = servers.map((candidate) => `"${candidate.name}"`).join(", ");
+        throw new AceConfigError(`subscribe "${name}" names unknown server "${serverName}" (configured: ${names})`);
+    }
+    const short = rest.join(":");
+    const uploaded = resolveLocalName({ namespace: server.namespace, username, name: short });
+    return { server, channel: uploaded };
+}
+/**
+ * The runtime endpoint for a subscribed channel: the address and the group are derived from the
+ * channel name, so nothing here can disagree with what a peer computes.
+ */
+export function subscriptionEndpoint(options) {
+    return {
+        name: options.name ?? options.channel,
+        transport: "redis-streams",
+        ...(options.description === undefined ? {} : { description: options.description }),
+        ...(options.activation === undefined ? {} : { activation: options.activation }),
+        config: {
+            stream: channelStreamKey(options.namespace, options.channel),
+            group: options.sender,
+            url: options.url,
+            field: REDIS_STREAMS_DEFAULTS.field,
+        },
+        options: {},
     };
 }
 export function createTransports(subscriptions, options) {
     const transports = {};
     for (const subscription of subscriptions) {
-        transports[subscription.name] = createTransport(subscription, options);
+        redisStreamsConfigFrom(subscription);
+        transports[subscription.name] = new RedisStreamsTransport(subscription, {
+            onError: options.onError,
+            ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+            ...(options.onDropped === undefined
+                ? {}
+                : { onDropped: (entry) => options.onDropped?.(subscription.name, entry) }),
+        });
     }
     return transports;
-}
-function createTransport(subscription, options) {
-    switch (subscription.transport) {
-        case "redis-streams":
-            return new RedisStreamsTransport(subscription, {
-                onError: options.onError,
-                ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
-                ...(options.onDropped === undefined
-                    ? {}
-                    : { onDropped: (entry) => options.onDropped?.(subscription.name, entry) }),
-            });
-        default:
-            throw new AceConfigError(`subscribe "${subscription.name}" uses unsupported transport "${subscription.transport}" (available: ${SUPPORTED_TRANSPORTS.join(", ")})`);
-    }
-}
-/**
- * Create one publisher per publication, keyed by publication name (the key the publishing tool
- * looks up).
- */
-export function createPublishers(publications, options) {
-    const publishers = {};
-    for (const publication of publications) {
-        publishers[publication.name] = createPublisher(publication, options.onError);
-    }
-    return publishers;
-}
-function createPublisher(publication, onError) {
-    const subject = `publish "${publication.name}" config`;
-    switch (publication.transport) {
-        case "redis-streams":
-            return new RedisStreamsPublisher({
-                url: optionalStringField(publication.config, "url", REDIS_STREAMS_DEFAULTS.url, subject),
-                stream: requiredStringField(publication.config, "stream", subject),
-                field: optionalStringField(publication.config, "field", REDIS_STREAMS_DEFAULTS.field, subject),
-                clientOptions: publication.options,
-                onError,
-            });
-        default:
-            throw new AceConfigError(`publish "${publication.name}" uses unsupported transport "${publication.transport}" (available: ${SUPPORTED_TRANSPORTS.join(", ")})`);
-    }
 }
 /** `${VAR}` occurrences in configuration strings, so a broker password never has to be committed. */
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -274,8 +309,8 @@ const ESCAPED_DOLLAR = "\u0000ace-literal-dollar\u0000";
 /**
  * Replace `${VAR}` in every string of the document with its environment value.
  *
- * An unset variable is an error rather than an empty string: silently connecting with a blank
- * password produces a confusing failure much later. Use `$${VAR}` for a literal.
+ * An unset variable is an error rather than an empty string: silently connecting with a blank password
+ * produces a confusing failure much later. Use `$${VAR}` for a literal.
  */
 export function interpolateEnv(value, env, source, path = "") {
     if (typeof value === "string") {
@@ -295,10 +330,11 @@ export function interpolateEnv(value, env, source, path = "") {
         return value.map((entry, index) => interpolateEnv(entry, env, source, `${path}[${index}]`));
     }
     if (isPlainObject(value)) {
-        return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-            key,
-            interpolateEnv(entry, env, source, path ? `${path}.${key}` : key),
-        ]));
+        const resolved = {};
+        for (const [key, entry] of Object.entries(value)) {
+            resolved[key] = interpolateEnv(entry, env, source, path === "" ? key : `${path}.${key}`);
+        }
+        return resolved;
     }
     return value;
 }

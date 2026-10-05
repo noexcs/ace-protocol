@@ -27,16 +27,18 @@ a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary, and
 [ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
 
-Verified today: 360 tests (328 in the host-neutral core, 32 in the host plugin), `npm run verify:live` in
-`packages/ace-runtime` (nine scenarios against a real Redis Streams broker: delivery, poison messages, reclaim
-after a failed delivery, dedup, sender allowlists, manual activation, burst spooling, the agent directory
-lifecycle and its crash sweep), `npm run verify:omp` in `packages/ace-omp` (the plugin inside a real
-`omp --mode rpc` session: an event reaches the conversation, the turn settles, the entry is acknowledged), and
-two live Pi sessions exchanging events.
+Verified today: 302 tests (291 in the host-neutral core across 25 test files, 11 in the ace-omp host plugin
+across 3), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
+delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst
+spooling, the agent directory lifecycle and its crash sweep, dead-letter replay, and direct publish by channel
+name), and `npm run verify:omp` in `packages/ace-omp` (3 scenarios inside a real `omp --mode rpc` session: the
+system-prompt policy reaches the provider request, a `next_turn` event reaches the conversation and is
+acknowledged, and a `manual` event is retained without starting a turn).
 
-A session can also publish itself to an **agent directory** on Redis and be found by its peers
-(`registry` in `.ace.json`; RFC §22 item 1): `ace_agents` lists the sessions that are online, and `ace_publish`
-takes a member as `target` — or a list of targets — to send one event to several peers at once. See
+A session's channel is its address: a live session registers the channel named by its sender and can be found
+by its peers in the **agent directory** on Redis (RFC §22 item 1). `ace_agents` lists the channels that are
+online, and `ace_publish` takes a channel name as `target` — a `<server>:<channel>` prefix picks the server when
+several are configured — or a list of channels to send one event to several peers at once. See
 [the contracts](docs/ace-runtime-contracts.md).
 
 ## Quick start
@@ -45,26 +47,26 @@ takes a member as `target` — or a list of targets — to send one event to sev
 cd packages/ace-omp
 npm install --ignore-scripts   # links the core at packages/ace-runtime (build it once: npm run build)
 
-# 1. describe where events come from (this repository's root has a working example)
+# 1. say who you are and which servers you talk to (this repository's root has a working example)
 cat > /tmp/ace-demo/.ace.json <<'JSON'
 {
   "$schema": "/path/to/ace-protocol/packages/ace-runtime/schema/ace-config.schema.json",
-  "sender": "agent-a",
-  "subscribe": [ { "name": "inbox", "transport": "redis-streams",
-                   "config": { "stream": "ace:in.a", "group": "agent-a" } } ]
+  "username": "alice",
+  "servers": { "local": { "url": "redis://127.0.0.1:6379" } },
+  "subscribe": ["ci-failures"]
 }
 JSON
 
 # 2. run Pi with the extension (needs a broker; `brew services start redis` gives one on 6379)
 cd /tmp/ace-demo && pi --extension /path/to/ace-protocol/packages/ace-omp/extensions/ace.ts
 
-# 3. publish from anywhere
-redis-cli XADD ace:in.a '*' message \
+# 3. publish from anywhere; the channel name derives the stream <namespace>:ch:<channel>
+redis-cli XADD ace:ch:ace:alice:ci-failures '*' message \
   '{"aceVersion":"0.1","id":"e1","sender":"ci","activation":"next_turn","body":"Build failed."}'
 ```
 
-Inside the session, `/ace` shows the runtime status, and `ace_publish` sends events to configured
-peers. [ace-omp's README](packages/ace-omp/README.md) documents `.ace.json` and the activation
+Inside the session, `/ace` shows the runtime status, and `ace_publish` sends events to peers addressed by
+their channel name. [ace-omp's README](packages/ace-omp/README.md) documents `.ace.json` and the activation
 semantics on Pi; the [runtime README](packages/ace-runtime/README.md) documents the transports,
 delivery guarantees, and the current limitations.
 

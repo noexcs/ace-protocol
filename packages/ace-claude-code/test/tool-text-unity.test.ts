@@ -36,12 +36,12 @@ describe("tool text unity with the runtime spec", () => {
 		expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["activation", "body", "target"]);
 	});
 
-	it("adds the directory member to the shared text instead of rewording it", () => {
-		const member = "claude-code:sess-1";
-		const withMember = buildToolDefinitions(member).find((tool) => tool.name === ACE_TOOL_NAMES.publish);
+	it("adds the directory channel to the shared text instead of rewording it", () => {
+		const sender = "ace:claude:claude-code:sess-1";
+		const withSender = buildToolDefinitions([sender]).find((tool) => tool.name === ACE_TOOL_NAMES.publish);
 
-		expect(withMember?.description.startsWith(TOOL_TEXT.publish.intro)).toBe(true);
-		expect(withMember?.description).toContain(member);
+		expect(withSender?.description.startsWith(TOOL_TEXT.publish.intro)).toBe(true);
+		expect(withSender?.description).toContain(sender);
 	});
 
 	it("keeps no literal copy of the shared text in its sources", () => {

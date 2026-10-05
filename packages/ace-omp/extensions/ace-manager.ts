@@ -44,36 +44,27 @@ export interface ChannelMenu {
 	empty?: string;
 }
 
-/** One row per channel: enabled first, disabled last, each naming its direction and address. */
+/** One row per channel: what this session reads. */
 export function channelMenuItems(input: {
 	subscriptions: readonly EndpointConfig[];
-	publications: readonly EndpointConfig[];
 	derivedName?: string;
-	disabled: readonly string[];
 }): SelectItem[] {
-	const row = (endpoint: EndpointConfig, direction: "in" | "out"): SelectItem => {
+	const row = (endpoint: EndpointConfig): SelectItem => {
+		const address = endpointAddressOf(endpoint);
 		const parts = [
-			`${endpoint.transport}${endpointAddressOf(endpoint) === undefined ? "" : ` ${endpointAddressOf(endpoint)}`}`,
-			direction === "in" ? "[in]" : "[out]",
+			`${endpoint.transport}${address === undefined ? "" : ` ${address}`}`,
+			"[in]",
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
 			endpoint.name === input.derivedName ? "(registered for this session)" : undefined,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 		];
 		return {
-			value: `${direction}:${endpoint.name}`,
+			value: `in:${endpoint.name}`,
 			label: `● ${endpoint.name}`,
 			description: parts.filter((part) => part !== undefined).join(" · "),
 		};
 	};
-	return [
-		...input.subscriptions.map((endpoint) => row(endpoint, "in")),
-		...input.publications.map((endpoint) => row(endpoint, "out")),
-		...input.disabled.map((name) => ({
-			value: `disabled:${name}`,
-			label: `⦸ ${name}`,
-			description: "disabled in .ace.json",
-		})),
-	];
+	return input.subscriptions.map(row);
 }
 
 /** The address a channel carries, without importing the runtime just for one field. */
@@ -185,7 +176,7 @@ export async function showAceManager(
 				const details = describe?.(item.value);
 				if (details === undefined) return;
 				view.setContent(
-					view.frame(item.label.replace(/^[●⦸] /, ""), [new Text(details.join("\n"), 1, 0)], "esc back"),
+					view.frame(item.label.replace(/^● /, ""), [new Text(details.join("\n"), 1, 0)], "esc back"),
 					(data) => {
 						if (bindings.matches(data, "tui.select.cancel")) showList();
 					},

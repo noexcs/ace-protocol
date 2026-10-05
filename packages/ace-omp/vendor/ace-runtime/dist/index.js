@@ -23,6 +23,7 @@ export * from "./runtime/endpoint-config.js";
 export * from "./runtime/event-dispatcher.js";
 export * from "./runtime/event-spool.js";
 export * from "./runtime/metrics.js";
+export * from "./runtime/naming.js";
 export * from "./runtime/pending-event-store.js";
 export * from "./runtime/seen-message-ids.js";
 export * from "./runtime/shutdown.js";

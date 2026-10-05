@@ -1,7 +1,6 @@
 import type { RegistryEntry } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 import { endpointAddress } from "../runtime/endpoint-config.ts";
-import { SESSION_INBOX } from "../runtime/naming.ts";
 
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export function addressOf(endpoint: EndpointConfig): string {
@@ -29,7 +28,7 @@ export function describeEndpoint(endpoint: EndpointConfig): string {
  */
 export function formatChannelListing(
 	subscriptions: readonly EndpointConfig[],
-	options: { derivedName?: string; disabled?: readonly string[] } = {},
+	options: { derivedName?: string } = {},
 ): string {
 	const line = (endpoint: EndpointConfig): string =>
 		[
@@ -41,13 +40,7 @@ export function formatChannelListing(
 		]
 			.filter((part) => part !== undefined)
 			.join(" · ");
-	return [
-		"subscribe:",
-		...subscriptions.map((endpoint) => `  ${line(endpoint)}`),
-		...(options.disabled === undefined || options.disabled.length === 0
-			? []
-			: [`disabled: ${options.disabled.join(", ")}`]),
-	].join("\n");
+	return ["subscribe:", ...subscriptions.map((endpoint) => `  ${line(endpoint)}`)].join("\n");
 }
 
 /**
@@ -61,13 +54,11 @@ export function channelListingInput(
 ): {
 	subscriptions: readonly EndpointConfig[];
 	derivedName?: string;
-	disabled: readonly string[];
 } {
 	const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
 	return {
 		subscriptions: all,
-		...(inbox === undefined ? {} : { derivedName: SESSION_INBOX }),
-		disabled: all.filter((endpoint) => endpoint.enabled === false).map((endpoint) => endpoint.name),
+		...(inbox === undefined ? {} : { derivedName: inbox.name }),
 	};
 }
 
@@ -79,7 +70,6 @@ export interface ChannelReport {
 	subscriptions: readonly EndpointConfig[];
 	/** Name of the inbox the agent directory registered for this session, when there is one. */
 	derivedName?: string;
-	disabled: readonly string[];
 	pendingManual: number;
 	deadLetters: { count: number; directory?: string };
 }
@@ -108,7 +98,6 @@ export function formatChannelReport(report: ChannelReport): string {
 		`${report.identity} (agent ${report.agentState})${report.source === undefined ? "" : ` — ${report.source}`}`,
 		"subscribe:",
 		...lines(report.subscriptions),
-		`disabled: ${report.disabled.length === 0 ? "(none)" : report.disabled.join(", ")}`,
 		`manual: ${report.pendingManual} pending, ${letters}`,
 	].join("\n");
 }

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ConcreteActivation } from "../protocol/ace-message.ts";
 import { isConcreteActivation } from "../protocol/ace-message.ts";
 import {
+	type DroppedEntry,
 	REDIS_STREAMS_DEFAULTS,
 	RedisStreamsTransport,
 	redisStreamsConfigFrom,
@@ -439,7 +440,7 @@ export function subscriptionEndpoint(options: {
 export interface TransportFactoryOptions {
 	onError: (error: unknown) => void;
 	metrics?: AceMetrics;
-	onDropped?: (subscription: string, entry: unknown) => void | Promise<void>;
+	onDropped?: (subscription: string, entry: DroppedEntry) => void | Promise<void>;
 }
 
 export function createTransports(

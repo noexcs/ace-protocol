@@ -23,6 +23,7 @@ export * from "./runtime/endpoint-config.ts";
 export * from "./runtime/event-dispatcher.ts";
 export * from "./runtime/event-spool.ts";
 export * from "./runtime/metrics.ts";
+export * from "./runtime/naming.ts";
 export * from "./runtime/pending-event-store.ts";
 export * from "./runtime/seen-message-ids.ts";
 export * from "./runtime/shutdown.ts";

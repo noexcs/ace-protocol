@@ -4,8 +4,9 @@ ACE (Agent Context Event Protocol) 0.1 for **Claude Code**: an installable plugi
 events (CI results, alerts, other agents) into *turns* in a live session, using the host's own
 [message channels](https://code.claude.com/docs/en/channels-reference) instead of re-hosting the model.
 
-It reuses [`ace-runtime`](../ace-runtime/README.md) wholesale — `resolveAceConfig`, `createTransports`,
-`createPublishers`, `AceRuntime`, spooling, dead-lettering, dedup and metrics. The one thing it does not
+It reuses [`ace-runtime`](../ace-runtime/README.md) wholesale — `resolveAceConfig`,
+`createTransports`, `subscriptionEndpoint`, `AgentRegistry`, `AceRuntime`, spooling, dead-lettering,
+dedup and metrics. The one thing it does not
 reuse is the delivery observer: `ace-runtime`'s matches a fed text by *equality*, which fits Pi (the
 host echoes the exact string it was given) but cannot work here, because Claude Code wraps our block in
 its own `<channel>` tag — so the plugin ships its own `ChannelObserver`, a substring matcher. Nothing
@@ -135,46 +136,54 @@ the `channelsEnabled` organization policy still applies.
 
 Every session whose working directory holds a `.ace.json` starts ACE — the same rule as the Pi host.
 The file is read by the reused `resolveAceConfig`, so it accepts exactly the
-[contract's keys](../ace-runtime/README.md#configuration): `defaultActivation`, `subscribe[]`,
-`publish[]`, `sender` (deprecated), `manual`, and `registry` (the agent directory, below). The two
-JSON Schemas under [`schema/`](schema/) are byte-identical to `ace-runtime`'s, so the same file
+[contract's keys](../ace-runtime/README.md#configuration): `username`, `servers`, `subscribe[]`,
+`defaultActivation` and `manual`. It holds **local deployment information only** — who this user is
+and which servers this machine talks to; channels, subscriptions and presence live on a server. The
+two JSON Schemas under [`schema/`](schema/) are byte-identical to `ace-runtime`'s, so the same file
 works on both hosts.
 
-[`example/.ace.json`](example/.ace.json) is a working default: subscribe to `ace:inbox:claude-code`
-(group `claude-code`), publish to `ace:outbox:claude-code`, both on `redis://127.0.0.1:6379`. Copy it
-to your project and change the `url` to your broker:
+A channel **name** is the address. A short `subscribe` name is uploaded as
+`<namespace>:<username>:<name>`, its stream key is derived from the name
+(`<namespace>:ch:<name>`), and this session's own inbox is the channel named by its sender
+(`<namespace>:<username>:<codingAgent>:<sessionId>`). There is no `publish` list: `ace_publish` takes
+any channel name as its `target`.
+
+[`example/.ace.json`](example/.ace.json) is a working default: user `claude` on one server `local`
+(`redis://127.0.0.1:6379`, namespace `ace`), subscribing to the channel `inbox` — uploaded as
+`ace:claude:inbox`. Copy it to your project and change the `url` to your broker:
 
 ```bash
 cp example/.ace.json /path/to/your/project/.ace.json
 ```
 
-Broker settings (stream, group, url, field) are transport details, not part of the ACE message.
-`$VAR` interpolation from the environment is supported, so a broker password never has to be committed.
+Broker settings (url, namespace, credentials) live in `servers`; the stream, group and field are
+transport details derived from the channel name, not part of the ACE message. `$VAR` interpolation
+from the environment is supported, so a broker password never has to be committed.
 
-### Agent directory (optional)
+### Agent directory (automatic)
 
-A `registry` block in the same file turns on self-registration — the session publishes itself to the
-shared directory for as long as it runs:
-
-```jsonc
-{ "registry": { "url": "redis://127.0.0.1:6379", "prefix": "ace" } }
-```
+Registration is not a configuration block: a session with one registers the channel named by its
+sender on **every** server in `.ace.json`. The shared directory is then what lets peers address a live
+session by name:
 
 - **Identity** comes from `CLAUDE_CODE_SESSION_ID`, which the host injects into the server process.
-  Without it there is no session to register, so the plugin logs
-  `registry is configured but no session id was injected … not registering` to stderr and starts
-  exactly as it would without a `registry` block.
-- **The registered stream becomes a channel.** Registration returns this session's own stream and
-  group; the plugin appends a derived subscription named `session-inbox` to the ones the runtime
-  reads, so a peer that found this member through the directory has somebody reading the address it
-  was told. `ace_channels` reports it separately from the configured channels, and `ace_publish`'s
-  description names the member — the string a peer passes as `target`.
-- **Shutdown order matters.** The reader stops first; then the directory entry is removed and the
-  session's stream dropped; then the registry client closes. Removing the entry first would leave the
-  reader waking up on a deleted group, reporting `NOGROUP` on the way out.
-- **Directory failures never stop the session.** A broker that is down or refuses the registration is
-  reported to stderr and otherwise ignored: the configured channels still run. With no `registry`
-  key, nothing about this section applies.
+  Without it there is no sender name to register under, so the plugin logs
+  `no session id was injected (CLAUDE_CODE_SESSION_ID) …` to stderr and starts anyway, reading only
+  the configured channels.
+- **The channel name is the address.** The session's inbox *is* the channel named by its sender
+  (`<namespace>:<username>:<codingAgent>:<sessionId>`): the runtime registers that channel in the
+  directory and appends a derived subscription named `session-inbox`, so somebody is reading what the
+  directory advertises. `ace_channels` lists it alongside the configured channels, and the
+  `ace_publish` description names it — the string a peer passes as `target`.
+- **One registration per server.** A session on several servers gets one channel per server, named in
+  that server's namespace; the derived local inbox labels are prefixed with the server name so nothing
+  collides.
+- **A down server is skipped, not fatal.** An unreachable broker is reported to stderr and that
+  server's channel is not registered or read; the rest of the session still runs.
+- **Shutdown order matters.** The reader stops first; then each directory entry is removed and the
+  session's channel stream dropped; then each registry client closes, and the publish writers last.
+  Removing the entry first would leave the reader waking up on a deleted group, reporting `NOGROUP` on
+  the way out.
 
 With no `.ace.json`, the server still connects and exposes the tools, but they report
 "ACE is not running in this session" until one exists — no broker connection is attempted. With a
@@ -202,8 +211,8 @@ Which ACE activation modes work through the channel, and how:
 `manual` release is tool-driven: `ace_pending` lists the held events, `ace_activate {sender, id}`
 releases one. There is no host UI button; the model (or you, by asking it) makes the call.
 
-The agent directory is orthogonal to activation. With a `registry` configured the session shows up in
-it as a member (`claude-code:<session id>`), serves the derived `session-inbox` subscription on its own
+The agent directory is orthogonal to activation. A session with a session id registers the channel
+named by its sender on each server, serves the derived `session-inbox` subscription on that channel's
 stream, and disappears again — entry and stream both — when the session closes. Events that arrive on
 that inbox are subject to the activation rules above exactly like events on any configured channel.
 
@@ -277,8 +286,8 @@ they are the operator's, not the agent's):
 
 | Tool | Purpose |
 | --- | --- |
-| `ace_channels` | List this session's `subscribe` channels (with their activation) and where `ace_publish` can send. Display only — never an authorization. |
-| `ace_publish {body, target, activation?}` | Publish a valid ACE 0.1 event from this session to a configured `publish` channel. Carries the session as `sender` (`<coding-agent>:<session-id>`) and `sessionId`. |
+| `ace_channels` | List this session's channel names (with their activation) and the derived `session-inbox` when it is registered. Display only — never an authorization. |
+| `ace_publish {body, target, activation?}` | Publish a valid ACE 0.1 event from this session to a channel name (`<server>:<channel>` picks the server; a short name is completed with the server's namespace and user). Carries the session as `sender` (`<namespace>:<username>:<codingAgent>:<sessionId>`) and `sessionId`. |
 | `ace_pending` | List the `manual` events this session is holding, as `sender/id`. |
 | `ace_activate {sender, id}` | Release one held `manual` event; it is injected as a `next_turn` channel event. |
 
@@ -290,14 +299,14 @@ typing — that is what lets it tell an ACE event apart from a real prompt.
 
 The gates for this package (`npm run check`, `npm test`, `npm run smoke`):
 
-- `biome check --error-on-warnings .` — 16 files, 0 diagnostics, no warnings.
+- `biome check --error-on-warnings .` — 17 files, 0 diagnostics, no warnings.
 - `tsc --noEmit` — clean.
-- `vitest --run` — **41/41 pass**, no host or broker: the event→notification mapping, the ack trail
+- `vitest --run` — **50/50 pass**, no host or broker: the event→notification mapping, the ack trail
   (extract/append/read/cap), the `ChannelObserver` substring matching (wrapped, batched, no-match,
   released, and the `</ace_event>`-in-body edge), the engine's observe/timeout/release logic, the
-  agent-directory wiring (register args, the derived `session-inbox`, the stop→unregister→close order,
-  no-registry no-op, registration failure, and the name-collision degrade), tool behavior, and config
-  resolution over the shipped example.
+  agent-directory wiring (the channel named by the sender, the derived `session-inbox`, per-server
+  isolation, the stop→unregister→close→writers order, skip-on-unreachable, the no-session-id degrade,
+  and publish-target resolution), tool behavior, and config resolution over the shipped example.
 - `bun run scripts/smoke.ts` — drives the **real** server over an MCP stdio handshake (the SDK `Client`
   the host uses), verifies the `claude/channel` capability, the four tools, the `instructions`, inert
   `ace_channels`, the hook→trail path, and `claude plugin validate`. The resolved-`ace_channels` half
@@ -317,8 +326,9 @@ npx vitest --run                                              # test
 bun run scripts/smoke.ts                                      # smoke
 ```
 
-The live end-to-end — publish an ACE event to the `ace:inbox:claude-code` stream and watch it appear in
-a running session as a `<channel … ace="event">` block that starts a turn — needs a channel-capable
+The live end-to-end — publish an ACE event to a subscribed channel's stream (or send this session a
+direct event at the channel named by its sender) and watch it appear in a running session as a
+`<channel … ace="event">` block that starts a turn — needs a channel-capable
 Claude Code (the development flag, or an allowlist entry) and Anthropic auth. Both halves of the
 *broker* side were exercised for real: the smoke starts the runtime over a live Redis (including the
 agent-directory half: registration, a direct delivery, the ack, and the shutdown cleanup). The *host*
@@ -331,7 +341,7 @@ that came from grepping `--help`, which **hides** both channel flags. Probed by 
 ## Current state and open gaps (2026-10-05)
 
 **What the tools are.** MCP tools served by one stdio MCP server (`src/server.ts`,
-`@modelcontextprotocol/sdk`): `ace_publish`, `ace_channels`, `ace_participants`, plus `ace_pending` /
+`@modelcontextprotocol/sdk`): `ace_publish`, `ace_channels`, plus `ace_pending` /
 `ace_activate` for `manual` events. The host offers **no native tool extension point** — a plugin may
 contribute `skills`, `commands`, `agents`, `hooks`, `mcpServers`, `lspServers`, `outputStyles`,
 `workflows`, themes/monitors/evals, `settings` and `channels`, and only `mcpServers` can add a

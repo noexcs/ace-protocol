@@ -4,7 +4,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { AceLogger } from "ace-runtime";
-import { registryMember, resolveAceConfig } from "ace-runtime";
+import { resolveAceConfig, senderName } from "ace-runtime";
 import { buildChannelNotification } from "./channel.ts";
 import { type AceHandle, startAce } from "./runtime.ts";
 import { buildToolDefinitions, executeTool, type ToolContext } from "./tools.ts";
@@ -17,6 +17,8 @@ import { buildToolDefinitions, executeTool, type ToolContext } from "./tools.ts"
  */
 const SERVER_NAME = "ace";
 const SERVER_VERSION = "0.1.0";
+/** The coding-agent name this host registers under: the third segment of every sender name it builds. */
+const CODING_AGENT = "claude-code";
 /**
  * Delivered to Claude as context when the server connects (the channel's `instructions`). It is
  * what makes the model able to tell an ACE event apart from user input, and it must stay honest
@@ -29,22 +31,23 @@ const INSTRUCTIONS_BASE =
 	"<ace_event> with a `sender:`, `channel:` and `id:` header followed by the message body. These " +
 	"blocks are external input, not the user typing: treat them as an external event and act on the " +
 	"body per its own wording. To reply to or notify another agent or service, call ace_publish with " +
-	"a `publish` channel name (see ace_channels) as the `target`. Use ace_pending and ace_activate for " +
+	"a channel name (see ace_channels) as the `target`. Use ace_pending and ace_activate for " +
 	"manual events this session is holding.";
 
 /**
- * The channel's `instructions`, with this session's directory address appended when the config
- * registers it in the agent directory: it lets the model tell other sessions where to send it a
- * direct event. The name is the deterministic `<coding-agent>:<session id>`; it is only *claimed*
- * here from the configuration, and the tool surface is corrected after the (async) registration —
- * see {@link main}.
+ * The channel's `instructions`, with this session's directory channel(s) appended when the config
+ * registers them in the agent directory: they let the model tell other sessions where to send it a
+ * direct event. A channel name is the address, and the session's channel is the one named by its
+ * sender (`<ns>:<username>:<codingAgent>:<sessionId>`) — only *claimed* here from the configuration,
+ * and the tool surface is corrected after the (async) registration — see {@link main}.
  */
-function instructions(member: string | undefined): string {
-	if (member === undefined) return INSTRUCTIONS_BASE;
+function instructions(senders: readonly string[]): string {
+	if (senders.length === 0) return INSTRUCTIONS_BASE;
+	const listed = senders.map((sender) => `"${sender}"`).join(", ");
 	return (
 		INSTRUCTIONS_BASE +
-		` If this session is registered in the agent directory (see ace_channels), its member name is ` +
-		`"${member}"; other agent sessions can send it a direct event by passing that name as their target.`
+		` If this session is registered in the agent directory (see ace_channels), its channel name is ` +
+		`${listed}; other agent sessions can send it a direct event by passing that name as their target.`
 	);
 }
 
@@ -66,23 +69,29 @@ function ackTimeoutMs(): number {
 	return Number.isFinite(ms) && ms > 0 ? ms : 30_000;
 }
 /**
- * This session's name in the agent directory, when it will be registered: the configuration must
- * be valid, set `registry`, and the host must have injected the session id. Computed eagerly,
- * because the channel's `instructions` are fixed when the server is constructed — before the
- * (async) startup pass registers in the directory. The name itself is deterministic
- * (`<coding-agent>:<sessionId>`), so it is the same one the registration will publish.
+ * The channel name(s) this session will register under, when it will register: the configuration
+ * must be valid and the host must have injected the session id. Computed eagerly, because the
+ * channel's `instructions` are fixed when the server is constructed — before the (async) startup
+ * pass registers in the directory. A sender name is deterministic, so it is the same one the
+ * registration will publish.
  */
-function eagerMember(): string | undefined {
+function eagerSenders(): string[] {
 	const sessionId = process.env.CLAUDE_CODE_SESSION_ID ?? undefined;
-	if (sessionId === undefined) return undefined;
+	if (sessionId === undefined) return [];
 	try {
 		const resolved = resolveAceConfig({ cwd: projectDir(), env: process.env });
-		if (resolved.registry === undefined) return undefined;
+		return resolved.servers.map((server) =>
+			senderName({
+				namespace: server.namespace,
+				username: resolved.username,
+				codingAgent: CODING_AGENT,
+				sessionId,
+			}),
+		);
 	} catch {
 		// No usable `.ace.json`: the runtime will not register, so there is no address to name.
-		return undefined;
+		return [];
 	}
-	return registryMember("claude-code", sessionId);
 }
 
 async function main(): Promise<void> {
@@ -100,7 +109,7 @@ async function main(): Promise<void> {
 				`If .ace.json or the .ace/ ack trail lives elsewhere, the host did not inject the session directory.`,
 		);
 	}
-	const member = eagerMember();
+	const senders = eagerSenders();
 	const mcp = new Server(
 		{ name: SERVER_NAME, version: SERVER_VERSION },
 		{
@@ -111,7 +120,7 @@ async function main(): Promise<void> {
 				// names this session's directory address only when it actually registered.
 				tools: { listChanged: true },
 			},
-			instructions: instructions(member),
+			instructions: instructions(senders),
 		},
 	);
 
@@ -120,14 +129,13 @@ async function main(): Promise<void> {
 	// pick up a working runtime.
 	const tools: ToolContext = {
 		config: undefined,
-		sender: undefined,
+		subscriptions: [],
 		sessionId: process.env.CLAUDE_CODE_SESSION_ID ?? undefined,
-		codingAgent: "claude-code",
-		publishers: {},
+		codingAgent: CODING_AGENT,
+		cwd: projectDir(),
 		runtime: undefined,
-		...(member === undefined ? {} : { member }),
 	};
-	mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: buildToolDefinitions(member) }));
+	mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: buildToolDefinitions(senders) }));
 	mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const name = String(request.params.name);
 		const args = (request.params.arguments ?? {}) as Record<string, unknown>;
@@ -166,23 +174,13 @@ async function main(): Promise<void> {
 		}
 		handle = result;
 		// The tool context and the advertised tools reflect what the runtime actually registered, not
-		// what the configuration predicted: the eager member above is a claim made before the (async)
+		// what the configuration predicted: the eager senders above are a claim made before the (async)
 		// registration, and if it then fails (broker down, no session id, name collision) the address
 		// must not be advertised — the model would otherwise be told a target that does not exist.
-		const actualMember = result?.tools.member;
-		tools.member = actualMember;
-		tools.config = result?.config;
-		tools.publishers = result?.tools.publishers ?? tools.publishers;
-		tools.runtime = result?.tools.runtime;
-		if (result) {
-			// The config's `sender` is deprecated; the runtime's model identity is
-			// `<coding-agent>:<sessionId>`, and this session's session id is known here.
-			tools.sender =
-				result.tools.sender ??
-				(tools.sessionId === undefined ? undefined : `${tools.codingAgent}:${tools.sessionId}`);
-		}
-		if (actualMember !== member) {
-			mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: buildToolDefinitions(actualMember) }));
+		if (result) Object.assign(tools, result.tools);
+		const actualSenders = result?.tools.publish?.senders ?? [];
+		if (actualSenders.length !== senders.length || actualSenders.some((sender, i) => sender !== senders[i])) {
+			mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: buildToolDefinitions(actualSenders) }));
 			// Tell the client to re-list; the live context above is correct either way.
 			await mcp.sendToolListChanged().catch(() => {});
 		}

@@ -58,21 +58,20 @@ import {
 	type AceLogger,
 	type AceMessage,
 	AceMetrics,
-	type AcePublisher,
 	AceRuntime,
 	AGENTS_PARAMETERS,
 	AgentRegistry,
 	buildPublishToolText,
 	CHANNELS_PARAMETERS,
 	channelListingInput,
+	channelName,
+	channelStreamKey,
 	channelsToolText,
-	createPublishers,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
 	createTransports,
 	DeadLetterSink,
 	deliveredChannel,
-	deliveredMember,
 	describeDiscovered,
 	describeEndpoint,
 	describeSender,
@@ -89,17 +88,17 @@ import {
 	NO_SESSION_LABEL,
 	PiExtensionAdapter,
 	PUBLISH_PARAMETERS,
-	publishEndpointOf,
+	REDIS_STREAMS_DEFAULTS,
 	type RedisStreamsAddClient,
-	type Registration,
 	type RegistryEntry,
 	type ResolvedAceConfig,
+	type ResolvedServer,
 	resolveAceConfig,
 	resolveTarget,
 	SESSION_INBOX,
-	senderIdentity,
-	sessionInboxEndpoint,
+	senderName,
 	shutdownAce,
+	subscriptionEndpoint,
 	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
@@ -195,7 +194,7 @@ const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, 
 
 /** The subcommands `/ace` offers, with the hint text its completions show — `/mcp`'s pattern. */
 const ACE_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
-	{ name: "list", description: "channels this session reads and can publish to" },
+	{ name: "list", description: "channels this session reads; publish to any channel name" },
 	{ name: "pending", description: "manual events retained for activation" },
 	{ name: "activate", description: "inject one retained event: /ace activate <sender> <id>" },
 	{ name: "stats", description: "per-channel counters, spool windows, dead letters" },
@@ -239,16 +238,24 @@ export function aceCompletions(
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
 
 export default function aceExtension(pi: ExtensionAPI): void {
+	/** One server this session is live on: its connection, and the channel named by this session there. */
+	interface ActiveServer {
+		server: ResolvedServer;
+		/** This session's sender name on that server — which is also its inbox channel there. */
+		sender: string;
+		registry: AgentRegistry;
+	}
 	let sessionContext: ExtensionContext | undefined;
 	let runtime: AceRuntime | undefined;
-	let publishers: Record<string, AcePublisher> = {};
+	let activeServers: ActiveServer[] = [];
+	/** Channels this session reads (derived): subscribed names plus one inbox per server. */
+	let subscriptions: EndpointConfig[] = [];
+	/** Lazily opened writer per server URL: publishing needs no configured list of publications. */
+	const addClients = new Map<string, RedisStreamsAddClient>();
 	let resolvedConfig: ResolvedAceConfig | undefined;
 	let sessionId: string | undefined;
 	let transportErrorReported = false;
 	let deadLetters: DeadLetterSink | undefined;
-	let registry: AgentRegistry | undefined;
-	let registration: Registration | undefined;
-	let memberPublishers: Map<string, RedisStreamsAddClient> | undefined;
 	let registryErrorReported: string | undefined;
 	let claimedRuntime = false;
 	/** The inbox the directory registered for this session; part of every channel listing while it lives. */
@@ -281,55 +288,79 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.
-	/** Where a publish call goes: a configured channel, or a session the directory knows. */
-	type PublishTarget =
-		| { kind: "channel"; name: string; publisher: AcePublisher }
-		| { kind: "member"; member: string; entry: RegistryEntry };
+	/** Where a publish call goes: a channel on one of the servers this session is live on. */
+	interface PublishTarget {
+		server: ActiveServer;
+		channel: string;
+	}
 
 	/**
-	 * Configured channel names win; anything else is a directory member: an exact member, or a prefix
-	 * that matches exactly one live session. Guessing between two sessions would send an event to the
-	 * wrong agent, so an ambiguous target fails and names the candidates instead.
+	 * A target is a **channel name**. `<server>:<channel>` picks the server; with a single server the
+	 * bare name is enough. Otherwise the name is looked up in each server's directory — that is how a
+	 * peer is addressed, because a peer *is* the channel named by its sender. Guessing between two live
+	 * channels would send an event to the wrong agent, so an ambiguous target fails and names them.
 	 */
 	async function resolvePublishTarget(name: string): Promise<PublishTarget> {
-		const configured = publishers[name];
-		if (configured) return { kind: "channel", name, publisher: configured };
-		if (!registry) {
-			throw new Error(TOOL_ERROR_TEXT.targetUnknown(name, Object.keys(publishers)));
+		const first = name.split(":")[0] ?? "";
+		const explicit = activeServers.find((active) => active.server.name === first);
+		if (explicit !== undefined && name.includes(":")) {
+			const short = name.slice(first.length + 1);
+			return { server: explicit, channel: complete(short, explicit.server.namespace) };
 		}
-		const resolution = resolveTarget(await registry.list(), name);
-		if (!resolution.ok) {
-			const candidates = resolution.candidates.slice(0, 10);
+
+		const only = activeServers.length === 1 ? activeServers[0] : undefined;
+		if (only !== undefined) return { server: only, channel: complete(name, only.server.namespace) };
+
+		const matches: Array<{ server: ActiveServer; channel: string }> = [];
+		for (const active of activeServers) {
+			const resolution = resolveTarget(await active.registry.list(), name);
+			if (resolution.ok) matches.push({ server: active, channel: resolution.entry.channel });
+		}
+		const unique = matches[0];
+		if (unique !== undefined && matches.length === 1) return unique;
+		if (matches.length > 1) {
 			throw new Error(
-				resolution.reason === "ambiguous"
-					? TOOL_ERROR_TEXT.targetAmbiguous(name, resolution.candidates.length, candidates)
-					: TOOL_ERROR_TEXT.targetNotFound(name, candidates),
+				TOOL_ERROR_TEXT.targetAmbiguous(
+					name,
+					matches.length,
+					matches.map((match) => `${match.server.server.name}:${match.channel}`),
+				),
 			);
 		}
-		return { kind: "member", member: resolution.entry.member, entry: resolution.entry };
+		throw new Error(
+			TOOL_ERROR_TEXT.targetNotFound(
+				name,
+				activeServers.map((active) => `${active.server.name}:<channel>`),
+			),
+		);
+	}
+
+	/** Complete a short channel name with this server's namespace and the user's name. */
+	function complete(name: string, namespace: string): string {
+		return name.includes(":") && name.split(":").length >= 3
+			? name
+			: channelName(namespace, resolvedConfig?.username ?? "", name);
 	}
 
 	/**
-	 * Send to a discovered session through the endpoint its entry advertises.
-	 *
-	 * The entry names its own transport, broker, stream and field; peers are expected to use them, so
-	 * a session on another broker is still reachable. One client per broker, opened on first use.
+	 * Publish to a channel: the stream is derived from the name, and one writer per server is opened on
+	 * first use. Nothing about the address is configured, advertised, or carried by the entry.
 	 */
-	async function publishToMember(entry: RegistryEntry, message: AceMessage): Promise<void> {
-		const endpoint = publishEndpointOf(entry);
-		if (endpoint.transport !== "redis-streams") {
-			throw new Error(TOOL_ERROR_TEXT.transportUnsupported(entry.member, endpoint.transport));
+	async function publishToChannel(target: PublishTarget, message: AceMessage): Promise<void> {
+		const url = target.server.server.url;
+		let writer = addClients.get(url);
+		if (writer === undefined) {
+			writer = createRedisStreamsAddClient(url, reportRegistryError);
+			addClients.set(url, writer);
 		}
-		memberPublishers ??= new Map();
-		let publisher = memberPublishers.get(endpoint.url);
-		if (!publisher) {
-			publisher = createRedisStreamsAddClient(endpoint.url, reportRegistryError);
-			memberPublishers.set(endpoint.url, publisher);
-		}
-		await publisher.add(endpoint.stream, endpoint.field, JSON.stringify(message));
+		await writer.add(
+			channelStreamKey(target.server.server.namespace, target.channel),
+			REDIS_STREAMS_DEFAULTS.field,
+			JSON.stringify(message),
+		);
 	}
 
-	/** The sessions other than this one that are live right now. */
+	/** The sessions other than this one that are live right now, across every server this session is on. */
 	function agentsTool(): ToolDefinition<typeof AGENTS_PARAMETERS> {
 		return {
 			name: ACE_TOOL_NAMES.agents,
@@ -338,16 +369,29 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			promptGuidelines: [...TOOL_TEXT.agents.guidelines],
 			parameters: AGENTS_PARAMETERS,
 			async execute(_toolCallId, params) {
-				if (!registry) {
+				if (activeServers.length === 0) {
 					throw new Error(TOOL_ERROR_TEXT.noDirectory);
 				}
 				const agentPrefix = params.agent === undefined ? undefined : `${params.agent}:`;
-				const live = (await registry.list())
-					.filter((entry) => entry.member !== registration?.member)
-					.filter((entry) => agentPrefix === undefined || entry.member.startsWith(agentPrefix))
-					.sort((a, b) => b.expiresAt - a.expiresAt);
+				const live: Array<{ server: string; entry: RegistryEntry }> = [];
+				for (const active of activeServers) {
+					for (const entry of await active.registry.list()) {
+						// This session is itself a live entry; listing it would be noise, not information.
+						if (entry.channel === active.sender) continue;
+						if (agentPrefix !== undefined && !entry.channel.startsWith(agentPrefix)) continue;
+						live.push({ server: active.server.name, entry });
+					}
+				}
+				live.sort((a, b) => b.entry.expiresAt - a.entry.expiresAt);
 				const limit = Math.min(Math.max(Math.trunc(params.limit ?? 20), 1), 50);
-				const rows = live.slice(0, limit).map((entry) => describeDiscovered(entry));
+				// A channel name is unique per server, not across servers, so name the server when there is
+				// more than one; otherwise the extra column is noise.
+				const many = activeServers.length > 1;
+				const rows = live
+					.slice(0, limit)
+					.map(({ server, entry }) =>
+						many ? `${server}: ${describeDiscovered(entry)}` : describeDiscovered(entry),
+					);
 				return {
 					content: [
 						{
@@ -375,18 +419,16 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			promptGuidelines: [...TOOL_TEXT.channels.guidelines],
 			parameters: CHANNELS_PARAMETERS,
 			async execute() {
-				const config = resolvedConfig;
-				if (!config) {
+				if (resolvedConfig === undefined || activeServers.length === 0) {
 					throw new Error(TOOL_ERROR_TEXT.notRunning);
 				}
-				const listing = channelListingInput(config, sessionInbox);
+				const listing = channelListingInput(subscriptions);
 				return {
 					content: [
 						{
 							type: "text",
-							text: formatChannelListing(listing.subscriptions, listing.publications, {
-								...(listing.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
-								disabled: listing.disabled,
+							text: formatChannelListing(listing.subscriptions, {
+								...(sessionInbox === undefined ? {} : { derivedName: sessionInbox.name }),
 							}),
 						},
 					],
@@ -396,17 +438,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							transport: endpoint.transport,
 							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
 							...(endpoint.activation === undefined ? {} : { activation: endpoint.activation }),
-							enabled: endpoint.enabled !== false,
-							derived: endpoint.name === listing.derivedName,
+							derived: endpoint.name === sessionInbox?.name,
 						})),
-						publish: listing.publications.map((endpoint) => ({
-							name: endpoint.name,
-							transport: endpoint.transport,
-							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
-							enabled: endpoint.enabled !== false,
-						})),
-						disabled: listing.disabled,
-						count: listing.subscriptions.length + listing.publications.length,
+						count: listing.subscriptions.length,
 					},
 				};
 			},
@@ -417,62 +451,52 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		return {
 			name: ACE_TOOL_NAMES.publish,
 			label: "ACE Publish",
-			...buildPublishToolText(
-				config,
-				sessionId,
-				senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId }),
-			),
+			...buildPublishToolText(config, sessionId, activeServers[0]?.sender ?? ""),
 			parameters: PUBLISH_PARAMETERS,
 
 			async execute(_toolCallId, params) {
-				// One identity everywhere: the same value as this session's directory member.
-				const sender = senderIdentity({
-					member: registration?.member,
-					codingAgent: codingAgentName(pi),
-					sessionId,
-				});
 				// The id is the runtime's: the caller reads it back from the result instead of choosing it.
-				// The sender reads like a directory member (`<sender>:<sessionId>`) and carries a
-				// self-description, so a receiver can show who and where it is without any lookup: the
-				// sender does not need to be registered anywhere in order to send.
-				const message = validateAceMessage({
-					aceVersion: "0.1",
-					id: `evt_${randomUUID()}`,
-					sender,
-					...(sessionId === undefined ? {} : { sessionId }),
-					senderDescription: describeSender(
-						hostFacts({
-							codingAgent: codingAgentName(pi),
-							sessionId: sessionId ?? NO_SESSION_LABEL,
-							cwd: sessionContext?.cwd ?? process.cwd(),
-						}),
-					),
-					activation: params.activation ?? "next_turn",
-					body: params.body,
-				});
-
+				// The sender carries a self-description, so a receiver can show who and where it is without
+				// any lookup: the sender does not need to be registered anywhere in order to send.
+				const id = `evt_${randomUUID()}`;
+				const description = describeSender(
+					hostFacts({
+						codingAgent: codingAgentName(pi),
+						sessionId: sessionId ?? NO_SESSION_LABEL,
+						cwd: sessionContext?.cwd ?? process.cwd(),
+					}),
+				);
+				const activation = params.activation ?? "next_turn";
 				const targets = [...new Set(typeof params.target === "string" ? [params.target] : params.target)];
 				const delivered: string[] = [];
 				const failures: string[] = [];
 				const sentStreams = new Set<string>();
+				const senders: string[] = [];
 
 				for (const name of targets) {
 					try {
 						const target = await resolvePublishTarget(name);
-						if (target.kind === "channel") {
-							await target.publisher.publish(message);
-							delivered.push(deliveredChannel(target.name));
-							continue;
-						}
-						// The same session twice in one call is one delivery.
-						const address = `${target.entry.channel.config.url}#${target.entry.channel.config.stream}`;
+						const stream = channelStreamKey(target.server.server.namespace, target.channel);
+						// The same channel twice in one call is one delivery.
+						const address = `${target.server.server.url}#${stream}`;
 						if (sentStreams.has(address)) {
-							delivered.push(deliveredMember(target.member, true));
+							delivered.push(deliveredChannel(target.channel));
 							continue;
 						}
 						sentStreams.add(address);
-						await publishToMember(target.entry, message);
-						delivered.push(deliveredMember(target.member));
+						if (!senders.includes(target.server.sender)) senders.push(target.server.sender);
+						// A sender name belongs to one server, so the event is built per target rather than once.
+						const message = validateAceMessage({
+							aceVersion: "0.1",
+							id,
+							sender: target.server.sender,
+							...(sessionId === undefined ? {} : { sessionId }),
+							senderDescription: description,
+							activation,
+							body: params.body,
+						});
+						await publishToChannel(target, message);
+						delivered.push(deliveredChannel(target.channel));
 					} catch (error) {
 						failures.push(failedTarget(name, describeError(error)));
 					}
@@ -486,22 +510,22 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						{
 							type: "text",
 							text: formatPublishResult({
-								id: message.id,
-								sender,
-								activation: message.activation,
+								id,
+								sender: senders.join(", "),
+								activation,
 								delivered,
 								failures,
 							}),
 						},
 					],
 					details: {
-						id: message.id,
-						sender: message.sender,
-						sessionId: message.sessionId,
-						activation: message.activation,
+						id,
+						sender: senders.join(", "),
+						sessionId,
+						activation,
 						delivered,
 						failed: failures,
-						bodyLength: message.body.length,
+						bodyLength: params.body.length,
 					},
 				};
 			},
@@ -567,43 +591,75 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		sessionInbox = undefined;
 
 		const logger = createLogger(ctx);
-		publishers = createPublishers(resolved.publish, {
-			onError: (error) => report(ctx, `[ace] publish transport error: ${describeError(error)}`, "error"),
-		});
 		// Bursts are always spooled, with built-in thresholds (see DEFAULT_SPOOL_RULE); the directory is not
 		// configuration, so it simply sits next to the session's other ACE state.
 		const spoolDir = join(ctx.cwd, ".ace", "spool");
-		// The advertised stream is this session's inbox: subscribe to it, or the address a peer
-		// discovered through the directory would have nobody reading it.
-		let subscriptions = resolved.subscribe;
-		if (resolved.registry) {
-			try {
-				registry = new AgentRegistry({
-					store: createRedisAgentRegistry({
-						url: resolved.registry.url,
-						...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
-						onError: reportRegistryError,
-					}),
-					...(resolved.registry.prefix === undefined ? {} : { prefix: resolved.registry.prefix }),
-					logger,
+
+		// Register on every configured server, each with this session's own channel there, and read that
+		// channel back. A server that is unreachable is skipped with a warning: the rest of the session
+		// still runs. Nothing about the address is advertised — the channel name is the address.
+		const multi = resolved.servers.length > 1;
+		const derived: EndpointConfig[] = [];
+		activeServers = [];
+		sessionInbox = undefined;
+		for (const server of resolved.servers) {
+			const sender = senderName({
+				namespace: server.namespace,
+				username: resolved.username,
+				codingAgent: codingAgentName(pi),
+				sessionId: currentSessionId,
+			});
+			const registry = new AgentRegistry({
+				store: createRedisAgentRegistry({
+					url: server.url,
+					namespace: server.namespace,
 					onError: reportRegistryError,
-				});
-				registration = await registry.register({
+				}),
+				namespace: server.namespace,
+				logger,
+				onError: reportRegistryError,
+			});
+			try {
+				await registry.register({
+					sender,
 					codingAgent: codingAgentName(pi),
 					sessionId: currentSessionId,
 					cwd: ctx.cwd,
-					url: resolved.registry.url,
 				});
-				const inbox = sessionInboxEndpoint(registration, resolved.registry.url);
-				sessionInbox = inbox;
-				subscriptions = [...resolved.subscribe, inbox];
 			} catch (error) {
-				registration = undefined;
-				await registry?.close();
-				registry = undefined;
-				report(ctx, `[ace] not registered: ${describeError(error)}`, "warning");
+				await registry.close().catch(() => {});
+				report(ctx, `[ace] server "${server.name}" unreachable, skipping it: ${describeError(error)}`, "warning");
+				continue;
 			}
+			activeServers.push({ server, sender, registry });
+			const inbox = subscriptionEndpoint({
+				channel: sender,
+				name: multi ? `${server.name}:${SESSION_INBOX}` : SESSION_INBOX,
+				url: server.url,
+				namespace: server.namespace,
+				sender,
+				description: "this session's inbox — the channel named by its sender",
+			});
+			sessionInbox ??= inbox;
+			derived.push(inbox);
 		}
+		// Subscribed channel names are read on the server they were configured for, with that server's
+		// sender as the reading identity; a subscription whose server did not come up is dropped.
+		for (const subscribed of resolved.subscriptions) {
+			const owner = activeServers.find((active) => active.server.name === subscribed.server.name);
+			if (owner === undefined) continue;
+			derived.push(
+				subscriptionEndpoint({
+					channel: subscribed.channel,
+					name: multi ? `${subscribed.server.name}:${subscribed.channel}` : subscribed.channel,
+					url: subscribed.server.url,
+					namespace: subscribed.server.namespace,
+					sender: owner.sender,
+					...(subscribed.server.description === undefined ? {} : { description: subscribed.server.description }),
+				}),
+			);
+		}
+		subscriptions = derived;
 
 		const metrics = new AceMetrics();
 		// Dead letters go next to the burst files: same directory, different prefix. Nothing is written
@@ -640,15 +696,12 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			await runtime.start();
 			resolvedConfig = resolved;
 			pi.registerTool(publishTool(resolved));
-			const identity = senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId });
-			const publishing =
-				resolved.publish.length > 0 ? `; publish ${resolved.publish.map(describeEndpoint).join(", ")}` : "";
-			const disabled = resolved.disabled.length > 0 ? ` [disabled: ${resolved.disabled.join(", ")}]` : "";
-			const directory = registration === undefined ? "" : `; registered as ${registration.member}`;
+			const identity = activeServers.map((active) => active.sender).join(", ");
+			const servers = activeServers.map((active) => `${active.server.name} (${active.sender})`).join(", ");
 			// Startup chatter stays on stderr: the session UI should not repeat the same three lines every
 			// time ACE starts, and stderr is what print/RPC runs and the `/ace` status already cover.
 			console.error(
-				`[ace] ${identity} listening (${resolved.source}): subscribe ${resolved.subscribe.map(describeEndpoint).join(", ")}${publishing}${disabled}${directory}`,
+				`[ace] ${identity} listening (${resolved.source}): servers ${servers}; reading ${subscriptions.map(describeEndpoint).join(", ")}`,
 			);
 			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
 		} catch (error) {
@@ -677,30 +730,32 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			(globalThis as unknown as Record<symbol, boolean | undefined>)[RUNTIME_CLAIMED_MARKER] = false;
 			claimedRuntime = false;
 		}
-		const activeRegistry = registry;
-		const activeMemberPublishers = memberPublishers;
 		const active = runtime;
-		const activePublishers = Object.values(publishers);
+		const closing = activeServers;
+		const activeAddClients = [...addClients.values()];
 		runtime = undefined;
-		publishers = {};
 		resolvedConfig = undefined;
 		sessionContext = undefined;
 		sessionInbox = undefined;
 		deadLetters = undefined;
-		registry = undefined;
-		registration = undefined;
-		memberPublishers = undefined;
+		subscriptions = [];
+		activeServers = [];
+		addClients.clear();
 		// The order (reader → directory entry and stream → client) and its best-effort error handling
-		// live in the runtime, so every host gets it right by construction.
+		// live in the runtime, so every host gets it right by construction. The reader is shared by every
+		// server, so it stops once; each server's registration is then dropped and closed.
 		await shutdownAce({
 			runtime: active,
-			registry: activeRegistry,
 			onError: (step, error) => report(ctx, `[ace] ${step}: ${describeError(error)}`, "warning"),
 		});
-		if (activeMemberPublishers) {
-			for (const publisher of activeMemberPublishers.values()) await publisher.close();
+		for (const server of closing) {
+			await shutdownAce({
+				registry: server.registry,
+				onError: (step, error) =>
+					report(ctx, `[ace] ${step} (${server.server.name}): ${describeError(error)}`, "warning"),
+			});
 		}
-		for (const publisher of activePublishers) await publisher.close();
+		for (const writer of activeAddClients) await writer.close();
 		shuttingDown = false;
 	});
 
@@ -753,7 +808,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				report(
 					ctx,
 					[
-						`[ace] stats (pending manual: ${pending.length}, dead letters: ${deadLetters?.count ?? 0} → ${deadLetters?.directory ?? "none"}${resolvedConfig?.sender ? `, sender ${resolvedConfig.sender}` : ""})`,
+						`[ace] stats (pending manual: ${pending.length}, dead letters: ${deadLetters?.count ?? 0} → ${deadLetters?.directory ?? "none"}${activeServers.length > 0 ? `, sender ${activeServers.map((active) => active.sender).join(", ")}` : ""})`,
 						...(lines.length > 0 ? lines.map((line) => `  ${line}`) : ["  (nothing yet)"]),
 						...windows,
 					].join("\n"),
@@ -778,29 +833,28 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			}
 
 			if (subcommand === "list") {
-				const listing =
-					resolvedConfig === undefined ? undefined : channelListingInput(resolvedConfig, sessionInbox);
+				const listing = channelListingInput(subscriptions);
+				const identity = activeServers.map((active) => active.sender).join(", ");
 				const describeChannel = (value: string): string[] | undefined => {
 					const [direction, name] = value.split(":");
-					if (direction !== "in" && direction !== "out") {
-						return [`${name} is disabled in ${ACE_CONFIG_FILENAME}`];
+					if (direction !== "in") {
+						return [`${name} is not a channel this session reads`];
 					}
-					const endpoints = direction === "in" ? listing?.subscriptions : listing?.publications;
-					const endpoint = endpoints?.find((candidate) => candidate.name === name);
+					const endpoint = listing.subscriptions.find((candidate) => candidate.name === name);
 					if (endpoint === undefined) return undefined;
 					return [
 						`name: ${endpoint.name}`,
-						`direction: ${direction === "in" ? "subscribed" : "publishable"}`,
+						`direction: subscribed`,
 						`transport: ${endpoint.transport}`,
 						`address: ${endpointAddress(endpoint) ?? "(none)"}`,
 						...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
 						...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
-						...(name === SESSION_INBOX && listing?.derivedName !== undefined
-							? ["origin: registered by the agent directory for this session"]
+						...(name === sessionInbox?.name
+							? ["origin: named by this session's sender on the agent directory"]
 							: []),
 					];
 				};
-				const header = `${senderIdentity({ member: registration?.member, codingAgent: codingAgentName(pi), sessionId })} (agent ${adapter.isRunning() ? "running" : "idle"})${
+				const header = `${identity} (agent ${adapter.isRunning() ? "running" : "idle"})${
 					resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
 				}`;
 				// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
@@ -812,7 +866,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							() => ({
 								title: "ACE channels",
 								details: header,
-								items: channelMenuItems(listing ?? { subscriptions: [], publications: [], disabled: [] }),
+								items: channelMenuItems(listing),
 								empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
 							}),
 							describeChannel,
@@ -825,17 +879,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				report(
 					ctx,
 					formatChannelReport({
-						identity: senderIdentity({
-							member: registration?.member,
-							codingAgent: codingAgentName(pi),
-							sessionId,
-						}),
+						identity,
 						agentState: adapter.isRunning() ? "running" : "idle",
 						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
-						subscriptions: listing?.subscriptions ?? [],
-						publications: listing?.publications ?? [],
-						...(listing?.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
-						disabled: listing?.disabled ?? [],
+						subscriptions: listing.subscriptions,
+						...(sessionInbox === undefined ? {} : { derivedName: sessionInbox.name }),
 						pendingManual: pending.length,
 						deadLetters: {
 							count: deadLetters?.count ?? 0,
