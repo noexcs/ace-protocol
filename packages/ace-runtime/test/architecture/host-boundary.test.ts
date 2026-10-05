@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
  * These tests fail the moment Pi leaks into a host-neutral module.
  */
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const HOST_NEUTRAL_DIRECTORIES = ["src/protocol", "src/runtime", "src/transport"];
+const HOST_NEUTRAL_DIRECTORIES = ["src/protocol", "src/runtime", "src/transport", "src/tools"];
 const HOST_NEUTRAL_FILES = ["src/agent/agent-engine.ts"];
 const PI_IMPORT = "@earendil-works/";
 

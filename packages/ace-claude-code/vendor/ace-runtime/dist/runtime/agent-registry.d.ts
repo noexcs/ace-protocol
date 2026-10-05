@@ -1,4 +1,6 @@
 import type { AceLogger } from "../logger.ts";
+/** Subscription name of the inbox the agent directory registers for this session. */
+export declare const SESSION_INBOX = "session-inbox";
 /** Key layout, expiry and heartbeat, derived from `.ace.json` `registry.prefix`. */
 export declare const REGISTRY_DEFAULTS: {
     readonly prefix: "ace:agents";

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
-import { ACE_TRUST_POLICY } from "ace-runtime";
 import { describe, expect, it } from "vitest";
-import { TOOL_TEXT } from "../../extensions/ace.ts";
+import { ACE_TRUST_POLICY } from "../../src/agent/pi-adapter.ts";
+import { TOOL_TEXT } from "../../src/tools/spec.ts";
 
 /**
  * The contracts document is a norm: it says what the model is told, so it has to quote the tool text

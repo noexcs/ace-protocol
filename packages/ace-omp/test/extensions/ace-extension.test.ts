@@ -3,16 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RegistryEntry, ResolvedAceConfig } from "ace-runtime";
-import { formatSessionLabel, renderAceEvent } from "ace-runtime";
-import { describe, expect, it } from "vitest";
-import aceExtension, {
-	aceCompletions,
+import {
 	buildPublishToolText,
 	channelListingInput,
 	describeDiscovered,
 	formatChannelListing,
 	formatChannelReport,
-} from "../../extensions/ace.ts";
+	formatSessionLabel,
+	renderAceEvent,
+} from "ace-runtime";
+import { describe, expect, it } from "vitest";
+import aceExtension, { aceCompletions } from "../../extensions/ace.ts";
 import { channelMenuItems } from "../../extensions/ace-manager.ts";
 
 const config: ResolvedAceConfig = {

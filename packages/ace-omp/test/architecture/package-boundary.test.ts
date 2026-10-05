@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -42,14 +42,5 @@ describe("package boundary", () => {
 
 		expect(declared.length).toBeGreaterThan(0);
 		for (const entry of declared) expect(existsSync(join(PACKAGE_ROOT, entry))).toBe(true);
-	});
-
-	it("keeps the docs-test's relative path to the shared contracts document valid", () => {
-		// `test/extensions/tool-text-docs.test.ts` compares the tool text against the contracts doc at
-		// the repository root; it can only do that while this package sits one level below the root.
-		const docs = fileURLToPath(new URL("../../../../docs/ace-runtime-contracts.md", import.meta.url));
-
-		expect(existsSync(docs)).toBe(true);
-		expect(relative(PACKAGE_ROOT, docs).startsWith("../")).toBe(true);
 	});
 });

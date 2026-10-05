@@ -1,5 +1,7 @@
 import { networkInterfaces, hostname as osHostname } from "node:os";
 import { formatSessionLabel } from "../utils.js";
+/** Subscription name of the inbox the agent directory registers for this session. */
+export const SESSION_INBOX = "session-inbox";
 /** Key layout, expiry and heartbeat, derived from `.ace.json` `registry.prefix`. */
 export const REGISTRY_DEFAULTS = {
     prefix: "ace:agents",

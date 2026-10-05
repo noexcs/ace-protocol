@@ -25,6 +25,8 @@ export * from "./runtime/event-spool.ts";
 export * from "./runtime/metrics.ts";
 export * from "./runtime/pending-event-store.ts";
 export * from "./runtime/seen-message-ids.ts";
+export * from "./tools/listing.ts";
+export * from "./tools/spec.ts";
 export * from "./transport/in-memory-transport.ts";
 export * from "./transport/redis-agent-registry.ts";
 export * from "./transport/redis-streams-client.ts";

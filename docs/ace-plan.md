@@ -76,8 +76,13 @@
    命名只用一个包（`ace-omp`）覆盖 Pi 与 oh-my-pi——两者共用同一扩展；将来若宿主分化再拆 `ace-pi`。
 3. **动态频道模型**：registry 承载频道目录与订阅关系；`ace_channel` 四动作；`Transport` → **可热插拔**
    （按订阅动态 start/stop，去重窗口、指标、pending、派生视图跟着订阅生命周期走）。
-4. **工具 spec 下沉 + 跨宿主一致性测试**：工具名/参数 schema/文本/返回形状归核心，宿主只负责绑定注册
-   （现状：`ace-claude-code/src/tools.ts` 抄了一份核心文本，会随本次下沉消除）。
+4. **工具 spec 下沉 + 跨宿主一致性测试** —— **本体已完成（2026-10-05）**：工具名（`ACE_TOOL_NAMES`）、
+   描述与指引文本（`TOOL_TEXT`、`buildPublishToolText`）、参数 schema（`PUBLISH/AGENTS/CHANNELS_PARAMETERS`）
+   以及所有面向模型的列表/报告格式化（`src/tools/listing.ts`：`describeDiscovered` / `describeEndpoint` /
+   `formatChannelListing` / `channelListingInput` / `formatChannelReport`）都搬进了核心，并纳入 host-neutral
+   边界测试；ace-omp 只剩**绑定**（展开核心 spec + `execute` + `pi.registerTool`），依赖因此清掉了
+   `typebox` 与 `@earendil-works/pi-ai`。**剩余**：`ace-claude-code/src/tools.ts` 仍抄着一份文本 ✗ → 改为
+   引用核心 spec（它经 vendor dist 消费；本次 `--write` 已把统一后的 dist 同步过去），并补跨宿主文本一致性测试。
    **绑定的硬事实（已取证）**：`oh-my-pi`/pi 有**原生工具 API**（`pi.registerTool`）；**Claude Code 与 Codex
    都没有原生工具扩展点** —— Claude 插件的组件全集（skills / commands / agents / hooks / mcpServers /
    lspServers / outputStyles / workflows / themes·monitors·evals / settings / channels）里只有 `mcpServers`
