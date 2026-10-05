@@ -104,7 +104,7 @@ import {
 	TOOL_TEXT,
 	validateAceMessage,
 	withTrustPolicy,
-} from "ace-runtime";
+} from "../vendor/ace-runtime/dist/index.js";
 import { channelMenuItems, showAceManager } from "./ace-manager.ts";
 
 function describeError(error: unknown): string {

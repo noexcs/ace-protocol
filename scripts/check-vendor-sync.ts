@@ -1,23 +1,26 @@
 #!/usr/bin/env node
 /**
- * Vendor drift guard for `packages/ace-claude-code/vendor/ace-runtime`.
+ * Vendor drift guard for the host packages that ship a **copy** of ace-runtime's build:
  *
- * That package depends on `file:./vendor/ace-runtime` — a **copy** of ace-runtime's build output,
- * refreshed by hand. `ace-codex`, by contrast, depends on `file:../ace-runtime`, so it follows the
- * live package. Nothing kept the copy honest: change `ace-runtime` and the Claude host silently
- * keeps running the old runtime.
+ *   - `packages/ace-claude-code/vendor/ace-runtime` — the Claude plugin installs from this repo, so the
+ *     copy is tracked and the host's `file:` dependency points at it.
+ *   - `packages/ace-omp/vendor/ace-runtime` — the omp extension loader refuses a bare `ace-runtime`
+ *     specifier from a linked sibling package, so the plugin imports the core through this copy,
+ *     relative to its own file. See `docs/ace-plan.md`.
+ *
+ * `ace-codex` needs none of this: it depends on `file:../ace-runtime` and is launched by us, not by a
+ * host loader.
  *
  * What it does:
- *   - compares `packages/ace-runtime/dist` (built) against the vendored `dist`, file by file, by
+ *   - compares `packages/ace-runtime/dist` (built) against each vendored `dist`, file by file, by
  *     sha256 — and compares the two `package.json` versions as a cheap first signal;
- *   - `--build` runs `npm run build` in `packages/ace-runtime` first, so the comparison is against
- *     the current sources;
+ *   - `--build` runs `npm run build` in `packages/ace-runtime` first, so the comparison is against the
+ *     current sources;
+ *   - `--write` refreshes a vendored copy in place (copies only the files that differ, drops files the
+ *     build no longer has, and syncs the version field);
  *   - exits non-zero on any difference, printing exactly which files drift.
  *
  * Usage: node scripts/check-vendor-sync.ts [--build] [--write]
- *
- * `--write` refreshes the vendored copy in place (copies only the files that differ, drops files the
- * build no longer has, and syncs the version field). Without it the command is a pure check.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -27,8 +30,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RUNTIME = join(ROOT, "packages/ace-runtime");
-const VENDOR = join(ROOT, "packages/ace-claude-code/vendor/ace-runtime");
+const VENDORS = ["packages/ace-claude-code/vendor/ace-runtime", "packages/ace-omp/vendor/ace-runtime"];
 const IGNORED = /(^|\/)(node_modules|\.git)(\/|$)|\.tsbuildinfo$/;
+const WRITE = process.argv.includes("--write");
 
 /** Every file under `dir`, as `{ relativePath: sha256 }`. */
 function fingerprint(dir) {
@@ -58,69 +62,81 @@ if (process.argv.includes("--build")) {
 }
 
 const built = fingerprint(join(RUNTIME, "dist"));
-const vendored = fingerprint(join(VENDOR, "dist"));
 const builtVersion = version(RUNTIME);
-const vendoredVersion = version(VENDOR);
-
 if (built === undefined) {
 	process.stderr.write("[vendor-sync] packages/ace-runtime/dist is missing — build it first or pass --build\n");
 	process.exit(2);
 }
-if (vendored === undefined) {
-	process.stderr.write(`[vendor-sync] ${relative(ROOT, VENDOR)}/dist is missing — the Claude host cannot run\n`);
-	process.exit(2);
+
+let failed = false;
+for (const relativeVendor of VENDORS) {
+	const vendor = join(ROOT, relativeVendor);
+	let vendored = fingerprint(join(vendor, "dist"));
+	let vendoredVersion = version(vendor);
+
+	if (vendored === undefined) {
+		if (!WRITE) {
+			process.stderr.write(`[vendor-sync] ${relativeVendor}/dist is missing — the host cannot run\n`);
+			failed = true;
+			continue;
+		}
+		// Bootstrap: the vendored copy is the core's manifest plus its build.
+		mkdirSync(join(vendor, "dist"), { recursive: true });
+		copyFileSync(join(RUNTIME, "package.json"), join(vendor, "package.json"));
+		vendored = {};
+		vendoredVersion = builtVersion;
+	}
+
+	const lines = [];
+	if (builtVersion !== vendoredVersion) lines.push(`version: ace-runtime ${builtVersion} vs vendor ${vendoredVersion}`);
+	for (const [path, hash] of Object.entries(built)) {
+		if (!(path in vendored)) lines.push(`missing in vendor: ${path}`);
+		else if (vendored[path] !== hash) lines.push(`differs:          ${path}`);
+	}
+	for (const path of Object.keys(vendored)) {
+		if (!(path in built)) lines.push(`stale in vendor:  ${path}`);
+	}
+
+	if (lines.length === 0) {
+		process.stdout.write(`[vendor-sync] ${relativeVendor}: in sync (${Object.keys(built).length} files)\n`);
+		continue;
+	}
+
+	if (!WRITE) {
+		process.stderr.write(`[vendor-sync] ${relativeVendor}: DRIFT — not the current build:\n`);
+		for (const line of lines) process.stderr.write(`  ${line}\n`);
+		failed = true;
+		continue;
+	}
+
+	const builtDist = join(RUNTIME, "dist");
+	const vendoredDist = join(vendor, "dist");
+	let copied = 0;
+	let removed = 0;
+	for (const [path, hash] of Object.entries(built)) {
+		if (vendored[path] === hash) continue;
+		const target = join(vendoredDist, path);
+		mkdirSync(dirname(target), { recursive: true });
+		copyFileSync(join(builtDist, path), target);
+		copied += 1;
+	}
+	for (const path of Object.keys(vendored)) {
+		if (path in built) continue;
+		rmSync(join(vendoredDist, path), { force: true });
+		removed += 1;
+	}
+	if (builtVersion !== vendoredVersion) {
+		const manifestPath = join(vendor, "package.json");
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+		manifest.version = builtVersion;
+		writeFileSync(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
+	}
+	process.stdout.write(
+		`[vendor-sync] ${relativeVendor}: refreshed (${copied} copied, ${removed} stale removed, version ${builtVersion})\n`,
+	);
 }
 
-const drift = [];
-for (const [path, hash] of Object.entries(built)) {
-	if (!(path in vendored)) drift.push(`missing in vendor: ${path}`);
-	else if (vendored[path] !== hash) drift.push(`differs:          ${path}`);
-}
-for (const path of Object.keys(vendored)) {
-	if (!(path in built)) drift.push(`stale in vendor:  ${path}`);
-}
-
-const lines = [];
-if (builtVersion !== vendoredVersion) lines.push(`version: ace-runtime ${builtVersion} vs vendor ${vendoredVersion}`);
-lines.push(...drift);
-
-if (lines.length === 0) {
-	process.stdout.write(`[vendor-sync] in sync: ${Object.keys(built).length} files, ace-runtime ${builtVersion}\n`);
-	process.exit(0);
-}
-
-if (!process.argv.includes("--write")) {
-	process.stderr.write(`[vendor-sync] DRIFT — the vendored runtime is not the current build:\n`);
-	for (const line of lines) process.stderr.write(`  ${line}\n`);
-	process.stderr.write(`[vendor-sync] fix: node scripts/check-vendor-sync.ts --write\n`);
+if (failed) {
+	process.stderr.write("[vendor-sync] fix: node scripts/check-vendor-sync.ts --write\n");
 	process.exit(1);
 }
-
-/** Refresh the vendored copy in place: copy what differs, drop what is gone, sync the version. */
-const builtDist = join(RUNTIME, "dist");
-const vendoredDist = join(VENDOR, "dist");
-let copied = 0;
-let removed = 0;
-for (const [path, hash] of Object.entries(built)) {
-	if (vendored[path] === hash) continue;
-	const target = join(vendoredDist, path);
-	mkdirSync(dirname(target), { recursive: true });
-	copyFileSync(join(builtDist, path), target);
-	copied += 1;
-}
-for (const path of Object.keys(vendored)) {
-	if (path in built) continue;
-	rmSync(join(vendoredDist, path), { force: true });
-	removed += 1;
-}
-let versionChanged = false;
-if (builtVersion !== vendoredVersion) {
-	const manifestPath = join(VENDOR, "package.json");
-	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-	manifest.version = builtVersion;
-	writeFileSync(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
-	versionChanged = true;
-}
-process.stdout.write(
-	`[vendor-sync] refreshed: ${copied} file(s) copied, ${removed} stale removed, version ${vendoredVersion} → ${builtVersion}${versionChanged ? "" : " (unchanged)"}\n`,
-);

@@ -1,0 +1,1 @@
+{"version":3,"file":"transport.d.ts","sourceRoot":"","sources":["../../src/transport/transport.ts"],"names":[],"mappings":"AAAA,iEAAiE;AACjE,MAAM,MAAM,oBAAoB,GAAG,CAAC,GAAG,EAAE,OAAO,KAAK,OAAO,CAAC,IAAI,CAAC,CAAC;AAEnE;;;;;;GAMG;AACH,MAAM,WAAW,SAAS;IACzB,KAAK,CAAC,OAAO,EAAE,oBAAoB,GAAG,OAAO,CAAC,IAAI,CAAC,CAAC;IACpD,IAAI,IAAI,OAAO,CAAC,IAAI,CAAC,CAAC;CACtB"}

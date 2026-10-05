@@ -18,7 +18,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { EndpointConfig } from "ace-runtime";
+import type { EndpointConfig } from "../vendor/ace-runtime/dist/index.js";
 
 /** The slice of the host theme the view uses; structurally what `ctx.ui.custom` hands to the factory. */
 interface AceTheme {

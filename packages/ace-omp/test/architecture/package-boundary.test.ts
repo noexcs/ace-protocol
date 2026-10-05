@@ -36,6 +36,20 @@ describe("package boundary", () => {
 		expect(offenders).toEqual([]);
 	});
 
+	it("imports the runtime through the copy inside this package", () => {
+		// The omp extension loader refuses a bare `ace-runtime` specifier (a linked sibling package does
+		// not resolve there, while the package's own node_modules and relative paths do). The plugin
+		// therefore reaches the core through its vendored copy — `docs/ace-plan.md` records the probe.
+		const extensions = typescriptFiles("extensions");
+		const bare = extensions.filter((file) =>
+			/from "ace-runtime"/.test(readFileSync(join(PACKAGE_ROOT, file), "utf8")),
+		);
+		const entry = readFileSync(join(PACKAGE_ROOT, "extensions/ace.ts"), "utf8");
+
+		expect(bare).toEqual([]);
+		expect(entry).toContain("../vendor/ace-runtime/dist/index.js");
+	});
+
 	it("declares the extension the host loads, at a path that exists", () => {
 		const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"));
 		const declared = manifest.omp?.extensions ?? [];

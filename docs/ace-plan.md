@@ -107,9 +107,12 @@
 
 **文本归属规则（本轮的判据）**：**模型能读到的文本 → 核心**（工具名/描述/指引/参数说明/工具结果/工具错误 —— 已全部下沉 ✓，这样机制一变只改一处 ✓）；**只有人看得到的输出**（`/ace` 命令的回显、用法行、补全候选、TUI 管理器）留在宿主 ✓。
 
-**vendor 机制注意（已踩过）**：核心改一行 → 必须 `npm run build` → `node scripts/check-vendor-sync.ts --write` →
-再在消费包里 `bun install` 重链；且**消费包要自己声明 vendored 运行时的依赖**（`typebox`、`@earendil-works/pi-coding-agent`），
-因为 `file:` 依赖不会替它装 ✗（claude 包已补声明 ✓）。
+**vendor 机制注意（已踩过）**：核心改一行 → 必须 `npm run build` → `node scripts/check-vendor-sync.ts --write`
+（现在同时同步 `ace-claude-code` 与 `ace-omp` 两份拷贝，缺目录时会 bootstrap ✓）。两个消费方都是**自包含**的：
+`ace-claude-code` 一直如此，`ace-omp` 在 2026-10-05 补上——因为 **omp 的扩展加载器解析不了指向"同级链接包"的 bare
+`ace-runtime`**（同一探针显示 `redis`/`typebox` 能解析 ✓，所以问题出在"被链接的同级包"而不是 bare import 本身），
+扩展于是改为经包内 `vendor/ace-runtime/dist/index.js` 相对导入；消费包还要自己声明 vendored 运行时的依赖
+（`typebox`、`@earendil-works/pi-coding-agent`），`file:` 依赖不会替它装 ✗。
 
 ## 5. 现有设施的缺口（本轮要完善的）
 

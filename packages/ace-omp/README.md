@@ -16,6 +16,41 @@ peer agents — become an active input to a running coding session.
 
 Everything below is the host-facing documentation, moved here from the core package's README when
 the two were split.
+
+## Install
+
+oh-my-pi discovers plugins through the `omp.extensions` field of an installed package, and this package
+is the plugin: link it once and the host finds the extension by itself.
+
+```bash
+cd packages/ace-omp
+bun install                            # installs the vendored core as well
+omp plugin link "$PWD"                 # registers it under ~/.omp/plugins
+omp plugin list                        # → ace-omp, enabled, manifest ./extensions/ace.ts
+```
+
+**Why the core is vendored.** The host's extension loader resolves relative imports and the plugin's own
+`node_modules`, but *not* a bare `ace-runtime` specifier that points at a linked sibling package: the
+extension then fails to load with `Cannot find package 'ace-runtime'` (probed against omp 18.5.0 — the
+same probe shows `redis` and `typebox` resolving fine, so it is the sibling package, not bare imports in
+general). This package therefore carries the core's build in `vendor/ace-runtime` and the extension
+imports it by relative path — `../vendor/ace-runtime/dist/index.js`. After changing the core, refresh the
+copy: `node scripts/check-vendor-sync.ts --write` at the repository root.
+
+Upstream **Pi** (not oh-my-pi) has no plugin registry and resolves relative to the package anyway, so
+`pi --extension /path/to/ace-omp/extensions/ace.ts` is enough there.
+
+### Upgrading from the pre-split package
+
+The plugin used to ship inside `ace-runtime`. That package no longer declares an extension, so an
+install still pointing at it loads **nothing at all** — no plugin, and no error to read:
+`omp plugin list --json` shows it as `"manifest": null`. Move the install over:
+
+```bash
+omp plugin link /path/to/ace-protocol/packages/ace-omp
+omp plugin uninstall ace-runtime
+```
+
 ## Inject events into a live Pi session
 
 The extension in [`extensions/ace.ts`](extensions/ace.ts) runs **inside** Pi and injects external events into the
