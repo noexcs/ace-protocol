@@ -194,10 +194,16 @@ function requireRuntime(ctx: ToolContext): AceRuntimeSurface {
 
 function channelsTool(ctx: ToolContext): ToolResult {
 	if (!ctx.config) return errorResult(TOOL_ERROR_TEXT.notRunning);
-	const listing = channelListingInput(ctx.subscriptions, ctx.inbox);
+	// The runtime keeps the inbox among its subscriptions (the transport reads it); the listing appends it
+	// itself so it can mark the session's own channel, so drop the copy already there.
+	const self = ctx.inbox === undefined ? undefined : (ctx.inbox.channel ?? ctx.inbox.name);
+	const listing = channelListingInput(
+		self === undefined ? ctx.subscriptions : ctx.subscriptions.filter((s) => (s.channel ?? s.name) !== self),
+		ctx.inbox,
+	);
 	return textResult(
 		formatChannelListing(listing.subscriptions, {
-			...(listing.derivedName === undefined ? {} : { derivedName: listing.derivedName }),
+			...(listing.selfChannel === undefined ? {} : { selfChannel: listing.selfChannel }),
 		}),
 	);
 }

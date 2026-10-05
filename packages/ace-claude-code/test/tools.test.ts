@@ -110,7 +110,10 @@ describe("ace_channels", () => {
 		expect(result.isError).toBeFalsy();
 		const text = result.content[0].text;
 		expect(text).toContain("ace:claude:inbox");
-		expect(text).toContain("session-inbox");
+		// The inbox row shows the addressable channel and marks it as this session's own; the local label
+		// ("session-inbox") belongs to `/ace list`, not to the model-facing view.
+		expect(text).toContain(`channel=${SENDER} transport=redis-streams activation=default self=yes`);
+		expect(text).not.toContain("session-inbox");
 		// Broker addresses are intentionally left out of the model-facing view.
 		expect(text).not.toContain("127.0.0.1");
 	});
