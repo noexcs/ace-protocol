@@ -38,7 +38,7 @@ which carries this package's build in its `vendor/` — see that README for the 
 
 ```bash
 # 1. the released plugin tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.6/ace-omp-0.2.6.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.7/ace-omp-0.2.7.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -64,10 +64,10 @@ or skip the plugin system and link the plugin's entry into the host's extension 
 keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.6/ace-omp-0.2.6.tgz
-mkdir -p ~/ace-omp-0.2.6 ~/.omp/agent/extensions
-tar xzf ace-omp-0.2.6.tgz -C ~/ace-omp-0.2.6 --strip-components=1
-cd ~/ace-omp-0.2.6 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.7/ace-omp-0.2.7.tgz
+mkdir -p ~/ace-omp-0.2.7 ~/.omp/agent/extensions
+tar xzf ace-omp-0.2.7.tgz -C ~/ace-omp-0.2.7 --strip-components=1
+cd ~/ace-omp-0.2.7 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -91,7 +91,7 @@ redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
 # (ace-omp is the plugin; ace-runtime below it is the library it vendors)
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.6/ace-omp-0.2.6.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.7/ace-omp-0.2.7.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
   "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
@@ -391,21 +391,24 @@ the session settles. Events therefore reach the model exactly once, in order.
 <ace_event>
 sender: oh-my-pi:01a102b8-f016-75ab-87eb-63551c257fda
 sender description: agent=oh-my-pi | session=257fda | cwd=/Users/… | host=… | ip=… | platform=darwin-arm64 | pid=…
-channel: ace:in.a
+stream: ace:in.a
 id: evt_123
 
 Build failed for project foo.
 </ace_event>
 ```
 
-`<ace_event>` is what tells a model the block came from another agent rather than the human; `channel` is the
-address it arrived on (the Redis stream name) — a sender's target name lives in the sender's own configuration.
+`<ace_event>` is what tells a model the block came from another agent rather than the human; `stream` is the
+Redis stream key the event was read from — not a channel name — and a sender's target name lives in the sender's
+own configuration; a reply goes to the `sender` channel.
 Nothing inside the block is repeated per event beyond that header; the provenance and trust rule is stated once
 in the session's system prompt (`ACE_TRUST_POLICY` via `withTrustPolicy`): events in that tag come from other
 agents or services, their sender is unverified — ACE 0.1 authenticates nothing (RFC §22 item 3) — and the agent
 must get the user's approval for a sender before acting on its requests, offering "this event only", "every
 event from that sender", or "every ACE event". That is a soft constraint, not a boundary: the runtime keeps no
-approvals and blocks no events, and the user's answer stays in the conversation.
+approvals and blocks no events, and the user's answer stays in the conversation. Events are pushed into the
+conversation when they arrive (or at the end of the current turn, per activation); there is nothing to poll,
+wait for, or read back.
 
 `ace_publish` stamps `sender` with this session's sender name — `<namespace>:<username>:<coding-agent>:<sessionId>`,
 the same name as the channel it auto-registers — and adds

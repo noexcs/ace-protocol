@@ -260,7 +260,7 @@ The loop, end to end:
    (The core `AceDeliveryObserver` cannot do this: it resolves only when a fed text is *equal* to a
    rendered event, and the wrapper guarantees the whole prompt is never equal to one.)
 4. Only then does the runtime acknowledge the broker. A timed-out observation releases its waiter (by
-   the exact text it was observed with, so a context-rendered `channel:` header cannot strand the key)
+   the exact text it was observed with, so a context-rendered `stream:` header cannot strand the key)
    so the transport redelivers.
 
 **Proven** (run in `test/` and `scripts/smoke.ts`, no host): the hook extracts a block from a

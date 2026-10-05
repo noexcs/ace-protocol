@@ -524,6 +524,47 @@ describe("publish surface", () => {
 
 		await handle.stop();
 	});
+
+	it("names the live channels it found in a not-found failure, never a placeholder", async () => {
+		const entries: Record<string, RegistryEntry[]> = {
+			[URL_A]: [entry(channelName(NS_A, USERNAME, "peer"))],
+			[URL_B]: [],
+		};
+		const cwd = configDirectory({
+			primary: { url: URL_A, namespace: NS_A },
+			secondary: { url: URL_B, namespace: NS_B },
+		});
+		const { factory } = recordingStores({ entries });
+		const transports: TransportRecording = { subscriptions: [], order: [] };
+		const writers = recordingAddClients();
+		const handle = await startAce({
+			cwd,
+			push: async () => {},
+			logger: quiet,
+			sessionId: SESSION_ID,
+			env: {},
+			registryStoreFactory: factory,
+			transportsFactory: fakeTransports(transports),
+			addClientFactory: writers.factory,
+		});
+		if (!handle) throw new Error("startAce returned undefined");
+		const surface = handle.tools.publish;
+		if (!surface) throw new Error("no publish surface");
+
+		// The failure names the channel the directory actually listed — server-prefixed, the form
+		// ace_publish accepts — and says the other server has none, instead of a `<channel>` placeholder.
+		await expect(surface.resolve("definitely-not-a-channel")).rejects.toThrow(
+			`no live channel matches "definitely-not-a-channel" (live session channels: primary:${channelName(NS_A, USERNAME, "peer")} — a channel is a valid target with no registered reader, so a service channel never appears here; no live channel on secondary)`,
+		);
+
+		// With no live entries on any server, the live list is gone and the message names the servers instead.
+		entries[URL_A] = [];
+		await expect(surface.resolve("definitely-not-a-channel")).rejects.toThrow(
+			'no live channel matches "definitely-not-a-channel" (no live channel on primary, secondary)',
+		);
+
+		await handle.stop();
+	});
 });
 
 it("names the derived inbox session-inbox", () => {

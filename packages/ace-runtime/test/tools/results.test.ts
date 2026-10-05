@@ -1,6 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { hasKnownSubscriber } from "../../src/runtime/agent-registry.ts";
-import { deliveredChannel, formatPublishResult } from "../../src/tools/results.ts";
+import { deliveredChannel, formatPublishResult, TOOL_ERROR_TEXT } from "../../src/tools/results.ts";
+
+describe("targetNotFound", () => {
+	it("names the live channels the directory actually listed, never a placeholder", () => {
+		const message = TOOL_ERROR_TEXT.targetNotFound("definitely-not-a-channel", [
+			{ server: "local", channels: ["ace:tester:peer"] },
+			{ server: "second", channels: [] },
+		]);
+
+		expect(message).toBe(
+			'no live channel matches "definitely-not-a-channel" (live session channels: local:ace:tester:peer — a channel is a valid target with no registered reader, so a service channel never appears here; no live channel on second)',
+		);
+		expect(message).not.toContain("<channel>");
+	});
+
+	it("says no server has a live channel instead of printing a placeholder list", () => {
+		const message = TOOL_ERROR_TEXT.targetNotFound("definitely-not-a-channel", [
+			{ server: "local", channels: [] },
+			{ server: "second", channels: [] },
+		]);
+
+		expect(message).toBe('no live channel matches "definitely-not-a-channel" (no live channel on local, second)');
+		expect(message).not.toContain("<channel>");
+	});
+
+	it("caps the named channels and counts the rest", () => {
+		const channels = Array.from({ length: 7 }, (_, index) => `ace:tester:peer-${index}`);
+		const message = TOOL_ERROR_TEXT.targetNotFound("typo", [{ server: "local", channels }]);
+
+		expect(message).toContain("+2 more");
+		expect(message).not.toContain("peer-5");
+		expect(message).not.toContain("<channel>");
+	});
+});
 
 describe("deliveredChannel", () => {
 	it("names the channel, and says when no subscriber is known", () => {

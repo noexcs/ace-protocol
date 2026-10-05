@@ -63,7 +63,7 @@ async function withClient(env: Record<string, string>, check: (client: Client) =
 }
 
 function aceEventBlock(): string {
-	return ["<ace_event>", "sender: ci", "channel: inbox", "id: evt_smoke", "Build failed on main", "</ace_event>"].join(
+	return ["<ace_event>", "sender: ci", "stream: inbox", "id: evt_smoke", "Build failed on main", "</ace_event>"].join(
 		"\n",
 	);
 }

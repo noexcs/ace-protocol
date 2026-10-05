@@ -5,6 +5,7 @@ import type {
 	AceMessage,
 	AgentRegistryStore,
 	EndpointConfig,
+	LiveChannelDirectory,
 	RedisStreamsAddClient,
 	ResolvedAceConfig,
 	ResolvedServer,
@@ -292,8 +293,11 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 			};
 		}
 		const matches: PublishedTarget[] = [];
+		const live: LiveChannelDirectory[] = [];
 		for (const active of activeServers) {
-			const resolution = resolveTarget(await active.registry.list(), name);
+			const entries = await active.registry.list();
+			live.push({ server: active.server.name, channels: entries.map((entry) => entry.channel) });
+			const resolution = resolveTarget(entries, name);
 			if (resolution.ok)
 				matches.push({ server: active.server, channel: resolution.entry.channel, sender: active.sender });
 		}
@@ -308,12 +312,7 @@ export async function startAce(options: StartAceOptions): Promise<AceHandle | un
 				),
 			);
 		}
-		throw new Error(
-			TOOL_ERROR_TEXT.targetNotFound(
-				name,
-				activeServers.map((active) => `${active.server.name}:<channel>`),
-			),
-		);
+		throw new Error(TOOL_ERROR_TEXT.targetNotFound(name, live));
 	}
 	/** Publish to a channel: the stream is derived from the name, and one writer per server is opened on first use. */
 	async function sendToChannel(target: PublishedTarget, message: AceMessage): Promise<void> {

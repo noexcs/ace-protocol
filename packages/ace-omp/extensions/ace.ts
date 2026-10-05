@@ -86,6 +86,7 @@ import {
 	formatSessionLabel,
 	hasKnownSubscriber,
 	hostFacts,
+	type LiveChannelDirectory,
 	NO_SESSION_LABEL,
 	PiExtensionAdapter,
 	PUBLISH_PARAMETERS,
@@ -98,6 +99,7 @@ import {
 	resolveTarget,
 	SESSION_INBOX,
 	senderName,
+	serverAddress,
 	serverForChannel,
 	shutdownAce,
 	subscriptionEndpoint,
@@ -256,6 +258,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let readChannels = new Set<string>();
 	/** Configured subscriptions whose server did not come up: listed so the gap is visible, not silent. */
 	let unavailableSubscriptions: Array<{ channel: string; server: string }> = [];
+	/** Configured servers that did not come up, even with no subscription: an unreachable server is never invisible. */
+	let unavailableServers: Array<{ server: string; address: string }> = [];
 	/** Lazily opened writer per server URL: publishing needs no configured list of publications. */
 	const addClients = new Map<string, RedisStreamsAddClient>();
 	let resolvedConfig: ResolvedAceConfig | undefined;
@@ -329,8 +333,11 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		}
 
 		const matches: Array<{ server: ActiveServer; channel: string }> = [];
+		const live: LiveChannelDirectory[] = [];
 		for (const active of activeServers) {
-			const resolution = resolveTarget(await active.registry.list(), name);
+			const entries = await active.registry.list();
+			live.push({ server: active.server.name, channels: entries.map((entry) => entry.channel) });
+			const resolution = resolveTarget(entries, name);
 			if (resolution.ok) matches.push({ server: active, channel: resolution.entry.channel });
 		}
 		const unique = matches[0];
@@ -344,12 +351,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				),
 			);
 		}
-		throw new Error(
-			TOOL_ERROR_TEXT.targetNotFound(
-				name,
-				activeServers.map((active) => `${active.server.name}:<channel>`),
-			),
-		);
+		throw new Error(TOOL_ERROR_TEXT.targetNotFound(name, live));
 	}
 
 	/** Complete a short channel name with this server's namespace and the user's name. */
@@ -401,13 +403,14 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				}
 				live.sort((a, b) => b.entry.expiresAt - a.entry.expiresAt);
 				const limit = Math.min(Math.max(Math.trunc(params.limit ?? 20), 1), 50);
-				// A channel name is unique per server, not across servers, so name the server when there is
-				// more than one; otherwise the extra column is noise.
+				// A channel name is unique per server, not across servers, so prefix the server when there is
+				// more than one: the label is exactly the `<server>:<channel>` form ace_publish accepts as a
+				// target. With one server the prefix is noise, so the row stays as it is.
 				const many = activeServers.length > 1;
 				const rows = live
 					.slice(0, limit)
 					.map(({ server, entry }) =>
-						many ? `${server}: ${describeDiscovered(entry)}` : describeDiscovered(entry),
+						many ? `${server}:${describeDiscovered(entry)}` : describeDiscovered(entry),
 					);
 				return {
 					content: [
@@ -436,7 +439,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			promptGuidelines: [...TOOL_TEXT.channels.guidelines],
 			parameters: CHANNELS_PARAMETERS,
 			async execute() {
-				if (resolvedConfig === undefined || activeServers.length === 0) {
+				// A configured server that never came up is still worth reporting, even when no other server
+				// is live to list rows for — only a missing configuration means there is nothing to say.
+				if (resolvedConfig === undefined || (activeServers.length === 0 && unavailableServers.length === 0)) {
 					throw new Error(TOOL_ERROR_TEXT.notRunning);
 				}
 				const listing = channelListingInput(subscriptions);
@@ -449,6 +454,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 									? {}
 									: { selfChannel: sessionInbox.channel ?? sessionInbox.name }),
 								unavailable: unavailableSubscriptions,
+								deadServers: unavailableServers,
 							}),
 						},
 					],
@@ -635,6 +641,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		activeServers = [];
 		readChannels = new Set();
 		unavailableSubscriptions = [];
+		unavailableServers = [];
 		sessionInbox = undefined;
 		for (const server of resolved.servers) {
 			const sender = senderName({
@@ -662,6 +669,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				});
 			} catch (error) {
 				await registry.close().catch(() => {});
+				unavailableServers.push({ server: server.name, address: serverAddress(server.url) });
 				report(ctx, `[ace] server "${server.name}" unreachable, skipping it: ${describeError(error)}`, "warning");
 				continue;
 			}
@@ -781,6 +789,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		subscriptions = [];
 		readChannels = new Set();
 		unavailableSubscriptions = [];
+		unavailableServers = [];
 		activeServers = [];
 		addClients.clear();
 		// The order (reader → directory entry and stream → client) and its best-effort error handling

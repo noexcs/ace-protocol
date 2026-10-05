@@ -29,13 +29,25 @@ export declare function formatPublishResult(options: {
 export declare const NO_LIVE_SESSIONS = "No other agent sessions are registered right now.";
 /** The `ace_agents`/directory result: one row per live session, or the sentence that says there are none. */
 export declare function formatDiscoveredSessions(rows: readonly string[]): string;
+/**
+ * One server's directory as the lookup read it: its name and the channel names the entries carry.
+ *
+ * The not-found message names what was actually found, so a caller hands over the entries it already
+ * listed instead of a placeholder per server.
+ */
+export interface LiveChannelDirectory {
+    /** The server's configured name (`<server>` in a `<server>:<channel>` target). */
+    readonly server: string;
+    /** The channel names the server's directory listed, exactly as the entries carry them. */
+    readonly channels: readonly string[];
+}
 /** The messages the tools return when they cannot do their job — read by the model, so defined once. */
 export declare const TOOL_ERROR_TEXT: {
     readonly notRunning: "ACE is not running in this session; .ace.json is missing or did not load";
     readonly noDirectory: "no agent directory: no server from .ace.json is reachable";
     readonly usagePublish: "ace_publish requires a non-empty `body` and a `channel` (string or list of strings)";
     readonly targetAmbiguous: (target: string, candidateCount: number, candidates: readonly string[]) => string;
-    readonly targetNotFound: (target: string, live: readonly string[]) => string;
+    readonly targetNotFound: (target: string, live: readonly LiveChannelDirectory[]) => string;
     readonly nothingPublished: (failures: readonly string[]) => string;
 };
 //# sourceMappingURL=results.d.ts.map

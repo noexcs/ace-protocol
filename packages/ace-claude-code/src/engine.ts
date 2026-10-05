@@ -92,7 +92,7 @@ export class ClaudeCodeEngine implements AgentEngine {
 		timer?.cancel();
 		if (outcome === "timeout") {
 			// Release the exact text we observed by, not a re-render: the dispatcher passes a context
-			// that adds a `channel:` line, so re-rendering without it would miss the stored key.
+			// that adds a `stream:` line, so re-rendering without it would miss the stored key.
 			this.observer.release?.(message, text);
 			throw new Error(
 				`injected event id=${message.id} sender=${message.sender} was not observed in the conversation within ${this.ackTimeoutMs}ms`,

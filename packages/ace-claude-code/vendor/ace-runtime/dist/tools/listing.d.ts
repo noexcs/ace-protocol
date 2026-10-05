@@ -2,6 +2,12 @@ import type { RegistryEntry } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export declare function addressOf(endpoint: EndpointConfig): string;
+/**
+ * The dial address of a configured server's URL, without scheme or credentials — `ghost:6379` rather
+ * than `redis://user:pass@ghost:6379/0`. Used when naming an unreachable server, so the reason shows
+ * exactly where the reader would have connected and nothing they should not see.
+ */
+export declare function serverAddress(url: string): string;
 /** One directory row: the channel to address, what it says about itself (never shortened), and how fresh it is. */
 export declare function describeDiscovered(entry: RegistryEntry): string;
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
@@ -28,6 +34,14 @@ export declare function formatChannelListing(subscriptions: readonly EndpointCon
     unavailable?: readonly {
         channel: string;
         server: string;
+    }[];
+    /**
+     * Configured servers that never came up, whether or not they carried a subscription: one trailing
+     * line each, so an unreachable server is never invisible just because nothing subscribed to it.
+     */
+    deadServers?: readonly {
+        server: string;
+        address: string;
     }[];
 }): string;
 /**

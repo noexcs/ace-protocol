@@ -160,7 +160,8 @@ function publishDescription(senders: readonly string[]): string {
 	return (
 		TOOL_TEXT.publish.intro +
 		` This session is in the agent directory as ${listed}; other agent sessions can send it a ` +
-		`direct event by passing that name as their target.`
+		`direct event by passing that name as their target. One call is one event with one id, but a ` +
+		`fan-out that spans servers shows one sender per participating server, comma-separated, in the result.`
 	);
 }
 

@@ -7,6 +7,20 @@ export function addressOf(endpoint: EndpointConfig): string {
 	return `${endpoint.transport} ${endpointAddress(endpoint) ?? "(no address)"}`;
 }
 
+/**
+ * The dial address of a configured server's URL, without scheme or credentials — `ghost:6379` rather
+ * than `redis://user:pass@ghost:6379/0`. Used when naming an unreachable server, so the reason shows
+ * exactly where the reader would have connected and nothing they should not see.
+ */
+export function serverAddress(url: string): string {
+	try {
+		const parsed = new URL(url);
+		return parsed.host.length === 0 ? url : parsed.host;
+	} catch {
+		return url;
+	}
+}
+
 /** One directory row: the channel to address, what it says about itself (never shortened), and how fresh it is. */
 export function describeDiscovered(entry: RegistryEntry): string {
 	const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
@@ -40,6 +54,11 @@ export function formatChannelListing(
 		 * silently absent either — one trailing line says which channel is missing and why.
 		 */
 		unavailable?: readonly { channel: string; server: string }[];
+		/**
+		 * Configured servers that never came up, whether or not they carried a subscription: one trailing
+		 * line each, so an unreachable server is never invisible just because nothing subscribed to it.
+		 */
+		deadServers?: readonly { server: string; address: string }[];
 	} = {},
 ): string {
 	const line = (endpoint: EndpointConfig): string => {
@@ -54,12 +73,17 @@ export function formatChannelListing(
 			`note=${endpoint.description ?? ""}`,
 		].join(" ");
 	};
+	// The server-level problem comes first (it is the cause), then each subscription it dropped.
+	const deadServers = (options.deadServers ?? []).map(
+		(entry) => `  unavailable: server "${entry.server}" did not come up (${entry.address} is not reachable)`,
+	);
 	const unavailable = (options.unavailable ?? []).map(
 		(entry) => `  unavailable: ${entry.channel} (server "${entry.server}" did not come up)`,
 	);
 	return [
 		"subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it); `note` runs to the end of the line",
 		...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
+		...deadServers,
 		...unavailable,
 	].join("\n");
 }

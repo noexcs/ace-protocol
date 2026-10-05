@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EndpointConfig } from "../../src/runtime/endpoint-config.ts";
-import { channelListingInput, formatChannelListing } from "../../src/tools/listing.ts";
+import { channelListingInput, formatChannelListing, serverAddress } from "../../src/tools/listing.ts";
 
 const endpoint = (over: Partial<EndpointConfig> & { name: string }): EndpointConfig => ({
 	transport: "redis-streams",
@@ -73,6 +73,35 @@ describe("formatChannelListing", () => {
 		);
 		// …and the dropped subscription is a line after them, one per dropped name.
 		expect(rows[2]).toBe('  unavailable: ghost:noexcs:noop (server "ghost" did not come up)');
+	});
+
+	it("names a configured server that never came up even when it carries no subscription", () => {
+		const rows = formatChannelListing([], {
+			deadServers: [{ server: "ghost", address: "ghost:6379" }],
+		}).split("\n");
+
+		// Nothing is read, so the rows say (none) — but the unreachable server is still not invisible.
+		expect(rows[1]).toBe("  (none)");
+		expect(rows[2]).toBe('  unavailable: server "ghost" did not come up (ghost:6379 is not reachable)');
+	});
+
+	it("lists the dead server and each subscription it dropped, one line per problem", () => {
+		const rows = formatChannelListing([subscribed], {
+			unavailable: [{ channel: "ghost:noexcs:noop", server: "ghost" }],
+			deadServers: [{ server: "ghost", address: "ghost:6379" }],
+		}).split("\n");
+
+		expect(rows[2]).toBe('  unavailable: server "ghost" did not come up (ghost:6379 is not reachable)');
+		expect(rows[3]).toBe('  unavailable: ghost:noexcs:noop (server "ghost" did not come up)');
+	});
+});
+
+describe("serverAddress", () => {
+	it("drops the scheme, credentials and database so the reason names only where to dial", () => {
+		expect(serverAddress("redis://user:secret@ghost:6379/0")).toBe("ghost:6379");
+		expect(serverAddress("redis://ghost:6379")).toBe("ghost:6379");
+		// Not a URL: show what configuration had, rather than hide the server behind "(no address)".
+		expect(serverAddress("ghost:6379")).toBe("ghost:6379");
 	});
 });
 

@@ -74,8 +74,8 @@ const scenarios: Scenario[] = [
 			frame: "message_start",
 			userMessage: (stream) => [
 				"<ace_event>",
-				"sender: verify:verify:ci",
-				`channel: ${stream}`,
+				`sender: verify:verify:ci`,
+				`stream: ${stream}`,
 				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 				"id: evt_next_turn",
 			],

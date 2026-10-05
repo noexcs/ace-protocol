@@ -32,8 +32,8 @@ export declare function withTrustPolicy(systemPrompt: string): string;
  * - `sender`, as the sender wrote it (peers that construct theirs as a directory member of
  *   `<agent>:<sessionId>` can be matched against `ace_agents` by eye);
  * - `sender description`, when the sender supplied one;
- * - `channel`, from {@link InjectionContext}: the address it arrived on (a Redis stream name), or the
- *   subscription name when the transport exposes no address. A sender's target name lives in the sender's
+ * - `stream`, from {@link InjectionContext}: the Redis stream key the event was read from (the
+ *   subscription name when the transport exposes no address). A sender's target name lives in the sender's
  *   own configuration, so it is not what a receiver can name;
  * - `id`, the runtime-generated message id.
  *

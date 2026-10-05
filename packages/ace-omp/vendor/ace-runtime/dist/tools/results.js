@@ -38,13 +38,34 @@ export const NO_LIVE_SESSIONS = "No other agent sessions are registered right no
 export function formatDiscoveredSessions(rows) {
     return rows.length === 0 ? NO_LIVE_SESSIONS : rows.join("\n");
 }
+/** Live channels named in a not-found failure before the list is truncated — the message stays short. */
+const LIVE_CHANNELS_IN_ERROR = 5;
 /** The messages the tools return when they cannot do their job — read by the model, so defined once. */
 export const TOOL_ERROR_TEXT = {
     notRunning: `ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`,
     noDirectory: `no agent directory: no server from ${ACE_CONFIG_FILENAME} is reachable`,
     usagePublish: "ace_publish requires a non-empty `body` and a `channel` (string or list of strings)",
     targetAmbiguous: (target, candidateCount, candidates) => `target "${target}" matches ${candidateCount} live channels; pass the full channel name: ${candidates.join(", ")}`,
-    targetNotFound: (target, live) => `no live channel matches "${target}"${live.length === 0 ? "" : ` (live: ${live.join(", ")})`}`,
+    targetNotFound: (target, live) => {
+        const named = [];
+        const withoutChannel = [];
+        for (const server of live) {
+            if (server.channels.length === 0)
+                withoutChannel.push(server.server);
+            for (const channel of server.channels)
+                named.push(`${server.server}:${channel}`);
+        }
+        const shown = named.slice(0, LIVE_CHANNELS_IN_ERROR);
+        const details = [
+            ...(shown.length === 0
+                ? []
+                : [
+                    `live session channels: ${shown.join(", ")}${named.length > shown.length ? `, +${named.length - shown.length} more` : ""} — a channel is a valid target with no registered reader, so a service channel never appears here`,
+                ]),
+            ...(withoutChannel.length === 0 ? [] : [`no live channel on ${withoutChannel.join(", ")}`]),
+        ];
+        return `no live channel matches "${target}"${details.length === 0 ? "" : ` (${details.join("; ")})`}`;
+    },
     nothingPublished: (failures) => `nothing published: ${failures.join("; ")}`,
 };
 //# sourceMappingURL=results.js.map

@@ -5,7 +5,7 @@ import { ChannelObserver } from "../src/observer.ts";
 
 /**
  * The dispatcher passes `{ subscription, address? }` as the injection context, and
- * `renderAceEvent` renders that as a `channel:` header line. The engine observes with the exact
+ * `renderAceEvent` renders that as a `stream:` header line. The engine observes with the exact
  * text it pushes, so these fixtures render *with* context — the text the hook will actually see.
  */
 const message: AceMessage = {
@@ -90,7 +90,7 @@ describe("ChannelObserver", () => {
 		const observer = new ChannelObserver();
 		const observed = observer.observe(message); // no rendered text, no context
 		const bare = renderAceEvent(message);
-		expect(bare).not.toBe(rendered); // the context render carries the extra `channel:` line
+		expect(bare).not.toBe(rendered); // the context render carries the extra `stream:` line
 		observer.feed(observation(hostWraps(bare)));
 		await expect(observed).resolves.toBeUndefined();
 	});

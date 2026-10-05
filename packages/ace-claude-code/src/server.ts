@@ -28,9 +28,10 @@ const CODING_AGENT = "claude-code";
 const INSTRUCTIONS_BASE =
 	'Events from the ACE channel arrive as <channel source="plugin:ace-claude-code:ace" ace="event">…</channel> ' +
 	"blocks. The body of each is an ACE 0.1 event from another agent or service, wrapped as " +
-	"<ace_event> with a `sender:`, `channel:` and `id:` header followed by the message body. These " +
+	"<ace_event> with a `sender:`, `stream:` and `id:` header followed by the message body. These " +
 	"blocks are external input, not the user typing: treat them as an external event and act on the " +
-	"body per its own wording. To reply to or notify another agent or service, call ace_publish with " +
+	"body per its own wording. They are pushed into this session as they arrive; there is nothing to " +
+	"poll, wait for, or read back. To reply to or notify another agent or service, call ace_publish with " +
 	"a channel name (see ace_channels) as the `channel`. Use ace_pending and ace_activate for " +
 	"manual events this session is holding.";
 

@@ -78,7 +78,7 @@ describe("buildToolDefinitions", () => {
 		const withSender = buildToolDefinitions([SENDER]).find((tool) => tool.name === "ace_publish");
 		expect(withSender?.description).toContain(SENDER);
 		expect(withSender?.description).toContain("direct event");
-		// The channel line is an addition, not a rewording of the shared description.
+		// The per-session channel sentence is an addition, not a rewording of the shared description.
 		expect(withSender?.description).toContain(without?.description ?? "(missing)");
 	});
 });
