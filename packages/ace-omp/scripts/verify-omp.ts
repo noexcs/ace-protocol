@@ -22,8 +22,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { AceMessage } from "ace-runtime";
 import { createClient } from "redis";
-import type { AceMessage } from "../src/protocol/ace-message.ts";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
 const extensionPath = new URL("../extensions/ace.ts", import.meta.url).pathname;

@@ -149,7 +149,7 @@ export function resolveTarget(entries: readonly RegistryEntry[], target: string)
 
 ## 6. 装配与关闭顺序（宿主必须照做）
 
-来自 `extensions/ace.ts`（`SESSION_INBOX = "session-inbox"`）：
+来自 `packages/ace-omp/extensions/ace.ts`（`SESSION_INBOX = "session-inbox"`）：
 
 1. **注册**：`registry.register(...)` → 用返回的 `Registration` 组一个订阅（`new EndpointConfig`）：
    `{ name: "session-inbox", transport: "redis-streams",

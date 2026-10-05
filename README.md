@@ -24,11 +24,13 @@ verify the design end to end.
 Feasibility experiment on **Pi** as the agent engine: an external event reaches a running Pi session,
 drives a turn (or is queued/deferred per `activation`), and two Pi agents can talk to each other over
 a real broker. Other agent hosts are planned, not started — see
-[the runtime README](packages/ace-runtime/README.md) for the host boundary and the split plan.
+[the runtime README](packages/ace-runtime/README.md) for the host boundary, and
+[ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
 
-Verified today: 340 tests, `npm run verify:live` (nine scenarios against a real Redis Streams broker: delivery,
-poison messages, reclaim after a failed delivery, dedup, sender allowlists, manual activation, burst spooling,
-the agent directory lifecycle and its crash sweep), `npm run verify:omp` (the extension inside a real
+Verified today: 360 tests (328 in the host-neutral core, 32 in the host plugin), `npm run verify:live` in
+`packages/ace-runtime` (nine scenarios against a real Redis Streams broker: delivery, poison messages, reclaim
+after a failed delivery, dedup, sender allowlists, manual activation, burst spooling, the agent directory
+lifecycle and its crash sweep), `npm run verify:omp` in `packages/ace-omp` (the plugin inside a real
 `omp --mode rpc` session: an event reaches the conversation, the turn settles, the entry is acknowledged), and
 two live Pi sessions exchanging events.
 
@@ -40,8 +42,8 @@ takes a member as `target` — or a list of targets — to send one event to sev
 ## Quick start
 
 ```bash
-cd packages/ace-runtime
-npm install --ignore-scripts
+cd packages/ace-omp
+npm install --ignore-scripts   # links the core at packages/ace-runtime (build it once: npm run build)
 
 # 1. describe where events come from (this repository's root has a working example)
 cat > /tmp/ace-demo/.ace.json <<'JSON'
@@ -54,7 +56,7 @@ cat > /tmp/ace-demo/.ace.json <<'JSON'
 JSON
 
 # 2. run Pi with the extension (needs a broker; `brew services start redis` gives one on 6379)
-cd /tmp/ace-demo && pi --extension /path/to/ace-protocol/packages/ace-runtime/extensions/ace.ts
+cd /tmp/ace-demo && pi --extension /path/to/ace-protocol/packages/ace-omp/extensions/ace.ts
 
 # 3. publish from anywhere
 redis-cli XADD ace:in.a '*' message \
@@ -62,18 +64,23 @@ redis-cli XADD ace:in.a '*' message \
 ```
 
 Inside the session, `/ace` shows the runtime status, and `ace_publish` sends events to configured
-peers. The [runtime README](packages/ace-runtime/README.md) documents `.ace.json`, the activation
-semantics on Pi, transports, delivery guarantees, and the current limitations.
+peers. [ace-omp's README](packages/ace-omp/README.md) documents `.ace.json` and the activation
+semantics on Pi; the [runtime README](packages/ace-runtime/README.md) documents the transports,
+delivery guarantees, and the current limitations.
 
 ## Development
 
 ```bash
-cd packages/ace-runtime
-npm test            # unit + integration tests; no broker or credentials needed
-npm run check       # biome + tsc --noEmit
-npm run verify:live # the runtime against a real broker (redis-server); no model needed
-npm run verify:omp  # the extension inside a real oh-my-pi session (needs omp + a model)
+cd packages/ace-runtime      # the host-neutral core
+npm test                     # unit + integration tests; no broker or credentials needed
+npm run check                # biome + tsc --noEmit + the shared contracts
+npm run verify:live          # the runtime against a real broker (redis-server); no model needed
 npm run build
+
+cd ../ace-omp                # the Pi / oh-my-pi host plugin
+npm test                     # the plugin's tests, against the built core
+npm run check                # biome + tsc --noEmit + the shared contracts
+npm run verify:omp           # the plugin inside a real oh-my-pi session (needs omp + a model)
 ```
 
 `pi/` is a checkout of the upstream Pi repository. Tests run against the published

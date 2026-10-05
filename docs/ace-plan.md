@@ -68,7 +68,12 @@
    `packages/ace-claude-code/README.md`、`packages/ace-codex/README.md` 的
    **"Current state and open gaps"** 两节 —— Claude：清单缺 `mcpServers` 声明（channel 不注册时工具可能一起消失）；
    Codex：无工具面，且 app-server 协议形状待与官方文档对齐。
-2. **拆包**：核心下沉 + `ace-pi` / `ace-omp`（在干净边界上做后面的改动）。
+2. ~~**拆包**~~ —— **已完成（2026-10-05）**：Pi / oh-my-pi 宿主插件拆成 `packages/ace-omp`（`extensions/ace.ts` +
+   `extensions/ace-manager.ts` + 宿主侧测试与 `scripts/verify-omp.ts`），核心 `packages/ace-runtime` 保持
+   host-neutral（边界测试仍守着"Pi 只能出现在 `src/agent/pi-adapter.ts`"）。扩展改为**只经 `ace-runtime`
+   公共入口**消费核心（ace-omp 新增 `test/architecture/package-boundary.test.ts` 守这条）。CI 的 `hosts`
+   矩阵加上 `ace-omp`，`verify:omp` 步骤随之迁移。
+   命名只用一个包（`ace-omp`）覆盖 Pi 与 oh-my-pi——两者共用同一扩展；将来若宿主分化再拆 `ace-pi`。
 3. **动态频道模型**：registry 承载频道目录与订阅关系；`ace_channel` 四动作；`Transport` → **可热插拔**
    （按订阅动态 start/stop，去重窗口、指标、pending、派生视图跟着订阅生命周期走）。
 4. **工具 spec 下沉 + 跨宿主一致性测试**：工具名/参数 schema/文本/返回形状归核心，宿主只负责绑定注册

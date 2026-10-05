@@ -24,7 +24,7 @@
  * Start Pi with the extension:
  *
  * ```bash
- * pi --extension /path/to/ace-runtime/extensions/ace.ts
+ * pi --extension /path/to/ace-omp/extensions/ace.ts
  * ```
  *
  * Receiving: `immediate` events cut into a running turn (`steer`) and start one when the agent is idle;
@@ -50,7 +50,6 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import {
 	ACE_CONFIG_FILENAME,
 	AceDeliveryObserver,
@@ -82,7 +81,8 @@ import {
 	resolveTarget,
 	validateAceMessage,
 	withTrustPolicy,
-} from "../src/index.ts";
+} from "ace-runtime";
+import { Type } from "typebox";
 import { channelMenuItems, showAceManager } from "./ace-manager.ts";
 
 function describeError(error: unknown): string {

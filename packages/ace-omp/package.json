@@ -1,40 +1,25 @@
 {
-	"name": "ace-runtime",
-	"version": "0.1.10",
-	"description": "ACE (Agent Context Event Protocol) 0.1 runtime: external events (CI results, alerts, peer agents) as an active input to a running coding agent, with a Pi/oh-my-pi extension, a Redis Streams transport and an agent directory.",
+	"name": "ace-omp",
+	"version": "0.1.0",
+	"description": "ACE (Agent Context Event Protocol) 0.1 host plugin for oh-my-pi / Pi: external events (CI results, alerts, peer agents) as an active input to a running coding session.",
 	"private": false,
 	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
-		},
-		"./package.json": "./package.json"
+	"omp": {
+		"extensions": [
+			"./extensions/ace.ts"
+		]
 	},
-	"files": [
-		"dist",
-		"src",
-		"schema",
-		"README.md"
-	],
 	"scripts": {
-		"clean": "rm -rf dist",
-		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
 		"check": "biome check --error-on-warnings . && tsc --noEmit && npm run check:contracts",
 		"check:contracts": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions ../../ace-contracts.ts ../../runtime-contracts.ts",
-		"example:basic": "node examples/basic.ts",
-		"example:redis": "node examples/redis-streams.ts",
-		"verify:live": "node scripts/verify-live.ts",
-		"replay:dead-letters": "node scripts/replay-dead-letters.ts",
-		"prepack": "npm run build"
+		"verify:omp": "node scripts/verify-omp.ts"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.0.1",
 		"@earendil-works/pi-ai": "1.0.1",
 		"@earendil-works/pi-coding-agent": "1.0.1",
+		"ace-runtime": "file:../ace-runtime",
 		"redis": "6.3.0",
 		"typebox": "1.3.27"
 	},
@@ -54,14 +39,13 @@
 		"coding-agent",
 		"pi",
 		"oh-my-pi",
-		"redis-streams",
-		"mcp"
+		"redis-streams"
 	],
 	"license": "MIT",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/noexcs/ace-protocol.git",
-		"directory": "packages/ace-runtime"
+		"directory": "packages/ace-omp"
 	},
 	"engines": {
 		"node": ">=22.19.0"

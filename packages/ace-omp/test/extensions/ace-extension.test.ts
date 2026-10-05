@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { RegistryEntry, ResolvedAceConfig } from "ace-runtime";
+import { formatSessionLabel, renderAceEvent } from "ace-runtime";
 import { describe, expect, it } from "vitest";
 import aceExtension, {
 	aceCompletions,
@@ -12,9 +14,6 @@ import aceExtension, {
 	formatChannelReport,
 } from "../../extensions/ace.ts";
 import { channelMenuItems } from "../../extensions/ace-manager.ts";
-import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
-import type { RegistryEntry, ResolvedAceConfig } from "../../src/index.ts";
-import { formatSessionLabel } from "../../src/utils.ts";
 
 const config: ResolvedAceConfig = {
 	source: "/tmp/project/.ace.json",

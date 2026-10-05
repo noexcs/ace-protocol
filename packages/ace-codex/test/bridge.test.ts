@@ -2,7 +2,7 @@
  * `createBridge` agent-directory registration, driven by the scripted fake
  * app-server and an in-memory fake registry — no broker needed.
  *
- * Mirrors the reference assembly in `packages/ace-runtime/extensions/ace.ts`
+ * Mirrors the reference assembly in `packages/ace-omp/extensions/ace.ts`
  * (and `docs/ace-runtime-api.md` §6): construct the registry →
  * `register({ codingAgent, sessionId, cwd, url })` with the Codex thread id as
  * `sessionId` → append the returned inbox as the derived `session-inbox`

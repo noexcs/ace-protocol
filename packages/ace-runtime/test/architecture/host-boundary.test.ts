@@ -5,8 +5,9 @@ import { describe, expect, it } from "vitest";
 
 /**
  * The runtime is meant to outlive Pi: protocol, activation, transports and the `AgentEngine`
- * contract must stay host-neutral so another agent host can reuse them (and so this package can be
- * split into `core` + per-host packages without touching behaviour).
+ * contract must stay host-neutral so another agent host can reuse them (and so the package could be
+ * split into core + per-host packages without touching behaviour — the omp/Pi host now lives in
+ * `packages/ace-omp`).
  *
  * These tests fail the moment Pi leaks into a host-neutral module.
  */
@@ -36,13 +37,13 @@ describe("host boundary", () => {
 		expect(offenders).toEqual([]);
 	});
 
-	// The extension adapter needs no Pi types at all: it declares the injection surface it uses, so
-	// only the SDK adapter, the extension and its manager view are host-coupled — the view draws with
-	// the host's TUI primitives, the way the built-in `/mcp` extension keeps its own `ui.ts` beside it.
-	it("confines Pi imports to the SDK adapter, the extension and its manager view", () => {
-		const withPi = [...typescriptFiles("src"), ...typescriptFiles("extensions")].filter(importsPi).sort();
+	// The Pi SDK adapter is the only Pi-coupled module left in this package: the extension, its
+	// manager view and the omp tests moved to `packages/ace-omp`, whose own boundary test keeps them
+	// in line.
+	it("confines Pi imports to the SDK adapter", () => {
+		const withPi = typescriptFiles("src").filter(importsPi).sort();
 
-		expect(withPi).toEqual(["extensions/ace-manager.ts", "extensions/ace.ts", "src/agent/pi-adapter.ts"]);
+		expect(withPi).toEqual(["src/agent/pi-adapter.ts"]);
 	});
 
 	it("resolves the package root correctly", () => {

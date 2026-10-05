@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [ace-claude-code, ace-codex]
+        package: [ace-claude-code, ace-codex, ace-omp]
     defaults:
       run:
         working-directory: packages/${{ matrix.package }}
@@ -22,8 +22,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      # ace-codex depends on `file:../ace-runtime`, whose `main`/`types` point at dist — so the
-      # runtime must be built before either host package can typecheck or test.
+      # ace-codex and ace-omp depend on `file:../ace-runtime`, whose `main`/`types` point at dist —
+      # so the runtime must be built before any host package can typecheck or test.
       - name: Build ace-runtime
         working-directory: packages/ace-runtime
         run: |
@@ -37,6 +37,13 @@ jobs:
         run: bun run check
       - name: Unit tests
         run: bun run test
+      # The oh-my-pi scenarios need an `omp` binary and a model, so CI only checks that the script
+      # skips cleanly; run `bun run verify:omp` locally.
+      - name: oh-my-pi scenarios (skipped)
+        if: matrix.package == 'ace-omp'
+        run: bun run verify:omp
+        env:
+          ACE_VERIFY_OMP: "0"
 
   ace-runtime:
     name: ace-runtime — tests, types, live broker
@@ -80,9 +87,3 @@ jobs:
         run: npm run verify:live
         env:
           ACE_VERIFY_REDIS_URL: redis://127.0.0.1:6379
-      # The oh-my-pi scenarios need an `omp` binary and a model, so CI only checks that the script
-      # skips cleanly; run `npm run verify:omp` locally.
-      - name: oh-my-pi scenarios (skipped)
-        run: npm run verify:omp
-        env:
-          ACE_VERIFY_OMP: "0"

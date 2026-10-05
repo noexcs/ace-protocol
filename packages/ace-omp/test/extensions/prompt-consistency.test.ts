@@ -1,6 +1,6 @@
+import { ACE_TRUST_POLICY, renderAceEvent } from "ace-runtime";
 import { describe, expect, it } from "vitest";
 import { TOOL_TEXT } from "../../extensions/ace.ts";
-import { ACE_TRUST_POLICY, renderAceEvent } from "../../src/agent/pi-adapter.ts";
 
 /**
  * Four surfaces teach a model about ACE: the system-prompt policy, the three tool texts, and the injected
