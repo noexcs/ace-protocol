@@ -241,6 +241,86 @@ describe("loadAceConfig", () => {
 	});
 });
 
+describe("host-global candidates", () => {
+	it("falls back to a host-global file when the project has none", () => {
+		const cwd = temporaryDirectory();
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(global, JSON.stringify({ subscribe: [inbox] }));
+
+		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
+
+		expect(loaded?.source).toBe(global);
+		expect(loaded?.config.subscribe).toEqual([{ ...inbox }]);
+	});
+
+	it("prefers the project file, and reports the global it shadowed", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, { subscribe: [inbox] });
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(
+			global,
+			JSON.stringify({ subscribe: [{ ...inbox, config: { stream: "ace:global", group: "g" } }] }),
+		);
+
+		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
+
+		expect(loaded?.source).toBe(join(cwd, ACE_CONFIG_FILENAME));
+		expect(loaded?.shadowed).toBe(global);
+		expect(resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] }).warnings.join(" ")).toContain(
+			`overrides the global ${global}`,
+		);
+	});
+
+	it("lets a global file refuse to be overridden", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, { subscribe: [inbox] });
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(
+			global,
+			JSON.stringify({
+				projectConfig: "ignore",
+				subscribe: [{ ...inbox, config: { stream: "ace:global", group: "g" } }],
+			}),
+		);
+
+		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
+
+		expect(loaded?.source).toBe(global);
+		expect(loaded?.config.subscribe[0]?.config.stream).toBe("ace:global");
+	});
+
+	it("keeps $ACE_CONFIG above a project file and a global one", () => {
+		const cwd = temporaryDirectory();
+		const elsewhere = join(temporaryDirectory(), "custom.json");
+		writeConfig(cwd, { subscribe: [inbox] });
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(global, JSON.stringify({ projectConfig: "ignore", subscribe: [inbox] }));
+		writeFileSync(
+			elsewhere,
+			JSON.stringify({ subscribe: [{ ...inbox, config: { stream: "ace:custom", group: "g" } }] }),
+		);
+
+		const loaded = loadAceConfig({ cwd, env: { ACE_CONFIG: elsewhere }, globalConfigPaths: [global] });
+
+		expect(loaded?.source).toBe(elsewhere);
+	});
+
+	it("names every candidate it looked in when nothing is found", () => {
+		const cwd = temporaryDirectory();
+		const global = join(temporaryDirectory(), "ace.json");
+
+		expect(() => resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] })).toThrow(
+			new RegExp(`looked in .*${ACE_CONFIG_FILENAME}.*${global.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+		);
+	});
+
+	it('rejects a projectConfig other than "ignore"', () => {
+		expect(() => parseAceConfig({ projectConfig: "merge", subscribe: [inbox] }, ".ace.json")).toThrow(
+			/projectConfig must be "ignore"/,
+		);
+	});
+});
+
 describe("resolveAceConfig", () => {
 	it("resolves channels, sender and warnings from the file", () => {
 		const cwd = temporaryDirectory();
@@ -294,7 +374,7 @@ describe("resolveAceConfig", () => {
 
 		expect(() =>
 			resolveAceConfig({ cwd, env: { ACE_STREAM: "ace:env", ACE_REDIS_URL: "redis://elsewhere" } }),
-		).toThrow(/no \.ace\.json in/);
+		).toThrow(/no \.ace\.json found/);
 	});
 });
 

@@ -15,6 +15,9 @@ const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const HOST_NEUTRAL_DIRECTORIES = ["src/protocol", "src/runtime", "src/transport", "src/tools"];
 const HOST_NEUTRAL_FILES = ["src/agent/agent-engine.ts"];
 const PI_IMPORT = "@earendil-works/";
+/** A host's own *state paths* and environment: naming one here would leak that host into every other.
+ *  A host's name as a field *value* (`codingAgent: "oh-my-pi"`) is legitimate — only locations are not. */
+const HOST_SPECIFIC = /CLAUDE_|ACE_CODEX|"\.(omp|claude|codex)"|\.(omp|claude|codex)\//;
 
 /** Every TypeScript file under `dir`, relative to the package root. */
 function typescriptFiles(directory: string): string[] {
@@ -44,6 +47,16 @@ describe("host boundary", () => {
 		const withPi = typescriptFiles("src").filter(importsPi).sort();
 
 		expect(withPi).toEqual(["src/agent/pi-adapter.ts"]);
+	});
+
+	it("keeps every host's own paths and environment variables out", () => {
+		// The runtime is shared by three hosts now; a hardcoded `~/.omp`, `CLAUDE_*` or `ACE_CODEX_*` here
+		// would quietly become every host's default. Hosts pass their candidates in, they are not guessed.
+		const offenders = [...HOST_NEUTRAL_DIRECTORIES.flatMap(typescriptFiles), ...HOST_NEUTRAL_FILES].filter((file) =>
+			HOST_SPECIFIC.test(readFileSync(join(PACKAGE_ROOT, file), "utf8")),
+		);
+
+		expect(offenders).toEqual([]);
 	});
 
 	it("resolves the package root correctly", () => {

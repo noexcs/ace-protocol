@@ -172,6 +172,20 @@ function createLogger(ctx: ExtensionContext): AceLogger {
 	};
 }
 
+/**
+ * Where oh-my-pi keeps its global state — `omp config path` reports this directory — so ACE's global
+ * config file sits beside `config.yml`. A host initialised with `omp config init-xdg` keeps the same
+ * information under `$XDG_CONFIG_HOME/omp` instead.
+ *
+ * This is the one thing the runtime cannot know: which host it runs in, and where that host puts its
+ * own files. The host computes it and hands it over as a fallback candidate.
+ */
+export function ompGlobalConfigPath(env: Readonly<Record<string, string | undefined>>): string {
+	const directory =
+		env.XDG_CONFIG_HOME === undefined ? join(env.HOME ?? "", ".omp", "agent") : join(env.XDG_CONFIG_HOME, "omp");
+	return join(directory, "ace.json");
+}
+
 function truncate(text: string, limit = 60): string {
 	return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
@@ -524,7 +538,12 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 		let resolved: ResolvedAceConfig;
 		try {
-			resolved = resolveAceConfig({ cwd: ctx.cwd });
+			resolved = resolveAceConfig({
+				cwd: ctx.cwd,
+				env: process.env,
+				// A project `.ace.json` wins; this is the file a session falls back to wherever it starts.
+				globalConfigPaths: [ompGlobalConfigPath(process.env)],
+			});
 		} catch (error) {
 			report(ctx, `[ace] not started: ${describeError(error)}`, "warning");
 			return;

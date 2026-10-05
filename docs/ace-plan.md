@@ -52,6 +52,17 @@
 `action: "list" | "subscribe" | "unsubscribe" | "create"`；`name` 支持正则（`create` 必须精确名）；
 `dryRun` 只回报将发生什么。`create` 时 `broker` 默认取配置里唯一那台，`dispatch` / `consume` 全有默认值。
 
+### 1.5 配置解析：全局兜底（已实现 2026-10-05）
+
+- **顺序（首命中胜、不合并）**：`$ACE_CONFIG` → `<cwd>/.ace.json` → **宿主提供的全局候选**。
+- **宿主提供位置，核心提供机制**：核心不知道自己在哪个宿主里跑，`globalConfigPaths` 由宿主算（omp 用
+  `omp config path` 的目录：`~/.omp/agent/ace.json`，XDG 时 `$XDG_CONFIG_HOME/omp/ace.json`；claude/codex 将来各自定）。
+  核心的 host-neutral 边界测试新增一条：**中性模块里不得出现宿主的状态路径/环境变量**（宿主的名字作为字段取值如
+  `codingAgent: "oh-my-pi"` 是允许的，位置不行）。
+- **可见性**：实际生效的文件始终打印（启动行 + `/ace list` 的 `source`）；项目文件覆盖全局时，`warnings` 里明确写出被覆盖的文件 ✗→✓。
+- **谁可以被覆盖**：全局文件可写 `"projectConfig": "ignore"` 钉住自己 ✗→✓（防止克隆来的仓库把会话指到别人的 broker）。
+- 将来与 §1.1 的 `LocalAceConfig` 合流：全局文件放"注册中心连接 + Broker 列表（端点/凭据/默认值）"，频道与订阅进注册中心。
+
 ## 2. 待拍板（会直接改变实现，尚未决定）
 
 1. **正则边界**：建议默认只允许精确名/前缀，正则需显式开启，正则下强制先 `dryRun`，并设命中上限。

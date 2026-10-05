@@ -57,12 +57,23 @@ export interface AceConfigFile {
 	manual?: { max?: number; ttlMs?: number };
 	/** Agent directory this session publishes itself to (RFC §22 item 1). Absent: no registration. */
 	registry?: { url: string; prefix?: string };
+	/**
+	 * Only meaningful in a **host-global** file: `"ignore"` makes that file win over a project one, so a
+	 * cloned repository cannot redirect a session the user configured centrally. Absent: a project file
+	 * wins, as it always has.
+	 */
+	projectConfig?: "ignore";
 }
 
 export interface LoadedAceConfig {
 	/** Path the configuration was read from, for logs and `/ace` output. */
 	source: string;
 	config: AceConfigFile;
+	/**
+	 * The later candidate this file shadowed, when one exists: a project `.ace.json` that won over a
+	 * host-global one has to be visible, or "why is my global broker not used" is unanswerable.
+	 */
+	shadowed?: string;
 }
 
 /** Subscriptions, publications, identity, the activation default, and where they came from. */
@@ -95,6 +106,11 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 	if (defaultActivation !== undefined && !isConcreteActivation(defaultActivation)) {
 		throw new AceConfigError(
 			`${source}: defaultActivation must be immediate|next_turn|manual, received ${describeValue(defaultActivation)}`,
+		);
+	}
+	if (value.projectConfig !== undefined && value.projectConfig !== "ignore") {
+		throw new AceConfigError(
+			`${source}: projectConfig must be "ignore" when present, received ${describeValue(value.projectConfig)}`,
 		);
 	}
 	if (!Array.isArray(subscribe) || subscribe.length === 0) {
@@ -243,10 +259,24 @@ export function channelWarnings(config: AceConfigFile): string[] {
 export function loadAceConfig(options: {
 	cwd: string;
 	env?: Readonly<Record<string, string | undefined>>;
+	/**
+	 * Host-owned global candidates, in the host's own order: the files a session should fall back to
+	 * wherever it was started (a host that keeps its own state in a config directory has one). The
+	 * runtime knows no host's convention — it only applies the order below.
+	 */
+	globalConfigPaths?: readonly string[];
 }): LoadedAceConfig | undefined {
 	const env = options.env ?? process.env;
-	const source = env.ACE_CONFIG ?? join(options.cwd, ACE_CONFIG_FILENAME);
-	if (!existsSync(source)) return undefined;
+	const globals = options.globalConfigPaths ?? [];
+	// A global file may refuse to be overridden (`"projectConfig": "ignore"`).
+	const pinnedGlobal = globals.find((candidate) => declaredPolicy(candidate) === "ignore");
+	const candidates = [
+		...(env.ACE_CONFIG === undefined ? [] : [env.ACE_CONFIG]),
+		...(pinnedGlobal === undefined ? [join(options.cwd, ACE_CONFIG_FILENAME)] : []),
+		...globals,
+	];
+	const source = candidates.find((candidate) => existsSync(candidate));
+	if (source === undefined) return undefined;
 
 	let parsed: unknown;
 	try {
@@ -256,7 +286,23 @@ export function loadAceConfig(options: {
 			`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
-	return { source, config: parseAceConfig(interpolateEnv(parsed, env, source), source) };
+	const shadowed = candidates.slice(candidates.indexOf(source) + 1).find((candidate) => existsSync(candidate));
+	return {
+		source,
+		config: parseAceConfig(interpolateEnv(parsed, env, source), source),
+		...(shadowed === undefined ? {} : { shadowed }),
+	};
+}
+
+/** The `projectConfig` a file declares, read without validating the rest of it. */
+function declaredPolicy(path: string): unknown {
+	if (!existsSync(path)) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		return isPlainObject(parsed) ? parsed.projectConfig : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -269,15 +315,19 @@ export function loadAceConfig(options: {
 export function resolveAceConfig(options: {
 	cwd: string;
 	env?: Readonly<Record<string, string | undefined>>;
+	/** Host-owned global candidates, in the host's own order — see {@link loadAceConfig}. */
+	globalConfigPaths?: readonly string[];
 }): ResolvedAceConfig {
 	const loaded = loadAceConfig(options);
 	if (!loaded) {
+		const looked = [join(options.cwd, ACE_CONFIG_FILENAME), ...(options.globalConfigPaths ?? [])];
 		throw new AceConfigError(
-			`no ${ACE_CONFIG_FILENAME} in ${options.cwd}: create one (subscribe channels to consume, optional publish channels)`,
+			`no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG): create one with the ` +
+				`subscribe channels to consume and any optional publish channels`,
 		);
 	}
 
-	const { config, source } = loaded;
+	const { config, source, shadowed } = loaded;
 	const isEnabled = (endpoint: EndpointConfig) => endpoint.enabled !== false;
 	const disabled = [...config.subscribe, ...(config.publish ?? [])]
 		.filter((endpoint) => !isEnabled(endpoint))
@@ -289,7 +339,10 @@ export function resolveAceConfig(options: {
 		disabled,
 		defaultActivation: config.defaultActivation,
 		...(config.sender === undefined ? {} : { sender: config.sender }),
-		warnings: channelWarnings(config),
+		warnings: [
+			...channelWarnings(config),
+			...(shadowed === undefined ? [] : [`${source} overrides the global ${shadowed}`]),
+		],
 		manual: config.manual ?? {},
 		...(config.registry === undefined ? {} : { registry: config.registry }),
 		source,

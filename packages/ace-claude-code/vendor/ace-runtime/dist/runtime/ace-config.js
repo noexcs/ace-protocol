@@ -25,6 +25,9 @@ export function parseAceConfig(value, source) {
     if (defaultActivation !== undefined && !isConcreteActivation(defaultActivation)) {
         throw new AceConfigError(`${source}: defaultActivation must be immediate|next_turn|manual, received ${describeValue(defaultActivation)}`);
     }
+    if (value.projectConfig !== undefined && value.projectConfig !== "ignore") {
+        throw new AceConfigError(`${source}: projectConfig must be "ignore" when present, received ${describeValue(value.projectConfig)}`);
+    }
     if (!Array.isArray(subscribe) || subscribe.length === 0) {
         throw new AceConfigError(`${source}: subscribe must be a non-empty array`);
     }
@@ -147,8 +150,16 @@ export function channelWarnings(config) {
  */
 export function loadAceConfig(options) {
     const env = options.env ?? process.env;
-    const source = env.ACE_CONFIG ?? join(options.cwd, ACE_CONFIG_FILENAME);
-    if (!existsSync(source))
+    const globals = options.globalConfigPaths ?? [];
+    // A global file may refuse to be overridden (`"projectConfig": "ignore"`).
+    const pinnedGlobal = globals.find((candidate) => declaredPolicy(candidate) === "ignore");
+    const candidates = [
+        ...(env.ACE_CONFIG === undefined ? [] : [env.ACE_CONFIG]),
+        ...(pinnedGlobal === undefined ? [join(options.cwd, ACE_CONFIG_FILENAME)] : []),
+        ...globals,
+    ];
+    const source = candidates.find((candidate) => existsSync(candidate));
+    if (source === undefined)
         return undefined;
     let parsed;
     try {
@@ -157,7 +168,24 @@ export function loadAceConfig(options) {
     catch (error) {
         throw new AceConfigError(`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return { source, config: parseAceConfig(interpolateEnv(parsed, env, source), source) };
+    const shadowed = candidates.slice(candidates.indexOf(source) + 1).find((candidate) => existsSync(candidate));
+    return {
+        source,
+        config: parseAceConfig(interpolateEnv(parsed, env, source), source),
+        ...(shadowed === undefined ? {} : { shadowed }),
+    };
+}
+/** The `projectConfig` a file declares, read without validating the rest of it. */
+function declaredPolicy(path) {
+    if (!existsSync(path))
+        return undefined;
+    try {
+        const parsed = JSON.parse(readFileSync(path, "utf8"));
+        return isPlainObject(parsed) ? parsed.projectConfig : undefined;
+    }
+    catch {
+        return undefined;
+    }
 }
 /**
  * Resolve everything a host needs to run ACE in a session.
@@ -169,9 +197,11 @@ export function loadAceConfig(options) {
 export function resolveAceConfig(options) {
     const loaded = loadAceConfig(options);
     if (!loaded) {
-        throw new AceConfigError(`no ${ACE_CONFIG_FILENAME} in ${options.cwd}: create one (subscribe channels to consume, optional publish channels)`);
+        const looked = [join(options.cwd, ACE_CONFIG_FILENAME), ...(options.globalConfigPaths ?? [])];
+        throw new AceConfigError(`no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG): create one with the ` +
+            `subscribe channels to consume and any optional publish channels`);
     }
-    const { config, source } = loaded;
+    const { config, source, shadowed } = loaded;
     const isEnabled = (endpoint) => endpoint.enabled !== false;
     const disabled = [...config.subscribe, ...(config.publish ?? [])]
         .filter((endpoint) => !isEnabled(endpoint))
@@ -182,7 +212,10 @@ export function resolveAceConfig(options) {
         disabled,
         defaultActivation: config.defaultActivation,
         ...(config.sender === undefined ? {} : { sender: config.sender }),
-        warnings: channelWarnings(config),
+        warnings: [
+            ...channelWarnings(config),
+            ...(shadowed === undefined ? [] : [`${source} overrides the global ${shadowed}`]),
+        ],
         manual: config.manual ?? {},
         ...(config.registry === undefined ? {} : { registry: config.registry }),
         source,

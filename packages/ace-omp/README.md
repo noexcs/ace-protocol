@@ -51,6 +51,30 @@ omp plugin link /path/to/ace-protocol/packages/ace-omp
 omp plugin uninstall ace-runtime
 ```
 
+### Global config (optional)
+
+A session that starts in a directory without a `.ace.json` falls back to oh-my-pi's own config
+directory — the one `omp config path` reports:
+
+```
+~/.omp/agent/ace.json                     # default
+$XDG_CONFIG_HOME/omp/ace.json             # after `omp config init-xdg`
+```
+
+Resolution order, **first hit wins, no merging**: `$ACE_CONFIG` → `<cwd>/.ace.json` → the global file.
+The file that actually won is always visible: the startup line prints it, `/ace list` shows it as the
+source, and when a project file shadows the global one a warning names the file it shadowed — silent
+precedence is how "why is my broker not used" bugs are born.
+
+A global file may also pin itself:
+
+```json
+{ "projectConfig": "ignore", "subscribe": [ … ] }
+```
+
+With that key the global file wins over any project `.ace.json`, so a cloned repository cannot point
+your session at its own broker. Absent it, the project file wins as it always has.
+
 ## Inject events into a live Pi session
 
 The extension in [`extensions/ace.ts`](extensions/ace.ts) runs **inside** Pi and injects external events into the

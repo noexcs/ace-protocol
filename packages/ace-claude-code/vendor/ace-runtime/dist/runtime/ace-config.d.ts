@@ -39,11 +39,22 @@ export interface AceConfigFile {
         url: string;
         prefix?: string;
     };
+    /**
+     * Only meaningful in a **host-global** file: `"ignore"` makes that file win over a project one, so a
+     * cloned repository cannot redirect a session the user configured centrally. Absent: a project file
+     * wins, as it always has.
+     */
+    projectConfig?: "ignore";
 }
 export interface LoadedAceConfig {
     /** Path the configuration was read from, for logs and `/ace` output. */
     source: string;
     config: AceConfigFile;
+    /**
+     * The later candidate this file shadowed, when one exists: a project `.ace.json` that won over a
+     * host-global one has to be visible, or "why is my global broker not used" is unanswerable.
+     */
+    shadowed?: string;
 }
 /** Subscriptions, publications, identity, the activation default, and where they came from. */
 export interface ResolvedAceConfig {
@@ -85,6 +96,12 @@ export declare function channelWarnings(config: AceConfigFile): string[];
 export declare function loadAceConfig(options: {
     cwd: string;
     env?: Readonly<Record<string, string | undefined>>;
+    /**
+     * Host-owned global candidates, in the host's own order: the files a session should fall back to
+     * wherever it was started (a host that keeps its own state in a config directory has one). The
+     * runtime knows no host's convention — it only applies the order below.
+     */
+    globalConfigPaths?: readonly string[];
 }): LoadedAceConfig | undefined;
 /**
  * Resolve everything a host needs to run ACE in a session.
@@ -96,6 +113,8 @@ export declare function loadAceConfig(options: {
 export declare function resolveAceConfig(options: {
     cwd: string;
     env?: Readonly<Record<string, string | undefined>>;
+    /** Host-owned global candidates, in the host's own order — see {@link loadAceConfig}. */
+    globalConfigPaths?: readonly string[];
 }): ResolvedAceConfig;
 /**
  * Create one transport per subscription, keyed by subscription name (the key
