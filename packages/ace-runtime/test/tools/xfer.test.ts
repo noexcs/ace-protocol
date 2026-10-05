@@ -10,7 +10,7 @@ import {
 	sanitizeName,
 	takeBlob,
 	validateGetInput,
-	validateSendInput,
+	validateStoreInput,
 	XFER_DEFAULTS,
 	type XferClient,
 	type XferMeta,
@@ -236,9 +236,9 @@ describe("assertTransferSize", () => {
 	});
 });
 
-describe("validateSendInput", () => {
+describe("validateStoreInput", () => {
 	it("defaults the TTL to PT1H", () => {
-		expect(validateSendInput({ path: "/tmp/report.txt" })).toEqual({
+		expect(validateStoreInput({ path: "/tmp/report.txt" })).toEqual({
 			path: "/tmp/report.txt",
 			ttl: "PT1H",
 			ttlMs: 3_600_000,
@@ -246,20 +246,35 @@ describe("validateSendInput", () => {
 	});
 
 	it("normalises an explicit TTL", () => {
-		expect(validateSendInput({ path: "a.bin", ttl: " pt30m " })).toEqual({
+		expect(validateStoreInput({ path: "a.bin", ttl: " pt30m " })).toEqual({
 			path: "a.bin",
 			ttl: "PT30M",
 			ttlMs: 1_800_000,
 		});
 	});
 
-	it("refuses an unknown argument, a bad path and a bad TTL", () => {
-		expect(() => validateSendInput({ path: "a", name: "b" })).toThrow(/does not take "name"/);
+	it("takes an optional `name`, sanitised to a single safe segment", () => {
+		expect(validateStoreInput({ path: "a.bin", name: "dir/report.txt" })).toEqual({
+			path: "a.bin",
+			ttl: "PT1H",
+			ttlMs: 3_600_000,
+			name: "report.txt",
+		});
+	});
+
+	it("refuses an unknown argument, a bad path, a bad name and a bad TTL", () => {
+		expect(() => validateStoreInput({ path: "a", server: "local" })).toThrow(/does not take "server"/);
 		for (const path of ["", "   ", 42, null, undefined, ["a"]]) {
-			expect(() => validateSendInput({ path })).toThrow(/`path` must be a non-empty string/);
+			expect(() => validateStoreInput({ path })).toThrow(/`path` must be a non-empty string/);
 		}
-		expect(() => validateSendInput({ path: "a", ttl: 3600 })).toThrow(/`ttl` must be an ISO 8601 duration/);
-		expect(() => validateSendInput({ path: "a", ttl: "P2D" })).toThrow(/longer than the maximum ttl/);
+		for (const name of ["", "   ", 42, null]) {
+			expect(() => validateStoreInput({ path: "a", name })).toThrow(/`name` must be/);
+		}
+		for (const name of ["..", "."]) {
+			expect(() => validateStoreInput({ path: "a", name })).toThrow(/names a directory entry/);
+		}
+		expect(() => validateStoreInput({ path: "a", ttl: 3600 })).toThrow(/`ttl` must be an ISO 8601 duration/);
+		expect(() => validateStoreInput({ path: "a", ttl: "P2D" })).toThrow(/longer than the maximum ttl/);
 	});
 });
 
@@ -287,6 +302,15 @@ describe("formatSendResult", () => {
 	it("reports an empty stored_on when no server accepted the copy", () => {
 		expect(formatSendResult({ token: TOKEN, size: 0, sha256: SHA, expiresIn: "PT1H", storedOn: [] })).toBe(
 			`pickup=${TOKEN} size=0 sha256=${SHA} expires_in=PT1H stored_on=`,
+		);
+	});
+
+	it("quotes a stored_on value that carries whitespace, keeping the one-line shape", () => {
+		expect(
+			formatSendResult({ token: TOKEN, size: 1, sha256: SHA, expiresIn: "PT1H", storedOn: ["my host", "second"] }),
+		).toBe(`pickup=${TOKEN} size=1 sha256=${SHA} expires_in=PT1H stored_on="my host,second"`);
+		expect(formatSendResult({ token: TOKEN, size: 1, sha256: SHA, expiresIn: "PT1H", storedOn: ["my host"] })).toBe(
+			`pickup=${TOKEN} size=1 sha256=${SHA} expires_in=PT1H stored_on="my host"`,
 		);
 	});
 });

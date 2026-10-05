@@ -352,6 +352,55 @@ List this session's ACE channels — the channels it reads: its own inbox channe
 
 **参数**：无。schema 是空对象（`additionalProperties` 故意不关，理由见 §4.1），**每个键都由 handler 拒绝**：`ace_channels does not take "foo"; it takes no arguments`。`ace_agents` 同理（声明 `agent`、`limit` 但**不声明类型**、由 `validateAgentsInput` 校验类型，其余键报 `ace_agents does not take "bogus"; it takes `agent`, `limit``，名字带反引号）；这样"参数被忽略"永远看得出来，而不是与"参数照做"长得一样。
 
+### 4.7 文件传输工具（`ace_store_file` / `ace_get_file`）
+
+一对工具，内容不进入任何模型上下文：`ace_store_file` 读本地文件、在**每个活跃 server** 上各存一份（blob + `:meta`），只返回取件信息；`ace_get_file` 按 token 在**自己的**每个活跃 server 上查、第一台命中即取，写入隔离目录。**取件码就是 token**：128-bit 随机、不含 namespace、不含 server 名；**谁拿到谁可取**（`GET` 非破坏性，TTL 内可重复取）。**`store` 不发任何事件**，由模型自行转达结果行。
+
+**`ace_store_file` 结果**：`pickup=<token> size=<bytes> sha256=<hex> expires_in=<ISO 8601> stored_on=<server,server>`；`stored_on=` 只写在哪些 server 上存成功，**空即事实**（不定义成败语义）。TTL 默认 `PT1H`、上限 `P1D`；大小默认 8 MiB、硬上限 64 MiB、≥512 MiB 一律拒绝（每份副本）。**`ace_get_file` 结果**：`path=<隔离路径> sha256=<hex> size=<bytes> from=<server>`；`sha256=` 是接收方自己算的，供比对。逐 server 都不命中时报错文案见已定 21：`no blob for that token on any of your servers: it may have expired, or you and the sender share no server`。
+
+参数：`ace_store_file(path, ttl?, name?)`，`ace_get_file(token)`；两者都不声明参数类型，由 `validateStoreInput` / `validateGetInput` 校验并点名。`path` 相对会话 cwd 或绝对；`name` 只取 basename、剥控制字符、拒 `..`；写盘路径只能落在 `<cwd>/.ace/xfer/<token>/<sessionId>/`，**调用方永远不能指定写盘路径**。
+
+**`ace_store_file` 工具描述（模型可见）**
+
+```text
+Store a local file on every server this session is live on, under a fresh random token, and return the pickup code a peer fetches it with. This is not sending: ACE publishes no event and notifies no one — the peer learns nothing until you hand it the token, by whatever channel you already have — but the bytes go to every server this session is live on, and those servers need not be on this machine, so a remote server does receive them over the network. The bytes never enter any model's context. The token is the whole capability — whoever holds it can fetch the bytes until the ttl expires, and it carries no namespace and no server name — so treat it as a secret and hand it only to the intended peer. Storing needs SET permission on each server and fetching needs GET; a copy that did not land is simply absent from `stored_on=`, so the permission on that server is the thing to check. One call stores the same token on every live server, in configuration order, and defines no success/failure semantics: `stored_on=` names exactly the servers the copy landed on and is empty when none did, so relay only when it names at least one server. The size limit is per copy (8 MiB by default, 64 MiB at most, and 512 MiB or more is refused outright — the Redis single-value ceiling), so N servers cost N times the file size. No caller chooses where a receiver writes: fetched bytes land only under the receiver's own quarantine directory. The result is one line: `pickup=<token> size=<bytes> sha256=<hex> expires_in=<ISO 8601> stored_on=<server,server>`. `expires_in=` echoes the ttl you requested, as an ISO 8601 duration such as `PT2S` immediately after a store that asked for two seconds — it is not a remaining time and not a countdown. A value in this line that contains whitespace is JSON-quoted, wrapped in leading and trailing double quotes, and the quotes span the whole value, so with two servers where the first is named `my host` the field reads `stored_on="my host,second"` — strip the quotes before splitting on the comma; a value without whitespace is bare, and an empty value stays empty.
+```
+
+**promptGuidelines（模型可见）**
+
+1. `Use ace_store_file to make a local file fetchable, then hand the peer the whole result line and tell it the token is the capability; the store itself publishes nothing.`
+2. `The token is the secret: anyone who holds it can fetch the file until it expires, so hand it only to the intended peer, never publish it to a shared channel.`
+3. `Read stored_on= before relying on a store: an empty value means no server took the copy, and a peer can fetch only from a server the two of you share.`
+4. `Storing needs SET and fetching needs GET; when a copy did not land, check the permission on that server.`
+5. `No caller chooses where a receiver writes: fetched bytes land only under the receiver's own quarantine directory.`
+
+**参数 description 原文（模型可见）**
+
+| 参数 | description |
+|---|---|
+| `path` | `Path of the local file to store: absolute, or relative to the session's working directory. It must name a readable regular file — a missing path, a directory and an unreadable file each fail with their own sentence. Reading is deliberately not restricted to the workspace, so a file such as `~/.ssh/id_rsa` can be stored; do it only on purpose.` |
+| `ttl` | `How long the pickup code stays valid, as an ISO 8601 duration such as "PT1H" or "P1D". Default "PT1H"; "P1D" is the maximum and a longer or non-positive value is a usage error naming it.` |
+| `name` | `Optional file name to store the bytes under, overriding the path's basename. Only the last path segment survives and control characters are stripped, so a name that is empty after stripping, `.` or `..` is refused. The receiver's write path is fixed by ACE — this only names the file inside it.` |
+
+**`ace_get_file` 工具描述（模型可见）**
+
+```text
+Fetch a file a peer stored with ace_store_file, by its pickup token. The token is the whole capability: anyone who holds it can fetch the same bytes until the ttl expires, and the read is non-destructive, so fetching does not consume the code and others can still fetch it. The tool tries each of this session's live servers in configuration order and takes the first hit; fetching needs GET permission and storing needed SET. Nothing is written outside `<working directory>/.ace/xfer/<token>/<sessionId>/`: the file name comes from the sender's metadata, never from an argument, so no caller can choose a write path — an existing file with identical bytes is overwritten, and a differing one is written beside it with a numeric suffix. The result is one line: `path=<quarantine path> sha256=<hex> size=<bytes> from=<server>`. `path=` and `from=` carry the quoting rule ace_store_file gives for any result value: one that contains whitespace is JSON-quoted, wrapped in leading and trailing double quotes, so a path with a space appears as `path="/…/note (2).txt"`, while a value without whitespace is bare and an empty value stays empty. `sha256=` is computed here from the bytes written, not taken on trust, so compare it yourself with the hash the sender relayed and with the sender's metadata. A token absent from every server is a normal, diagnosable outcome: it may have expired, or you and the sender may share no server.
+```
+
+**promptGuidelines（模型可见）**
+
+1. `Fetch only a token a peer you trust gave you; the token is the capability and anyone who holds it can read the file.`
+2. `The fetch is always an explicit call: ace_get_file never runs on its own and delivers nothing into the conversation.`
+3. `Compare the returned sha256= with the hash the sender relayed; the two are computed independently and must match.`
+4. `A token on none of your servers is not a temporary error — it expired or you share no server with the sender.`
+
+**参数 description 原文（模型可见）**
+
+| 参数 | description |
+|---|---|
+| `token` | `The pickup token, as ace_store_file returned it in `pickup=`: 32 hex characters (128 bits). Case is not significant — a relayed token that changed case is normalised — but the shape is checked, so a truncated or non-hex value is a usage error naming it. The token carries no namespace and no server name: it is looked up on this session's own servers.` |
+
 ---
 
 ## 5. 投递语义、fate 与确认点

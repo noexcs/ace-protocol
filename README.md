@@ -27,8 +27,8 @@ a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary, and
 [ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
 
-Verified today: 507 tests (388 in the host-neutral core across 29 test files, 16 in the ace-omp host plugin
-across 3, 64 in the ace-claude-code plugin across 9, 39 in the ace-codex bridge across 4), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
+Verified today: 565 tests (441 in the host-neutral core across 31 test files, 20 in the ace-omp host plugin
+across 3, 65 in the ace-claude-code plugin across 9, 39 in the ace-codex bridge across 4), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
 delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst
 spooling, the agent directory lifecycle and its crash sweep, dead-letter replay, and direct publish by channel
 name), and `npm run verify:omp` in `packages/ace-omp` (3 scenarios inside a real `omp --mode rpc` session: the
@@ -45,6 +45,13 @@ call fails instead of publishing elsewhere — or a list of channels to send one
 own context marked `self: yes` — unless the activation is `manual`, which stores it instead of injecting it,
 so the echo follows the same activation rule as any other delivery. See
 [the contracts](docs/ace-runtime-contracts.md).
+
+A file moves between sessions without entering any model's context: `ace_store_file` stores a local file on
+every server the session is live on, under a random pickup token and a TTL, and reports only where the copy
+landed (`stored_on=`); `ace_get_file` fetches it by that token from the first of its own servers that has it
+and writes it into a quarantine directory. The token is the capability — the store publishes no event, so the
+model relays the line itself. See
+[the file-transfer design](docs/ace-file-transfer.md).
 
 ## Quick start
 

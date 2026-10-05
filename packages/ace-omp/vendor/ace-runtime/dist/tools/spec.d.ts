@@ -30,6 +30,8 @@ export declare const TOOL_ARGUMENTS: {
     readonly publish: readonly ["body", "channel", "activation"];
     readonly agents: readonly ["agent", "limit"];
     readonly channels: readonly [];
+    readonly storeFile: readonly ["path", "ttl", "name"];
+    readonly getFile: readonly ["token"];
 };
 /**
  * The names every host registers these tools under. One place, so the three hosts cannot drift: a
@@ -39,6 +41,8 @@ export declare const ACE_TOOL_NAMES: {
     readonly publish: "ace_publish";
     readonly agents: "ace_agents";
     readonly channels: "ace_channels";
+    readonly storeFile: "ace_store_file";
+    readonly getFile: "ace_get_file";
 };
 /**
  * The tool text the model sees, in one place: the tool definitions read it from here, and
@@ -71,6 +75,22 @@ export declare const TOOL_TEXT: {
          */
         readonly agentsPointer: "— address live peers with ace_agents.";
         readonly guidelines: readonly ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`."];
+    };
+    readonly storeFile: {
+        readonly description: string;
+        readonly guidelines: readonly [string, string, string, "Storing needs SET and fetching needs GET; when a copy did not land, check the permission on that server.", string];
+        readonly params: {
+            readonly path: string;
+            readonly ttl: string;
+            readonly name: string;
+        };
+    };
+    readonly getFile: {
+        readonly description: string;
+        readonly guidelines: readonly [string, string, string, string];
+        readonly params: {
+            readonly token: string;
+        };
     };
 };
 /**
@@ -128,5 +148,20 @@ export declare const PUBLISH_PARAMETERS: Type.TObject<{
 export declare const AGENTS_PARAMETERS: Type.TObject<{
     agent: Type.TOptional<Type.TUnsafe<string>>;
     limit: Type.TOptional<Type.TUnsafe<number>>;
+}>;
+/**
+ * Parameters of `ace_store_file`. Like every ACE tool the object is left open and the handler refuses
+ * undeclared arguments; like `ace_publish`'s nodes, each declares **no type** (`Type.Unsafe` over a
+ * description) so a host that rewrites an argument keyed on its declared type has nothing to rewrite
+ * and the raw value reaches `validateStoreInput`, which names a wrong one.
+ */
+export declare const STORE_FILE_PARAMETERS: Type.TObject<{
+    path: Type.TOptional<Type.TUnsafe<string>>;
+    ttl: Type.TOptional<Type.TUnsafe<string>>;
+    name: Type.TOptional<Type.TUnsafe<string>>;
+}>;
+/** Parameters of `ace_get_file`; `token` declares no type for the same reason as the nodes above. */
+export declare const GET_FILE_PARAMETERS: Type.TObject<{
+    token: Type.TOptional<Type.TUnsafe<string>>;
 }>;
 //# sourceMappingURL=spec.d.ts.map

@@ -309,6 +309,42 @@ export async function resolveChannelTarget(options: {
 条目里没有地址可读：发布端拿到 channel 名后，自己用 `channelStreamKey(ns, channel)` 算 stream key
 （`<ns>:ch:<channel>`），用与接收端相同的派生保证两边一致。
 
+文件传输（核心 `tools/xfer.ts` + 宿主面 `tools/xfer-files.ts`；契约见 contracts §4.7 与
+`docs/ace-file-transfer.md`）：
+
+```ts
+// tools/xfer.ts —— 协议面：token、两枚键、一次 pipeline 写、非破坏性读、名字净化、隔离路径、结果行
+export const XFER_DEFAULTS: { defaultTtl; defaultTtlMs; maxTtl; maxTtlMs; defaultMaxBytes; hardMaxBytes; refuseAtBytes };
+export const XFER_ERROR_TEXT: { … };    // 各错误句子，含 noBlobOnAnyServer（已定 21）
+export function parseIsoDuration(value: unknown, options?: { maxMs?: number; maxIso?: string }): number;
+export function newToken(): string;     // 128-bit，32 位小写 hex；token 即凭证，不含 namespace / server
+export function sanitizeName(raw: string): string;   // 只取 basename、剥控制字符、拒 `.` / `..` / 空
+export function xferBlobKey(namespace: string, token: string): string;   // `<ns>:xfer:<token>`
+export function xferMetaKey(namespace: string, token: string): string;   // `<ns>:xfer:<token>:meta`
+export function quarantinePath(root, token, sessionId, name): string;    // `<root>/.ace/xfer/<token>/<sessionId>/<name>`，唯一写点
+export interface XferClient { name: string; get(key): Promise<Uint8Array | undefined>; setMany(commands): Promise<void>; }
+export async function putBlob(options: { client; namespace; token; bytes; meta; ttlMs }): Promise<void>;  // blob + :meta 同一 pipeline、同一 TTL
+export async function takeBlob(options: { client; namespace; token }): Promise<{ bytes; meta; from } | undefined>;  // GET 非破坏性；有 blob 无 meta 报错
+export function assertTransferSize(sizeBytes, options?: { maxBytes?: number }): void;  // 默认 8 MiB、硬上限 64 MiB、≥512 MiB 拒（每份副本）
+export function validateStoreInput(params): { path: string; ttl: string; ttlMs: number; name?: string };  // ace_store_file 入参
+export function validateGetInput(params): { token: string };                                             // ace_get_file 入参
+export function formatSendResult(options): string;   // `pickup=… size=… sha256=… expires_in=… stored_on=…`
+export function formatGetResult(options): string;    // `path=… sha256=… size=… from=…`
+
+// tools/xfer-files.ts —— 宿主面：读文件、逐 server fan-out、写隔离目录（只有这里碰 fs）
+export interface XferTarget { name: string; namespace: string; client: XferClient; }
+export async function storeFile(options: { root; input; targets; maxBytes?; now? }): Promise<StoreFileResult>;
+export async function receiveFile(options: { root; token; sessionId; targets }): Promise<GetFileResult>;
+
+// transport/redis-xfer-client.ts —— 把 redis 包适配成 XferClient（BLOB_STRING→Buffer，MULTI/EXEC 一次写）
+export function createRedisXferClient(options: { url; name; clientOptions?; onError? }): RedisXferClient;
+```
+
+`storeFile` 只报事实：`stored_on=` 列出写入成功的 server，某台失败即缺席、全部失败即空（不定义成败语义）；
+读文件的三种失败（不存在 / 目录 / 不可读）各自一句。`receiveFile` 按 **target 顺序**第一台命中即取，
+只写入 `<root>/.ace/xfer/<token>/<sessionId>/<name>`（name 取自 `:meta`，调用方不能指定写盘路径）；
+同名且字节相同则覆盖，不同则加数字后缀（`report (2).txt`）；逐台都没有该 token 时抛 `noBlobOnAnyServer`。
+
 ```ts
 // 命名派生（别自己拼字符串）：src/runtime/naming.ts
 export const NAMESPACE_DEFAULT = "ace";

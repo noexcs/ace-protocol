@@ -25,6 +25,11 @@ export declare const XFER_DEFAULTS: {
  */
 export declare const XFER_ERROR_TEXT: {
     readonly invalidPath: (value: unknown) => string;
+    readonly invalidName: (value: unknown) => string;
+    readonly missingFile: (value: string) => string;
+    readonly notAFile: (value: string) => string;
+    readonly unreadableFile: (value: string, reason: string) => string;
+    readonly noBlobOnAnyServer: () => string;
     readonly invalidTtl: (value: unknown) => string;
     readonly invalidDuration: (value: unknown) => string;
     readonly durationTooLong: (value: string, max: string) => string;
@@ -147,17 +152,22 @@ export declare function takeBlob(options: {
 export declare function assertTransferSize(sizeBytes: number, options?: {
     maxBytes?: number;
 }): void;
-/** The checked `ace_send_file` arguments: a path to read and the TTL requested. */
-export interface SendInput {
+/** The checked `ace_store_file` arguments: a path to read and the TTL requested. */
+export interface StoreInput {
     /** The path exactly as written; the host reads it after this check. */
     path: string;
     /** The requested TTL as normalised ISO 8601, defaulted to {@link XFER_DEFAULTS.defaultTtl}. */
     ttl: string;
     /** {@link ttl} in milliseconds. */
     ttlMs: number;
+    /**
+     * The name to store the bytes under, when the caller overrides the path's basename. Already run
+     * through {@link sanitizeName}, so it is a single safe segment the receiver can write.
+     */
+    name?: string;
 }
-/** Validate the raw `ace_send_file` arguments; throws a usage error naming the offending value. */
-export declare function validateSendInput(params: Record<string, unknown>): SendInput;
+/** Validate the raw `ace_store_file` arguments; throws a usage error naming the offending value. */
+export declare function validateStoreInput(params: Record<string, unknown>): StoreInput;
 /** The checked `ace_get_file` arguments: the pickup code. */
 export interface GetInput {
     /** The token, lowercased so a relay that changed its case still finds the keys. */
@@ -166,7 +176,7 @@ export interface GetInput {
 /** Validate the raw `ace_get_file` arguments; throws a usage error naming the offending value. */
 export declare function validateGetInput(params: Record<string, unknown>): GetInput;
 /**
- * The `ace_send_file` result: one line the model relays verbatim. `stored_on=` is the servers the
+ * The `ace_store_file` result: one line the model relays verbatim. `stored_on=` is the servers the
  * copy landed on (empty when none accepted it — the caller reports the failures separately, per the
  * doc's "no success/failure verdict"); `expires_in=` echoes the requested ISO 8601 duration.
  */

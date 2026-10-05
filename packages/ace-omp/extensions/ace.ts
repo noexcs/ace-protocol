@@ -70,6 +70,7 @@ import {
 	compareDiscoveredSessions,
 	createRedisAgentRegistry,
 	createRedisStreamsAddClient,
+	createRedisXferClient,
 	createTransports,
 	DeadLetterSink,
 	deliveredChannel,
@@ -86,6 +87,7 @@ import {
 	formatDiscoveredSessions,
 	formatPublishResult,
 	formatSessionLabel,
+	GET_FILE_PARAMETERS,
 	hostFacts,
 	isStreamKeyShaped,
 	NO_SESSION_LABEL,
@@ -94,27 +96,34 @@ import {
 	type PublishTargetRow,
 	REDIS_STREAMS_DEFAULTS,
 	type RedisStreamsAddClient,
+	type RedisXferClient,
 	type RegistryEntry,
 	type ResolvedAceConfig,
 	type ResolvedChannelTarget,
 	type ResolvedServer,
 	readerFactsOf,
+	receiveFile,
 	rejectUnknownArguments,
 	resolveAceConfig,
 	resolveChannelTarget,
 	resolvePublishTargets,
 	SESSION_INBOX,
+	STORE_FILE_PARAMETERS,
 	senderName,
 	serverAddress,
 	shutdownAce,
+	storeFile,
 	subscriptionEndpoint,
 	TOOL_ARGUMENTS,
 	TOOL_ERROR_TEXT,
 	TOOL_TEXT,
 	validateAceMessage,
 	validateAgentsInput,
+	validateGetInput,
 	validatePublishInput,
+	validateStoreInput,
 	withTrustPolicy,
+	type XferTarget,
 } from "../vendor/ace-runtime/dist/index.js";
 import { channelMenuItems, showAceManager } from "./ace-manager.ts";
 
@@ -270,6 +279,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	let unavailableServers: Array<{ server: string; address: string }> = [];
 	/** Lazily opened writer per server URL: publishing needs no configured list of publications. */
 	const addClients = new Map<string, RedisStreamsAddClient>();
+	/** Lazily opened blob client per live server name: a file transfer needs its own GET/SET seam. */
+	const xferClients = new Map<string, RedisXferClient>();
 	let resolvedConfig: ResolvedAceConfig | undefined;
 	let sessionId: string | undefined;
 	let transportErrorReported = false;
@@ -464,6 +475,75 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		};
 	}
 
+	/** The live servers as transfer targets, opening a blob client per server name on first use. */
+	function xferTargets(): XferTarget[] {
+		return activeServers.map((active) => {
+			const existing = xferClients.get(active.server.name);
+			const client =
+				existing ??
+				createRedisXferClient({
+					url: active.server.url,
+					name: active.server.name,
+					// A transfer connection problem takes the directory's report path, once per message.
+					onError: reportRegistryError,
+				});
+			if (existing === undefined) xferClients.set(active.server.name, client);
+			return { name: active.server.name, namespace: active.server.namespace, client };
+		});
+	}
+
+	/**
+	 * Store a local file on every live server and hand back the pickup code. Nothing is published:
+	 * the model relays the result line itself, so the tool's whole job is the store and the report.
+	 */
+	function storeFileTool(): ToolDefinition<typeof STORE_FILE_PARAMETERS> {
+		return {
+			name: ACE_TOOL_NAMES.storeFile,
+			label: "ACE Store File",
+			description: TOOL_TEXT.storeFile.description,
+			promptGuidelines: [...TOOL_TEXT.storeFile.guidelines],
+			parameters: STORE_FILE_PARAMETERS,
+			async execute(_toolCallId, params) {
+				const input = validateStoreInput(params);
+				if (activeServers.length === 0) throw new Error(TOOL_ERROR_TEXT.noDirectory);
+				const result = await storeFile({
+					root: sessionContext?.cwd ?? process.cwd(),
+					input,
+					targets: xferTargets(),
+				});
+				return {
+					content: [{ type: "text", text: result.text }],
+					details: { token: result.token, size: result.size, sha256: result.sha256, storedOn: result.storedOn },
+				};
+			},
+		};
+	}
+
+	/** Fetch a token from the first live server that has it and write it into the quarantine directory. */
+	function getFileTool(): ToolDefinition<typeof GET_FILE_PARAMETERS> {
+		return {
+			name: ACE_TOOL_NAMES.getFile,
+			label: "ACE Get File",
+			description: TOOL_TEXT.getFile.description,
+			promptGuidelines: [...TOOL_TEXT.getFile.guidelines],
+			parameters: GET_FILE_PARAMETERS,
+			async execute(_toolCallId, params) {
+				const input = validateGetInput(params);
+				if (activeServers.length === 0) throw new Error(TOOL_ERROR_TEXT.noDirectory);
+				const result = await receiveFile({
+					root: sessionContext?.cwd ?? process.cwd(),
+					token: input.token,
+					sessionId: sessionId ?? NO_SESSION_LABEL,
+					targets: xferTargets(),
+				});
+				return {
+					content: [{ type: "text", text: result.text }],
+					details: { path: result.path, sha256: result.sha256, size: result.size, from: result.from },
+				};
+			},
+		};
+	}
+
 	function publishTool(config?: ResolvedAceConfig): ToolDefinition<typeof PUBLISH_PARAMETERS> {
 		return {
 			name: ACE_TOOL_NAMES.publish,
@@ -567,6 +647,8 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	pi.registerTool(publishTool());
 	pi.registerTool(agentsTool());
 	pi.registerTool(channelsTool());
+	pi.registerTool(storeFileTool());
+	pi.registerTool(getFileTool());
 
 	// A failed run does not reject `inject`; the failure shows up on the assistant message that ends
 	// it. Watch `message_end`, not `turn_end`: oh-my-pi treats `turn_end` as a *boundary* event, and
@@ -778,6 +860,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		const active = runtime;
 		const closing = activeServers;
 		const activeAddClients = [...addClients.values()];
+		const activeXferClients = [...xferClients.values()];
 		runtime = undefined;
 		resolvedConfig = undefined;
 		sessionContext = undefined;
@@ -789,6 +872,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		unavailableServers = [];
 		activeServers = [];
 		addClients.clear();
+		xferClients.clear();
 		// The order (reader → directory entry and stream → client) and its best-effort error handling
 		// live in the runtime, so every host gets it right by construction. The reader is shared by every
 		// server, so it stops once; each server's registration is then dropped and closed.
@@ -804,6 +888,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 			});
 		}
 		for (const writer of activeAddClients) await writer.close();
+		for (const client of activeXferClients) await client.close();
 		shuttingDown = false;
 	});
 

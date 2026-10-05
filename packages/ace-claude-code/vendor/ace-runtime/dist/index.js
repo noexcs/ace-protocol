@@ -32,12 +32,15 @@ export * from "./tools/listing.js";
 export * from "./tools/publish.js";
 export * from "./tools/results.js";
 export * from "./tools/spec.js";
+export * from "./tools/xfer.js";
+export * from "./tools/xfer-files.js";
 export * from "./transport/in-memory-transport.js";
 export * from "./transport/redis-agent-registry.js";
 export * from "./transport/redis-streams-client.js";
 export * from "./transport/redis-streams-node-client.js";
 export * from "./transport/redis-streams-publisher.js";
 export * from "./transport/redis-streams-transport.js";
+export * from "./transport/redis-xfer-client.js";
 export * from "./transport/transport.js";
 export * from "./utils.js";
 //# sourceMappingURL=index.js.map

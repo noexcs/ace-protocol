@@ -281,7 +281,7 @@ writes nothing to the UI status slot.
 
 ### Tools
 
-The model gets three tools. Their descriptions and parameter descriptions are the whole prompt surface ACE
+The model gets five tools. Their descriptions and parameter descriptions are the whole prompt surface ACE
 adds on top of the system-prompt policy; the norm for each is in
 [`docs/ace-runtime-contracts.md`](../../docs/ace-runtime-contracts.md) §4.
 
@@ -362,3 +362,32 @@ Prompt guideline: call it before `ace_publish` when you do not already know the 
 > mailbox, so `inbox` names a topic every subscriber reads; a configured server that did not come up, and any
 > subscription it carried, is listed after the rows as an `unavailable:` line naming the server (or channel)
 > and why; broker settings are left out — address any channel by name with ace_publish.
+
+**`ace_store_file {path, ttl?, name?}`** — store a local file on every live server and return the pickup
+code; the style is 存/取: this tool does not send anything, so nothing is published and the model relays the
+result line itself.
+
+- reads `path` (absolute, or relative to the session cwd), hashes the bytes, stores one copy per copy on every
+  live server — a blob plus its `:meta` in one pipeline, each with the TTL — and reports only where it landed:
+  `pickup=<token> size=<bytes> sha256=<hex> expires_in=<ISO 8601> stored_on=<server,server>`. `stored_on=` is
+  empty when no server took the copy, and that is the whole story: **there is no success/failure verdict**, so a
+  missing server is a fact to read, not an error to catch. A failing server is simply absent.
+- errors are sentences: a missing file, a directory and an unreadable file are three distinct messages, and an
+  over-cap `ttl` or an oversize file names the value.
+- limits: default 8 MiB, hard maximum 64 MiB, 512 MiB or more refused outright (the Redis single-value ceiling),
+  per copy — N servers cost N × the size.
+- `ttl` is an ISO 8601 duration, default `PT1H`, maximum `P1D`. `name` overrides the file's basename and is
+  sanitised (basename only, control characters stripped, `.`/`..` refused).
+- permissions: storing needs `SET` on each server; fetching needs `GET`. The token is the capability — 32 hex
+  characters, no namespace, no server name, "whoever holds it can fetch" — so relay it only to the intended peer.
+
+**`ace_get_file {token}`** — fetch a stored file by its pickup token.
+
+- tries **each live server in configuration order**, first hit wins (`from=<server>` on the result), and returns
+  `path=<quarantine path> sha256=<hex> size=<bytes> from=<server>`. `sha256=` is computed here from the bytes
+  written, so the agent compares it with what the sender relayed.
+- writes only inside `<cwd>/.ace/xfer/<token>/<sessionId>/`; the name comes from the sender's metadata, so **a
+  caller can never choose a write path**. An existing file with identical bytes is overwritten; a differing one
+  is written beside it with a numeric suffix (`report (2).txt`).
+- a token on none of your servers is a diagnosable outcome, not a temporary error: `no blob for that token on
+  any of your servers: it may have expired, or you and the sender share no server`.

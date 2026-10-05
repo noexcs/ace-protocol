@@ -38,7 +38,7 @@ which carries this package's build in its `vendor/` — see that README for the 
 
 ```bash
 # 1. the released plugin tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.8/ace-omp-0.2.8.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.9/ace-omp-0.2.9.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -64,10 +64,10 @@ or skip the plugin system and link the plugin's entry into the host's extension 
 keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.8/ace-omp-0.2.8.tgz
-mkdir -p ~/ace-omp-0.2.8 ~/.omp/agent/extensions
-tar xzf ace-omp-0.2.8.tgz -C ~/ace-omp-0.2.8 --strip-components=1
-cd ~/ace-omp-0.2.8 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.9/ace-omp-0.2.9.tgz
+mkdir -p ~/ace-omp-0.2.9 ~/.omp/agent/extensions
+tar xzf ace-omp-0.2.9.tgz -C ~/ace-omp-0.2.9 --strip-components=1
+cd ~/ace-omp-0.2.9 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -91,7 +91,7 @@ redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
 # (ace-omp is the plugin; ace-runtime below it is the library it vendors)
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.8/ace-omp-0.2.8.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.9/ace-omp-0.2.9.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
   "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
@@ -229,8 +229,9 @@ agent directory, `/ace` commands and the tool surface — now ships as its own p
 [`packages/ace-omp`](../ace-omp), documented in [`ace-omp/README.md`](../ace-omp/README.md).
 
 This package is the host-neutral core: protocol and validation, activation, the event dispatcher,
-spools and pending stores, the transports, the agent directory, and the `AgentEngine` contract the
-hosts implement.
+spools and pending stores, the transports, the agent directory, the tool text and parameter schemas
+for `ace_publish`, `ace_agents`, `ace_channels`, `ace_store_file` and `ace_get_file`, and the
+`AgentEngine` contract the hosts implement.
 
 ## Transports
 

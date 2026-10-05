@@ -32,12 +32,15 @@ export * from "./tools/listing.ts";
 export * from "./tools/publish.ts";
 export * from "./tools/results.ts";
 export * from "./tools/spec.ts";
+export * from "./tools/xfer.ts";
+export * from "./tools/xfer-files.ts";
 export * from "./transport/in-memory-transport.ts";
 export * from "./transport/redis-agent-registry.ts";
 export * from "./transport/redis-streams-client.ts";
 export * from "./transport/redis-streams-node-client.ts";
 export * from "./transport/redis-streams-publisher.ts";
 export * from "./transport/redis-streams-transport.ts";
+export * from "./transport/redis-xfer-client.ts";
 export * from "./transport/transport.ts";
 export * from "./utils.ts";
 //# sourceMappingURL=index.d.ts.map

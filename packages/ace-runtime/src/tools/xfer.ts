@@ -24,10 +24,10 @@ import { rejectUnknownArguments } from "./publish.ts";
  */
 
 /** The names this feature's tools register under (the hosts add them to `spec.ts` in a later step). */
-const XFER_TOOL_NAMES = { send: "ace_send_file", get: "ace_get_file" } as const;
+const XFER_TOOL_NAMES = { store: "ace_store_file", get: "ace_get_file" } as const;
 
 /** The arguments each tool declares; mirrors `TOOL_ARGUMENTS` once the hosts register the tools. */
-const SEND_ARGUMENTS = ["path", "ttl"] as const;
+const STORE_ARGUMENTS = ["path", "ttl", "name"] as const;
 const GET_ARGUMENTS = ["token"] as const;
 
 /** The quarantine directory under the workspace root; the feature never writes anywhere else. */
@@ -79,9 +79,16 @@ export const XFER_DEFAULTS = {
  */
 export const XFER_ERROR_TEXT = {
 	invalidPath: (value: unknown): string =>
-		`ace_send_file \`path\` must be a non-empty string, received ${describeValue(value)}`,
+		`ace_store_file \`path\` must be a non-empty string, received ${describeValue(value)}`,
+	invalidName: (value: unknown): string =>
+		`ace_store_file \`name\` must be a non-empty string, received ${describeValue(value)}`,
+	missingFile: (value: string): string => `file ${describeValue(value)} does not exist`,
+	notAFile: (value: string): string => `\`path\` ${describeValue(value)} is a directory, not a file`,
+	unreadableFile: (value: string, reason: string): string => `file ${describeValue(value)} cannot be read: ${reason}`,
+	noBlobOnAnyServer: (): string =>
+		"no blob for that token on any of your servers: it may have expired, or you and the sender share no server",
 	invalidTtl: (value: unknown): string =>
-		`ace_send_file \`ttl\` must be an ISO 8601 duration such as "PT1H", received ${describeValue(value)}`,
+		`ace_store_file \`ttl\` must be an ISO 8601 duration such as "PT1H", received ${describeValue(value)}`,
 	invalidDuration: (value: unknown): string =>
 		`${describeValue(value)} is not a positive ISO 8601 duration; expected a form such as "PT1H" ` +
 		`(days, hours, minutes and seconds)`,
@@ -328,30 +335,49 @@ export function assertTransferSize(sizeBytes: number, options: { maxBytes?: numb
 	if (sizeBytes > maxBytes) throw new Error(XFER_ERROR_TEXT.sizeAboveMax(sizeBytes, maxBytes));
 }
 
-/** The checked `ace_send_file` arguments: a path to read and the TTL requested. */
-export interface SendInput {
+/** The checked `ace_store_file` arguments: a path to read and the TTL requested. */
+export interface StoreInput {
 	/** The path exactly as written; the host reads it after this check. */
 	path: string;
 	/** The requested TTL as normalised ISO 8601, defaulted to {@link XFER_DEFAULTS.defaultTtl}. */
 	ttl: string;
 	/** {@link ttl} in milliseconds. */
 	ttlMs: number;
+	/**
+	 * The name to store the bytes under, when the caller overrides the path's basename. Already run
+	 * through {@link sanitizeName}, so it is a single safe segment the receiver can write.
+	 */
+	name?: string;
 }
 
-/** Validate the raw `ace_send_file` arguments; throws a usage error naming the offending value. */
-export function validateSendInput(params: Record<string, unknown>): SendInput {
-	rejectUnknownArguments(XFER_TOOL_NAMES.send, params, SEND_ARGUMENTS);
+/** Validate the raw `ace_store_file` arguments; throws a usage error naming the offending value. */
+export function validateStoreInput(params: Record<string, unknown>): StoreInput {
+	rejectUnknownArguments(XFER_TOOL_NAMES.store, params, STORE_ARGUMENTS);
 	const path = params.path;
 	// A path is read as written — leading/trailing spaces are legal in a name — so only the
 	// whitespace-only and non-string shapes are refused here.
 	if (typeof path !== "string" || path.trim().length === 0) throw new Error(XFER_ERROR_TEXT.invalidPath(path));
+	// An override is normalised through the same sanitiser the receiver's write path uses, so a value
+	// that could not be written (`..`, `.`, empty after stripping separators) is refused at the sender.
+	const rawName = params.name;
+	let name: string | undefined;
+	if (rawName !== undefined) {
+		if (typeof rawName !== "string" || rawName.trim().length === 0)
+			throw new Error(XFER_ERROR_TEXT.invalidName(rawName));
+		name = sanitizeName(rawName);
+	}
 	const ttl = params.ttl;
 	if (ttl === undefined) {
-		return { path, ttl: XFER_DEFAULTS.defaultTtl, ttlMs: XFER_DEFAULTS.defaultTtlMs };
+		return {
+			path,
+			ttl: XFER_DEFAULTS.defaultTtl,
+			ttlMs: XFER_DEFAULTS.defaultTtlMs,
+			...(name === undefined ? {} : { name }),
+		};
 	}
 	if (typeof ttl !== "string" || ttl.trim().length === 0) throw new Error(XFER_ERROR_TEXT.invalidTtl(ttl));
 	const normalised = ttl.trim().toUpperCase();
-	return { path, ttl: normalised, ttlMs: parseIsoDuration(normalised) };
+	return { path, ttl: normalised, ttlMs: parseIsoDuration(normalised), ...(name === undefined ? {} : { name }) };
 }
 
 /** The checked `ace_get_file` arguments: the pickup code. */
@@ -378,7 +404,7 @@ function field(key: string, value: string): string {
 }
 
 /**
- * The `ace_send_file` result: one line the model relays verbatim. `stored_on=` is the servers the
+ * The `ace_store_file` result: one line the model relays verbatim. `stored_on=` is the servers the
  * copy landed on (empty when none accepted it — the caller reports the failures separately, per the
  * doc's "no success/failure verdict"); `expires_in=` echoes the requested ISO 8601 duration.
  */
@@ -394,7 +420,7 @@ export function formatSendResult(options: {
 		`size=${options.size}`,
 		`sha256=${options.sha256}`,
 		`expires_in=${options.expiresIn}`,
-		`stored_on=${options.storedOn.join(",")}`,
+		field("stored_on", options.storedOn.join(",")),
 	].join(" ");
 }
 

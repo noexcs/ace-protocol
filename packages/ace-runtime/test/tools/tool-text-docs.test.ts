@@ -20,6 +20,12 @@ const documented = [
 	...Object.values(TOOL_TEXT.agents.params),
 	channelsToolText(),
 	...TOOL_TEXT.channels.guidelines,
+	TOOL_TEXT.storeFile.description,
+	...TOOL_TEXT.storeFile.guidelines,
+	...Object.values(TOOL_TEXT.storeFile.params),
+	TOOL_TEXT.getFile.description,
+	...TOOL_TEXT.getFile.guidelines,
+	...Object.values(TOOL_TEXT.getFile.params),
 ];
 
 describe("documented tool text", () => {

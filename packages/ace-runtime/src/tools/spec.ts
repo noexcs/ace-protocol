@@ -81,6 +81,8 @@ export const TOOL_ARGUMENTS = {
 	publish: ["body", "channel", "activation"],
 	agents: ["agent", "limit"],
 	channels: [],
+	storeFile: ["path", "ttl", "name"],
+	getFile: ["token"],
 } as const;
 
 /**
@@ -91,6 +93,8 @@ export const ACE_TOOL_NAMES = {
 	publish: "ace_publish",
 	agents: "ace_agents",
 	channels: "ace_channels",
+	storeFile: "ace_store_file",
+	getFile: "ace_get_file",
 } as const;
 
 /**
@@ -296,6 +300,92 @@ export const TOOL_TEXT = {
 			"Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`.",
 		],
 	},
+	storeFile: {
+		description:
+			"Store a local file on every server this session is live on, under a fresh random token, and return the " +
+			"pickup code a peer fetches it with. This is not sending: ACE publishes no event and notifies no one — " +
+			"the peer learns nothing until you hand it the token, by whatever channel you already have — but the " +
+			"bytes go to every server this session is live on, and those servers need not be on this machine, so a " +
+			"remote server does receive them over the network. " +
+			"The bytes never enter any model's context. The token is the whole capability — whoever holds it can " +
+			"fetch the bytes until the ttl expires, and it carries no namespace and no server name — so treat it as " +
+			"a secret and hand it only to the intended peer. Storing needs SET permission on each server and " +
+			"fetching needs GET; a copy that did not land is simply absent from `stored_on=`, so the permission on " +
+			"that server is the thing to check. One call stores the same token on every live server, in configuration " +
+			"order, and defines no success/failure semantics: `stored_on=` names exactly the servers the copy landed " +
+			"on and is empty when none did, so relay only when it names at least one server. The size limit is per " +
+			"copy (8 MiB by default, 64 MiB at most, and 512 MiB or more is refused outright — the Redis single-value " +
+			"ceiling), so N servers cost N times the file size. No caller chooses where a receiver writes: fetched " +
+			"bytes land only under the receiver's own quarantine directory. The result is one line: `pickup=<token> " +
+			"size=<bytes> sha256=<hex> expires_in=<ISO 8601> stored_on=<server,server>`. `expires_in=` echoes the " +
+			"ttl you requested, as an ISO 8601 duration such as `PT2S` immediately after a store that asked for two " +
+			"seconds — it is not a remaining time and not a countdown. A value in this line that contains whitespace " +
+			"is JSON-quoted, wrapped in leading and trailing double quotes, and the quotes span the whole value, so " +
+			'with two servers where the first is named `my host` the field reads `stored_on="my host,second"` — ' +
+			"strip the quotes before splitting on the comma; a value without whitespace is bare, and an empty value " +
+			"stays empty.",
+		guidelines: [
+			"Use ace_store_file to make a local file fetchable, then hand the peer the whole result line and tell it " +
+				"the token is the capability; the store itself publishes nothing.",
+			"The token is the secret: anyone who holds it can fetch the file until it expires, so hand it only to the " +
+				"intended peer, never publish it to a shared channel.",
+			"Read stored_on= before relying on a store: an empty value means no server took the copy, and a peer can " +
+				"fetch only from a server the two of you share.",
+			"Storing needs SET and fetching needs GET; when a copy did not land, check the permission on that server.",
+			"No caller chooses where a receiver writes: fetched bytes land only under the receiver's own quarantine " +
+				"directory.",
+		],
+		params: {
+			path:
+				"Path of the local file to store: absolute, or relative to the session's working directory. It must " +
+				"name a readable regular file — a missing path, a directory and an unreadable file each fail with " +
+				"their own sentence. Reading is deliberately not restricted to the workspace, so a file such as " +
+				"`~/.ssh/id_rsa` can be stored; do it only on purpose.",
+			ttl:
+				'How long the pickup code stays valid, as an ISO 8601 duration such as "PT1H" or "P1D". Default ' +
+				'"PT1H"; "P1D" is the maximum and a longer or non-positive value is a usage error naming it.',
+			name:
+				"Optional file name to store the bytes under, overriding the path's basename. Only the last path " +
+				"segment survives and control characters are stripped, so a name that is empty after stripping, " +
+				"`.` or `..` is refused. The receiver's write path is fixed by ACE — this only names the file inside " +
+				"it.",
+		},
+	},
+	getFile: {
+		description:
+			"Fetch a file a peer stored with ace_store_file, by its pickup token. The token is the whole capability: " +
+			"anyone who holds it can fetch the same bytes until the ttl expires, and the read is non-destructive, " +
+			"so fetching does not consume the code and others can still fetch it. The tool tries each of this " +
+			"session's live servers in configuration order and takes the first hit; fetching needs GET permission " +
+			"and storing needed SET. Nothing is written outside `<working directory>/.ace/xfer/<token>/" +
+			"<sessionId>/`: the file name comes from the sender's metadata, never from an argument, so no caller can " +
+			"choose a write path — an existing file with identical bytes is overwritten, and a differing one is " +
+			"written beside it with a numeric suffix. The result is one line: `path=<quarantine path> sha256=<hex> " +
+			"size=<bytes> from=<server>`. `path=` and `from=` carry the quoting rule ace_store_file gives for any " +
+			"result value: one that contains whitespace is JSON-quoted, wrapped in leading and trailing double " +
+			'quotes, so a path with a space appears as `path="/…/note (2).txt"`, while a value without whitespace ' +
+			"is bare and an empty value stays empty. `sha256=` is computed here from the bytes written, not taken on trust, so " +
+			"compare it yourself with the hash the sender relayed and with the sender's metadata. A token absent " +
+			"from every server is a normal, diagnosable outcome: it may have expired, or you and the sender may " +
+			"share no server.",
+		guidelines: [
+			"Fetch only a token a peer you trust gave you; the token is the capability and anyone who holds it can " +
+				"read the file.",
+			"The fetch is always an explicit call: ace_get_file never runs on its own and delivers nothing into the " +
+				"conversation.",
+			"Compare the returned sha256= with the hash the sender relayed; the two are computed independently and " +
+				"must match.",
+			"A token on none of your servers is not a temporary error — it expired or you share no server with the " +
+				"sender.",
+		],
+		params: {
+			token:
+				"The pickup token, as ace_store_file returned it in `pickup=`: 32 hex characters (128 bits). Case is " +
+				"not significant — a relayed token that changed case is normalised — but the shape is checked, so a " +
+				"truncated or non-hex value is a usage error naming it. The token carries no namespace and no server " +
+				"name: it is looked up on this session's own servers.",
+		},
+	},
 } as const;
 
 /**
@@ -357,4 +447,21 @@ export const PUBLISH_PARAMETERS = Type.Object({
 export const AGENTS_PARAMETERS = Type.Object({
 	agent: Type.Optional(Type.Unsafe<string>({ description: TOOL_TEXT.agents.params.agent })),
 	limit: Type.Optional(Type.Unsafe<number>({ description: TOOL_TEXT.agents.params.limit })),
+});
+
+/**
+ * Parameters of `ace_store_file`. Like every ACE tool the object is left open and the handler refuses
+ * undeclared arguments; like `ace_publish`'s nodes, each declares **no type** (`Type.Unsafe` over a
+ * description) so a host that rewrites an argument keyed on its declared type has nothing to rewrite
+ * and the raw value reaches `validateStoreInput`, which names a wrong one.
+ */
+export const STORE_FILE_PARAMETERS = Type.Object({
+	path: Type.Optional(Type.Unsafe<string>({ description: TOOL_TEXT.storeFile.params.path })),
+	ttl: Type.Optional(Type.Unsafe<string>({ description: TOOL_TEXT.storeFile.params.ttl })),
+	name: Type.Optional(Type.Unsafe<string>({ description: TOOL_TEXT.storeFile.params.name })),
+});
+
+/** Parameters of `ace_get_file`; `token` declares no type for the same reason as the nodes above. */
+export const GET_FILE_PARAMETERS = Type.Object({
+	token: Type.Optional(Type.Unsafe<string>({ description: TOOL_TEXT.getFile.params.token })),
 });

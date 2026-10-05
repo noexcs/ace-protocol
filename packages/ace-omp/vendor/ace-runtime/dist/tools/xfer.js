@@ -22,9 +22,9 @@ import { rejectUnknownArguments } from "./publish.js";
  *   without the other is minimal (and a blob found without its metadata is an error, not a read).
  */
 /** The names this feature's tools register under (the hosts add them to `spec.ts` in a later step). */
-const XFER_TOOL_NAMES = { send: "ace_send_file", get: "ace_get_file" };
+const XFER_TOOL_NAMES = { store: "ace_store_file", get: "ace_get_file" };
 /** The arguments each tool declares; mirrors `TOOL_ARGUMENTS` once the hosts register the tools. */
-const SEND_ARGUMENTS = ["path", "ttl"];
+const STORE_ARGUMENTS = ["path", "ttl", "name"];
 const GET_ARGUMENTS = ["token"];
 /** The quarantine directory under the workspace root; the feature never writes anywhere else. */
 const QUARANTINE_DIR = [".ace", "xfer"];
@@ -67,8 +67,13 @@ export const XFER_DEFAULTS = {
  * defined once. The house style: name the offending value, then the form that is expected.
  */
 export const XFER_ERROR_TEXT = {
-    invalidPath: (value) => `ace_send_file \`path\` must be a non-empty string, received ${describeValue(value)}`,
-    invalidTtl: (value) => `ace_send_file \`ttl\` must be an ISO 8601 duration such as "PT1H", received ${describeValue(value)}`,
+    invalidPath: (value) => `ace_store_file \`path\` must be a non-empty string, received ${describeValue(value)}`,
+    invalidName: (value) => `ace_store_file \`name\` must be a non-empty string, received ${describeValue(value)}`,
+    missingFile: (value) => `file ${describeValue(value)} does not exist`,
+    notAFile: (value) => `\`path\` ${describeValue(value)} is a directory, not a file`,
+    unreadableFile: (value, reason) => `file ${describeValue(value)} cannot be read: ${reason}`,
+    noBlobOnAnyServer: () => "no blob for that token on any of your servers: it may have expired, or you and the sender share no server",
+    invalidTtl: (value) => `ace_store_file \`ttl\` must be an ISO 8601 duration such as "PT1H", received ${describeValue(value)}`,
     invalidDuration: (value) => `${describeValue(value)} is not a positive ISO 8601 duration; expected a form such as "PT1H" ` +
         `(days, hours, minutes and seconds)`,
     durationTooLong: (value, max) => `${describeValue(value)} is longer than the maximum ttl "${max}"`,
@@ -245,22 +250,36 @@ export function assertTransferSize(sizeBytes, options = {}) {
     if (sizeBytes > maxBytes)
         throw new Error(XFER_ERROR_TEXT.sizeAboveMax(sizeBytes, maxBytes));
 }
-/** Validate the raw `ace_send_file` arguments; throws a usage error naming the offending value. */
-export function validateSendInput(params) {
-    rejectUnknownArguments(XFER_TOOL_NAMES.send, params, SEND_ARGUMENTS);
+/** Validate the raw `ace_store_file` arguments; throws a usage error naming the offending value. */
+export function validateStoreInput(params) {
+    rejectUnknownArguments(XFER_TOOL_NAMES.store, params, STORE_ARGUMENTS);
     const path = params.path;
     // A path is read as written — leading/trailing spaces are legal in a name — so only the
     // whitespace-only and non-string shapes are refused here.
     if (typeof path !== "string" || path.trim().length === 0)
         throw new Error(XFER_ERROR_TEXT.invalidPath(path));
+    // An override is normalised through the same sanitiser the receiver's write path uses, so a value
+    // that could not be written (`..`, `.`, empty after stripping separators) is refused at the sender.
+    const rawName = params.name;
+    let name;
+    if (rawName !== undefined) {
+        if (typeof rawName !== "string" || rawName.trim().length === 0)
+            throw new Error(XFER_ERROR_TEXT.invalidName(rawName));
+        name = sanitizeName(rawName);
+    }
     const ttl = params.ttl;
     if (ttl === undefined) {
-        return { path, ttl: XFER_DEFAULTS.defaultTtl, ttlMs: XFER_DEFAULTS.defaultTtlMs };
+        return {
+            path,
+            ttl: XFER_DEFAULTS.defaultTtl,
+            ttlMs: XFER_DEFAULTS.defaultTtlMs,
+            ...(name === undefined ? {} : { name }),
+        };
     }
     if (typeof ttl !== "string" || ttl.trim().length === 0)
         throw new Error(XFER_ERROR_TEXT.invalidTtl(ttl));
     const normalised = ttl.trim().toUpperCase();
-    return { path, ttl: normalised, ttlMs: parseIsoDuration(normalised) };
+    return { path, ttl: normalised, ttlMs: parseIsoDuration(normalised), ...(name === undefined ? {} : { name }) };
 }
 /** Validate the raw `ace_get_file` arguments; throws a usage error naming the offending value. */
 export function validateGetInput(params) {
@@ -280,7 +299,7 @@ function field(key, value) {
     return `${key}=${FIELD_NEEDS_QUOTING.test(value) ? JSON.stringify(value) : value}`;
 }
 /**
- * The `ace_send_file` result: one line the model relays verbatim. `stored_on=` is the servers the
+ * The `ace_store_file` result: one line the model relays verbatim. `stored_on=` is the servers the
  * copy landed on (empty when none accepted it — the caller reports the failures separately, per the
  * doc's "no success/failure verdict"); `expires_in=` echoes the requested ISO 8601 duration.
  */
@@ -290,7 +309,7 @@ export function formatSendResult(options) {
         `size=${options.size}`,
         `sha256=${options.sha256}`,
         `expires_in=${options.expiresIn}`,
-        `stored_on=${options.storedOn.join(",")}`,
+        field("stored_on", options.storedOn.join(",")),
     ].join(" ");
 }
 /**

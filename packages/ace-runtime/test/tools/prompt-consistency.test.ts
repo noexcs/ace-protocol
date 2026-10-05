@@ -15,6 +15,12 @@ const toolText = [
 	...Object.values(TOOL_TEXT.agents.params),
 	TOOL_TEXT.channels.description,
 	...TOOL_TEXT.channels.guidelines,
+	TOOL_TEXT.storeFile.description,
+	...TOOL_TEXT.storeFile.guidelines,
+	...Object.values(TOOL_TEXT.storeFile.params),
+	TOOL_TEXT.getFile.description,
+	...TOOL_TEXT.getFile.guidelines,
+	...Object.values(TOOL_TEXT.getFile.params),
 ];
 const injected = renderAceEvent(
 	{ aceVersion: "0.1", id: "evt_1", sender: "peer:1", activation: "next_turn", body: "hello" },

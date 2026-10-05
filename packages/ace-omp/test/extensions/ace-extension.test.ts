@@ -78,6 +78,8 @@ describe("manager rows", () => {
 /** A registered tool as these tests reach it: the handler directly, with arguments of any shape. */
 interface RegisteredTool {
 	name: string;
+	description?: string;
+	parameters?: { properties?: Record<string, unknown> };
 	execute: (toolCallId: string, params: unknown) => Promise<unknown>;
 }
 
@@ -286,5 +288,53 @@ describe("tool arguments", () => {
 		expect(head).toContain("event=none");
 		expect(head).not.toContain("id=");
 		expect(head).not.toContain("sender=");
+	});
+});
+
+describe("file-transfer tools", () => {
+	/** The registered handler named `name`, called the way the host calls it. */
+	function registeredTool(name: string, tools: RegisteredTool[]): RegisteredTool {
+		const found = tools.find((entry) => entry.name === name);
+		if (found === undefined) throw new Error(`${name} was not registered`);
+		return found;
+	}
+
+	it("registers ace_store_file and ace_get_file with a description and a parameter schema", () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		const store = registeredTool("ace_store_file", tools);
+		const get = registeredTool("ace_get_file", tools);
+		expect(store.description).toContain("This is not sending");
+		expect(Object.keys(store.parameters?.properties ?? {}).sort()).toEqual(["name", "path", "ttl"]);
+		expect(Object.keys(get.parameters?.properties ?? {})).toEqual(["token"]);
+	});
+
+	it("validates arguments before the live-server check, then reports no directory", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		await expect(
+			registeredTool("ace_store_file", tools).execute("call_1", { path: "a.bin", ttl: "P2D" }),
+		).rejects.toThrow(/longer than the maximum ttl/);
+		await expect(registeredTool("ace_get_file", tools).execute("call_1", { token: "abc" })).rejects.toThrow(
+			/128-bit hex token/,
+		);
+		// Valid arguments, but this session registered no server: the transfer cannot run.
+		await expect(registeredTool("ace_store_file", tools).execute("call_1", { path: "a.bin" })).rejects.toThrow(
+			/no agent directory/,
+		);
+	});
+
+	it("refuses an argument a transfer tool does not declare", async () => {
+		const { api, tools } = fakeExtensionApi();
+		aceExtension(api);
+
+		await expect(
+			registeredTool("ace_store_file", tools).execute("call_1", { path: "a.bin", channel: "x" }),
+		).rejects.toThrow('ace_store_file does not take "channel"; it takes `path`, `ttl`, `name`');
+		await expect(
+			registeredTool("ace_get_file", tools).execute("call_1", { token: "a".repeat(32), server: "x" }),
+		).rejects.toThrow('ace_get_file does not take "server"; it takes `token`');
 	});
 });
