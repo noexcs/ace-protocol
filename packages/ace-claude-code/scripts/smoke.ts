@@ -392,10 +392,21 @@ async function main(): Promise<void> {
 		console.log("  SKIP  no `claude` binary on PATH — nothing further to run");
 	} else {
 		const help = runCommand(claude, ["--help"]);
-		const canLoadChannels = help.ok && /--dangerously-load-development-channels/.test(help.text);
+		// These flags are hidden from `--help` on builds that support them, so a missing string proves
+		// nothing. Probe by parsing instead: a rejected flag fails with an unknown-option error before
+		// anything else runs, while anything else (including "not logged in") means the flag parsed.
+		const probe = runCommand(claude, [
+			"--dangerously-load-development-channels",
+			"plugin:probe@probe",
+			"-p",
+			"probe",
+		]);
+		const advertised = help.ok && /--dangerously-load-development-channels/.test(help.text);
+		const rejected = /unknown option|unexpected argument|unknown flag|invalid option/i.test(probe.text);
+		const canLoadChannels = advertised || !rejected;
 		if (!canLoadChannels) {
 			console.log(
-				"  SKIP  this Claude Code does not load custom channels (`--dangerously-load-development-channels` not in `--help`).",
+				"  SKIP  this Claude Code does not accept `--dangerously-load-development-channels` (the flag was rejected).",
 			);
 			console.log("        A full run needs Anthropic auth (claude.ai or a Console API key) and, for this");
 			console.log("        channel, the development flag (a `--plugin-dir` load registers as `<name>@inline`):");
