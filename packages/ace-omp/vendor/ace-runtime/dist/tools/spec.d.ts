@@ -26,15 +26,15 @@ export declare const ACE_TOOL_NAMES: {
 export declare const TOOL_TEXT: {
     readonly publish: {
         readonly intro: string;
-        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "If a publish result says a channel has no known reader, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
+        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "If a publish result says a channel has no known subscriber, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
         readonly params: {
             readonly body: "Event body; the peer's agent reads this";
-            readonly activation: "How urgently the peer should process it (default: next_turn); pass \"default\" to let the receiver decide";
+            readonly activation: "How the receiver should process it (default: next_turn): \"immediate\" acts now, \"next_turn\" acts at the end of the receiver's turn, \"manual\" only stores it for the receiver's user to activate; pass \"default\" to let the receiver decide";
             readonly target: string;
         };
     };
     readonly agents: {
-        readonly description: "List the other sessions reachable right now — this session is not listed. Each row names a channel you can pass to ace_publish as `target`.";
+        readonly description: "List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and the countdown is how long until that row goes stale.";
         readonly guidelines: readonly ["Call ace_agents before ace_publish when the peer is not a channel this session reads."];
         readonly params: {
             readonly agent: "Filter by coding agent, e.g. \"oh-my-pi\" or \"pi\"";

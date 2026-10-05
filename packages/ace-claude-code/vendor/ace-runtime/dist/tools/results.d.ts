@@ -8,11 +8,11 @@
 /**
  * `channel "outbox"` — the target channel name an event was published to.
  *
- * `unknownReader` adds the note that neither the live directory nor this session's own subscriptions
- * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox —
- * but it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
+ * `unknownSubscriber` adds the note that neither the live directory nor this session's own subscriptions
+ * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox — but
+ * it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
  */
-export declare function deliveredChannel(name: string, unknownReader?: boolean): string;
+export declare function deliveredChannel(name: string, unknownSubscriber?: boolean): string;
 /** One entry of the failure list: `"target": reason`. */
 export declare function failedTarget(target: string, detail: string): string;
 /** The `ace_publish` result: what went out, and what did not (with the memory of ids and sender). */
@@ -22,6 +22,8 @@ export declare function formatPublishResult(options: {
     activation: string;
     delivered: readonly string[];
     failures: readonly string[];
+    /** Channels accepted with no known subscriber: the result spells out what that means. */
+    unknownSubscribers?: readonly string[];
 }): string;
 /** The sentence the directory tool answers with when nobody else is online. */
 export declare const NO_LIVE_SESSIONS = "No other agent sessions are registered right now.";

@@ -84,7 +84,7 @@ import {
 	formatDiscoveredSessions,
 	formatPublishResult,
 	formatSessionLabel,
-	hasKnownReader,
+	hasKnownSubscriber,
 	hostFacts,
 	NO_SESSION_LABEL,
 	PiExtensionAdapter,
@@ -431,17 +431,21 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						{
 							type: "text",
 							text: formatChannelListing(listing.subscriptions, {
-								...(sessionInbox === undefined ? {} : { derivedName: sessionInbox.name }),
+								...(sessionInbox === undefined
+									? {}
+									: { derivedName: sessionInbox.channel ?? sessionInbox.name }),
 							}),
 						},
 					],
 					details: {
 						subscribe: listing.subscriptions.map((endpoint) => ({
-							name: endpoint.name,
+							name: endpoint.channel ?? endpoint.name,
 							transport: endpoint.transport,
 							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
 							...(endpoint.activation === undefined ? {} : { activation: endpoint.activation }),
-							derived: endpoint.name === sessionInbox?.name,
+							derived:
+								(endpoint.channel ?? endpoint.name) ===
+								(sessionInbox === undefined ? undefined : (sessionInbox.channel ?? sessionInbox.name)),
 						})),
 						count: listing.subscriptions.length,
 					},
@@ -475,6 +479,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 				const failures: string[] = [];
 				const sentStreams = new Set<string>();
 				const senders: string[] = [];
+				const unknownSubscribers = new Set<string>();
 
 				for (const name of targets) {
 					try {
@@ -482,15 +487,16 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						const stream = channelStreamKey(target.server.server.namespace, target.channel);
 						// A channel nobody is known to read is exactly what a mistyped target looks like. The
 						// event is still published (a channel is a name, not a mailbox), but the result says so.
-						const unknownReader = !hasKnownReader({
+						const unknownSubscriber = !hasKnownSubscriber({
 							channel: target.channel,
 							live: await target.server.registry.list(),
 							subscriptions: [...readChannels],
 						});
+						if (unknownSubscriber) unknownSubscribers.add(target.channel);
 						// The same channel twice in one call is one delivery.
 						const address = `${target.server.server.url}#${stream}`;
 						if (sentStreams.has(address)) {
-							delivered.push(deliveredChannel(target.channel, unknownReader));
+							delivered.push(deliveredChannel(target.channel, unknownSubscriber));
 							continue;
 						}
 						sentStreams.add(address);
@@ -506,7 +512,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							body: params.body,
 						});
 						await publishToChannel(target, message);
-						delivered.push(deliveredChannel(target.channel, unknownReader));
+						delivered.push(deliveredChannel(target.channel, unknownSubscriber));
 					} catch (error) {
 						failures.push(failedTarget(name, describeError(error)));
 					}
@@ -525,6 +531,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 								activation,
 								delivered,
 								failures,
+								...(unknownSubscribers.size === 0 ? {} : { unknownSubscribers: [...unknownSubscribers] }),
 							}),
 						},
 					],

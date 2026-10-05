@@ -51,16 +51,19 @@ export function channelMenuItems(input: {
 }): SelectItem[] {
 	const row = (endpoint: EndpointConfig): SelectItem => {
 		const address = endpointAddressOf(endpoint);
+		// The channel name is the address a peer publishes to; the local label is a note when it differs.
+		const target = endpoint.channel ?? endpoint.name;
 		const parts = [
 			`${endpoint.transport}${address === undefined ? "" : ` ${address}`}`,
 			"[in]",
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-			endpoint.name === input.derivedName ? "(registered for this session)" : undefined,
+			endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
+			target === input.derivedName ? "(registered for this session)" : undefined,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 		];
 		return {
-			value: `in:${endpoint.name}`,
-			label: `● ${endpoint.name}`,
+			value: `in:${target}`,
+			label: `● ${target}`,
 			description: parts.filter((part) => part !== undefined).join(" · "),
 		};
 	};

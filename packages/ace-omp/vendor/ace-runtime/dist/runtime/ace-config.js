@@ -256,6 +256,7 @@ function islandWarnings(servers) {
 export function subscriptionEndpoint(options) {
     return {
         name: options.name ?? options.channel,
+        channel: options.channel,
         transport: "redis-streams",
         ...(options.description === undefined ? {} : { description: options.description }),
         ...(options.activation === undefined ? {} : { activation: options.activation }),

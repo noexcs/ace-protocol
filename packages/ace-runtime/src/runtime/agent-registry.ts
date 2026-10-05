@@ -26,11 +26,11 @@ export interface RegistryEntry {
 /**
  * Whether anything is *known* to read `channel`: a live directory entry (a session's own channel), or
  * one of the channels the calling session itself subscribes to. Only those two are knowable — another
- * session's configured subscriptions live in its own file — so a `false` here means "nobody we know
- * reads this", which is what a mistyped target looks like. It is not a delivery precondition: a channel
- * is a name, and publishing to a name that has no reader yet is legal.
+ * session's configured subscriptions live in its own file — so a `false` here means "no subscriber we
+ * know of", which is what a mistyped target looks like. It is not a delivery precondition: a channel is a
+ * name, and publishing to a name that has no subscriber yet is legal.
  */
-export function hasKnownReader(options: {
+export function hasKnownSubscriber(options: {
 	channel: string;
 	live: readonly RegistryEntry[];
 	subscriptions: readonly string[];

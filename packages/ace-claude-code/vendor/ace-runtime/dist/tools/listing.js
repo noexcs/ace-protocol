@@ -21,16 +21,26 @@ export function describeEndpoint(endpoint) {
  * configured list.
  */
 export function formatChannelListing(subscriptions, options = {}) {
-    const line = (endpoint) => [
-        endpoint.name,
-        endpoint.transport,
-        endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
-        endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-        endpoint.name === options.derivedName ? "(registered for this session)" : undefined,
-    ]
-        .filter((part) => part !== undefined)
-        .join(" · ");
-    return ["subscribe:", ...subscriptions.map((endpoint) => `  ${line(endpoint)}`)].join("\n");
+    const line = (endpoint) => {
+        // The channel name leads: it is what another session publishes to. The local label is a note when
+        // it differs, and the header states the field order once instead of labelling every row.
+        const target = endpoint.channel ?? endpoint.name;
+        return [
+            target,
+            endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
+            endpoint.transport,
+            endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
+            endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
+            target === options.derivedName ? "(registered for this session)" : undefined,
+        ]
+            .filter((part) => part !== undefined)
+            .join(" · ");
+    };
+    return [
+        "subscribe:",
+        "  each row: channel · transport · description · [activation] — the channel is what a peer publishes to",
+        ...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
+    ].join("\n");
 }
 /**
  * The inputs every channel surface lists: the channels this session subscribes to, plus the inbox the
@@ -41,7 +51,7 @@ export function channelListingInput(subscriptions, inbox) {
     const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
     return {
         subscriptions: all,
-        ...(inbox === undefined ? {} : { derivedName: inbox.name }),
+        ...(inbox === undefined ? {} : { derivedName: inbox.channel ?? inbox.name }),
     };
 }
 /**
@@ -50,14 +60,16 @@ export function channelListingInput(subscriptions, inbox) {
  */
 export function formatChannelReport(report) {
     const channel = (endpoint) => {
-        const address = endpointAddress(endpoint);
+        const target = endpoint.channel ?? endpoint.name;
+        const stream = endpointAddress(endpoint);
         const extras = [
+            endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
             endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-            endpoint.name === report.derivedName ? "(registered for this session)" : undefined,
+            target === report.derivedName ? "(registered for this session)" : undefined,
             endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
         ].filter((part) => part !== undefined);
-        const where = `${endpoint.transport}${address === undefined ? "" : ` ${address}`}`;
-        return `  ${endpoint.name}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
+        const where = `${endpoint.transport}${stream === undefined ? "" : ` ${stream}`}`;
+        return `  ${target}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
     };
     const lines = (endpoints) => endpoints.length === 0 ? ["  (none)"] : endpoints.map(channel);
     const letters = `dead letters: ${report.deadLetters.count}${report.deadLetters.directory === undefined ? "" : ` at ${report.deadLetters.directory}`}`;

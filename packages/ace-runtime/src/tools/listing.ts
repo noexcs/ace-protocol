@@ -30,17 +30,26 @@ export function formatChannelListing(
 	subscriptions: readonly EndpointConfig[],
 	options: { derivedName?: string } = {},
 ): string {
-	const line = (endpoint: EndpointConfig): string =>
-		[
-			endpoint.name,
+	const line = (endpoint: EndpointConfig): string => {
+		// The channel name leads: it is what another session publishes to. The local label is a note when
+		// it differs, and the header states the field order once instead of labelling every row.
+		const target = endpoint.channel ?? endpoint.name;
+		return [
+			target,
+			endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
 			endpoint.transport,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-			endpoint.name === options.derivedName ? "(registered for this session)" : undefined,
+			target === options.derivedName ? "(registered for this session)" : undefined,
 		]
 			.filter((part) => part !== undefined)
 			.join(" · ");
-	return ["subscribe:", ...subscriptions.map((endpoint) => `  ${line(endpoint)}`)].join("\n");
+	};
+	return [
+		"subscribe:",
+		"  each row: channel · transport · description · [activation] — the channel is what a peer publishes to",
+		...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
+	].join("\n");
 }
 
 /**
@@ -58,7 +67,7 @@ export function channelListingInput(
 	const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
 	return {
 		subscriptions: all,
-		...(inbox === undefined ? {} : { derivedName: inbox.name }),
+		...(inbox === undefined ? {} : { derivedName: inbox.channel ?? inbox.name }),
 	};
 }
 
@@ -80,14 +89,16 @@ export interface ChannelReport {
  */
 export function formatChannelReport(report: ChannelReport): string {
 	const channel = (endpoint: EndpointConfig): string => {
-		const address = endpointAddress(endpoint);
+		const target = endpoint.channel ?? endpoint.name;
+		const stream = endpointAddress(endpoint);
 		const extras = [
+			endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-			endpoint.name === report.derivedName ? "(registered for this session)" : undefined,
+			target === report.derivedName ? "(registered for this session)" : undefined,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 		].filter((part) => part !== undefined);
-		const where = `${endpoint.transport}${address === undefined ? "" : ` ${address}`}`;
-		return `  ${endpoint.name}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
+		const where = `${endpoint.transport}${stream === undefined ? "" : ` ${stream}`}`;
+		return `  ${target}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
 	};
 	const lines = (endpoints: readonly EndpointConfig[]): string[] =>
 		endpoints.length === 0 ? ["  (none)"] : endpoints.map(channel);

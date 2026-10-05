@@ -298,6 +298,7 @@ describe("subscriptionEndpoint", () => {
 			subscriptionEndpoint({ channel: "ace:noexcs:ci-failures", url: "redis://x", namespace: "ace", sender }),
 		).toEqual({
 			name: "ace:noexcs:ci-failures",
+			channel: "ace:noexcs:ci-failures",
 			transport: "redis-streams",
 			activation: undefined,
 			description: undefined,
@@ -321,6 +322,8 @@ describe("subscriptionEndpoint", () => {
 		});
 
 		expect(endpoint.name).toBe("session-inbox");
+		// The label is only the host's name for it; the channel is what a peer publishes to.
+		expect(endpoint.channel).toBe("ace:noexcs:oh-my-pi:01a10a");
 		expect(endpoint.config.group).toBe("ace:noexcs:oh-my-pi:01a10a");
 	});
 });

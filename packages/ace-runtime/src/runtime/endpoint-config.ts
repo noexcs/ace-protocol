@@ -13,7 +13,13 @@ import { describeValue } from "../utils.ts";
  * `runtime-contracts.ts` carry the model; this file only defines the shape the transport consumes.
  */
 export interface EndpointConfig {
+	/** Local subscription label: what this host calls the binding (this session's inbox is `session-inbox`). */
 	name: string;
+	/**
+	 * The uploaded channel name this binding reads — the addressable name another session publishes to.
+	 * {@link name} is only the host's label for it, so every surface shows this one.
+	 */
+	channel?: string;
 	transport: string;
 	/** Human/model-readable note about this channel, e.g. which peer sits on the other end. */
 	description?: string;

@@ -11,12 +11,12 @@ import { ACE_CONFIG_FILENAME } from "../runtime/ace-config.ts";
 /**
  * `channel "outbox"` — the target channel name an event was published to.
  *
- * `unknownReader` adds the note that neither the live directory nor this session's own subscriptions
- * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox —
- * but it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
+ * `unknownSubscriber` adds the note that neither the live directory nor this session's own subscriptions
+ * name the channel. Publishing to a name nobody reads is legal — a channel is a name, not a mailbox — but
+ * it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
  */
-export function deliveredChannel(name: string, unknownReader = false): string {
-	return unknownReader ? `channel "${name}" (no known reader)` : `channel "${name}"`;
+export function deliveredChannel(name: string, unknownSubscriber = false): string {
+	return unknownSubscriber ? `channel "${name}" (no known subscriber)` : `channel "${name}"`;
 }
 
 /** One entry of the failure list: `"target": reason`. */
@@ -31,11 +31,21 @@ export function formatPublishResult(options: {
 	activation: string;
 	delivered: readonly string[];
 	failures: readonly string[];
+	/** Channels accepted with no known subscriber: the result spells out what that means. */
+	unknownSubscribers?: readonly string[];
 }): string {
 	const head =
 		`Published id=${options.id} from ${options.sender} to ${options.delivered.length} target(s): ` +
 		`${options.delivered.join(", ")} (activation: ${options.activation}).`;
-	return options.failures.length === 0 ? head : [head, `Failed: ${options.failures.join("; ")}`].join("\n");
+	const lines = options.failures.length === 0 ? [head] : [head, `Failed: ${options.failures.join("; ")}`];
+	const unknown = options.unknownSubscribers ?? [];
+	if (unknown.length > 0) {
+		lines.push(
+			`No subscriber is known for ${unknown.map((name) => `"${name}"`).join(", ")}: the event is stored on ` +
+				"the channel and will be read if one subscribes later.",
+		);
+	}
+	return lines.join("\n");
 }
 
 /** The sentence the directory tool answers with when nobody else is online. */
