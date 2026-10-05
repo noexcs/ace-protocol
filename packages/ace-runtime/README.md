@@ -31,30 +31,27 @@ metadata to ACE fields, and nothing here teaches Pi about ACE: Pi only sees cont
 
 ## Install
 
-The package is an oh-my-pi plugin: `package.json` declares `"omp": {"extensions": ["./extensions/ace.ts"]}`,
-so the host loads the extension by itself — no `--extension` flag, no build, no path to remember (the entry
-is TypeScript that imports `../src`, and it runs under Bun as-is). Every session whose working directory
-holds a `.ace.json` starts ACE.
+**This package is the library, not the plugin.** `ace-runtime` has no `omp.extensions` entry: it is what the
+plugin vendors and what a programmatic consumer imports. The installable oh-my-pi plugin is
+[`ace-omp`](../ace-omp), whose `package.json` declares `"omp": {"extensions": ["./extensions/ace.ts"]}` and
+which carries this package's build in its `vendor/` — see that README for the layout. Install it:
 
 ```bash
-# 1. released tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.10/ace-runtime-0.1.10.tgz
+# 1. the released plugin tarball — one command: no clone, no registry, no auth
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.0/ace-omp-0.2.0.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
-cd ace-protocol/packages/ace-runtime && npm install --ignore-scripts
-omp install "$PWD"                        # same as: omp plugin link "$PWD"
-
-# 3. from npm, once it is published
-omp install ace-runtime
+cd ace-protocol/packages/ace-omp && bun install && npm run build   # or: cd ../ace-runtime && npm run build
+omp plugin link "$PWD"                    # same as: omp install "$PWD"; registers it as `ace-omp`
 ```
 
 Then it behaves like any other plugin:
 
 ```bash
 omp plugin list                 # installed? enabled? which manifest?
-omp plugin disable ace-runtime  # stop loading it
-omp plugin uninstall ace-runtime
+omp plugin disable ace-omp      # stop loading it
+omp plugin uninstall ace-omp
 omp plugin doctor               # when a plugin misbehaves
 ```
 
@@ -62,15 +59,15 @@ omp plugin doctor               # when a plugin misbehaves
 
 `omp install` runs Bun for package work (`~/.omp/plugins/bun.lock`), so on a machine without it the command
 fails before any download: `Error: Executable not found in $PATH: "bun"`. Either install Bun (`npm i -g bun`)
-or skip the plugin system and link the entry into the host's extension directory. This needs only `curl`,
-`tar` and `npm`, and the extension resolves `../src` and its dependencies through the directory it is linked
-to, so keep that directory around:
+or skip the plugin system and link the plugin's entry into the host's extension directory. This needs only
+`curl`, `tar` and `npm`, and the entry resolves its vendored core through the directory it is linked to, so
+keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.1.10/ace-runtime-0.1.10.tgz
-mkdir -p ~/ace-runtime-0.1.10 ~/.omp/agent/extensions
-tar xzf ace-runtime-0.1.10.tgz -C ~/ace-runtime-0.1.10 --strip-components=1
-cd ~/ace-runtime-0.1.10 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.0/ace-omp-0.2.0.tgz
+mkdir -p ~/ace-omp-0.2.0 ~/.omp/agent/extensions
+tar xzf ace-omp-0.2.0.tgz -C ~/ace-omp-0.2.0 --strip-components=1
+cd ~/ace-omp-0.2.0 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -93,7 +90,8 @@ sudo apt update && sudo apt install -y redis-server && sudo service redis-server
 redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.1.10/ace-runtime-0.1.10.tgz
+# (ace-omp is the plugin; ace-runtime below it is the library it vendors)
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.0/ace-omp-0.2.0.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
   "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
@@ -154,15 +152,23 @@ address is configured, advertised or stored in the entry.
 
 ### Releasing
 
+Two packages are shipped together: the library (`ace-runtime`) and the plugin (`ace-omp`) that vendors it.
+Bump both to the same version, pack both, and attach both to one release:
+
 ```bash
-npm version minor --no-git-tag-version   # or patch
-npm run check && npm test
-npm pack                                  # → ace-runtime-<version>.tgz
-git commit -am "ace-runtime <version>" && git tag -a v<version> -m "ace-runtime <version>"
+for p in ace-runtime ace-omp; do (cd packages/$p && npm version minor --no-git-tag-version); done   # or patch
+cd packages/ace-runtime && npm run build && cd ../..
+node scripts/check-vendor-sync.ts --write      # the plugin's vendor/ must carry the new build
+for p in ace-runtime ace-omp ace-claude-code ace-codex; do (cd packages/$p && bun run check && bun run test); done
+cd packages/ace-runtime && npm pack && cd ../ace-omp && npm pack && cd ../..
+git commit -am "chore(release): <version>" && git tag -a v<version> -m "ace <version>"
 git push && git push origin v<version>
-gh release create v<version> ace-runtime-<version>.tgz --title "ace-runtime <version>" --notes "…"
-npm publish                               # once npm auth is set up; --access public for a scoped name
+gh release create v<version> packages/ace-runtime/ace-runtime-<version>.tgz \
+  packages/ace-omp/ace-omp-<version>.tgz --title "ace <version>" --notes-file <notes.md>
 ```
+
+`npm publish` is optional and only for the library (`ace-runtime` is a valid npm package; `ace-omp` is not
+published — it is installed from the release tarball or a linked checkout).
 
 ## Usage
 
