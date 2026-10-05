@@ -1,10 +1,10 @@
 import type { AgentEngine } from "../agent/agent-engine.ts";
 import type { AceLogger } from "../logger.ts";
-import type { AceMessage, ConcreteActivation } from "../protocol/ace-message.ts";
+import { type AceMessage, type ConcreteActivation, isActivation } from "../protocol/ace-message.ts";
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.ts";
 import type { Transport } from "../transport/transport.ts";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.ts";
-import { AceConfigError, type EndpointConfig, endpointAddress, validateEndpointConfig } from "./endpoint-config.ts";
+import { AceConfigError, type EndpointConfig, endpointAddress } from "./endpoint-config.ts";
 import { type DispatchResult, EventDispatcher } from "./event-dispatcher.ts";
 import {
 	DEFAULT_SPOOL_RULE,
@@ -73,7 +73,20 @@ export class AceRuntime {
 	private started = false;
 
 	constructor(options: AceRuntimeOptions) {
-		this.subscribe = options.subscribe.map((endpoint) => validateEndpointConfig(endpoint, "subscribe"));
+		this.subscribe = options.subscribe.map((endpoint) => {
+			if (typeof endpoint.name !== "string" || endpoint.name.length === 0) {
+				throw new AceConfigError("subscribe entry requires a non-empty name");
+			}
+			if (typeof endpoint.transport !== "string" || endpoint.transport.length === 0) {
+				throw new AceConfigError(`subscribe "${endpoint.name}" requires a transport`);
+			}
+			if (endpoint.activation !== undefined && !isActivation(endpoint.activation)) {
+				throw new AceConfigError(
+					`subscribe "${endpoint.name}" has an invalid activation: ${endpoint.activation as string}`,
+				);
+			}
+			return endpoint;
+		});
 
 		const transportByName = new Map<string, Transport>();
 		const usedTransports = new Set<Transport>();

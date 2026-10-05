@@ -1,37 +1,27 @@
 import type { Activation } from "../protocol/ace-message.ts";
-import { isActivation } from "../protocol/ace-message.ts";
-import { describeValue, isPlainObject } from "../utils.ts";
-
-/** Roles a binding can have; they differ in which keys are legal. */
-export type EndpointRole = "subscribe" | "publish";
-
-/** Keys every binding may carry, whatever its transport kind. */
-const COMMON_KEYS = ["name", "transport", "description", "enabled", "config", "options"] as const;
-
-/** Longest accepted `sender`; also the charset that keeps logs and rendered headers sane. */
-export const MAX_SENDER_LENGTH = 128;
-const SENDER_PATTERN = /^[A-Za-z0-9._@:-]{1,128}$/;
+import { describeValue } from "../utils.ts";
 
 /**
- * One MQ binding in `.ace.json`, under `subscribe` or `publish` (RFC §10 runtime configuration).
+ * One channel binding, as the runtime sees it after configuration is resolved.
  *
- * `name`/`transport`/`description`/`activation`/`enabled` are transport-independent; everything a
- * specific broker needs sits in {@link config} (validated against that kind) and every raw client
- * option the operator wants to pass through sits in {@link options} (not validated).
+ * `name` is the local subscription label, `transport` is fixed to Redis, `config` carries the address
+ * settings the Redis transport reads (stream, group, url, field…), and `options` is passed through to
+ * the client library untouched.
  *
- * Not an ACE protocol object: the address and the transport belong to the deployment, and an ACE
- * message never carries them (RFC §4).
+ * These endpoints are **derived**, not written: a channel's address comes from its name
+ * (`<ns>:ch:<name>`) and its group from the subscribing session's sender name. `docs/ace-plan.md` and
+ * `runtime-contracts.ts` carry the model; this file only defines the shape the transport consumes.
  */
 export interface EndpointConfig {
 	name: string;
 	transport: string;
 	/** Human/model-readable note about this channel, e.g. which peer sits on the other end. */
 	description?: string;
-	/** Subscriptions only: activation this receiver forces (RFC §8); `default` delegates to the message. */
+	/** Subscriptions only: activation this receiver forces; `default` delegates to the message. */
 	activation?: Activation;
 	/** Whether the runtime starts this channel at all; defaults to `true`. */
 	enabled?: boolean;
-	/** Transport-specific settings, validated by that kind. */
+	/** Transport-specific settings, validated by that transport. */
 	config: Record<string, unknown>;
 	/** Raw options handed to the transport's client library; never validated, never interpreted. */
 	options: Record<string, unknown>;
@@ -59,71 +49,6 @@ export function rejectUnknownKeys(value: Record<string, unknown>, allowed: reado
 			`${subject} has unknown setting(s) ${unknown.map((key) => `"${key}"`).join(", ")} (supported: ${allowed.join(", ")})`,
 		);
 	}
-}
-
-/**
- * Validate one binding: `name`, `transport`, optional `description`/`enabled`/`config`/`options`,
- * and `activation` for subscriptions only.
- */
-export function validateEndpointConfig(value: unknown, role: EndpointRole): EndpointConfig {
-	const subject = role;
-	if (!isPlainObject(value)) {
-		throw new AceConfigError(`${subject} entry must be an object, received ${describeValue(value)}`);
-	}
-
-	const { name, transport, description, activation, enabled, config, options } = value;
-	if (typeof name !== "string" || name.length === 0) {
-		throw new AceConfigError(`${subject} entry requires a non-empty name`);
-	}
-	const named = `${subject} "${name}"`;
-
-	if (typeof transport !== "string" || transport.length === 0) {
-		throw new AceConfigError(`${named} requires a non-empty transport`);
-	}
-	if (description !== undefined && (typeof description !== "string" || description.length === 0)) {
-		throw new AceConfigError(`${named} has invalid description: ${describeValue(description)}`);
-	}
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		throw new AceConfigError(`${named} has invalid enabled: ${describeValue(enabled)}`);
-	}
-	if (config !== undefined && !isPlainObject(config)) {
-		throw new AceConfigError(`${named} has invalid config: ${describeValue(config)}`);
-	}
-	if (options !== undefined && !isPlainObject(options)) {
-		throw new AceConfigError(`${named} has invalid options: ${describeValue(options)}`);
-	}
-
-	if (activation !== undefined) {
-		if (role === "publish") {
-			throw new AceConfigError(`${named} must not set activation: the receiver decides activation (RFC §8)`);
-		}
-		if (!isActivation(activation)) {
-			throw new AceConfigError(`${named} has invalid activation: ${describeValue(activation)}`);
-		}
-	}
-
-	const allowed = role === "subscribe" ? [...COMMON_KEYS, "activation"] : [...COMMON_KEYS];
-	rejectUnknownKeys(value, allowed, named);
-
-	return {
-		name,
-		transport,
-		...(description === undefined ? {} : { description }),
-		...(activation === undefined ? {} : { activation }),
-		...(enabled === undefined ? {} : { enabled }),
-		config: config ?? {},
-		options: options ?? {},
-	};
-}
-
-/** Validate the `sender` identity: stable, loggable, and impossible to forge a rendered header with. */
-export function validateSender(value: unknown, source: string): string {
-	if (typeof value !== "string" || !SENDER_PATTERN.test(value)) {
-		throw new AceConfigError(
-			`${source}: sender must match [A-Za-z0-9._@:-]{1,${MAX_SENDER_LENGTH}} (no spaces, newlines, or control characters), received ${describeValue(value)}`,
-		);
-	}
-	return value;
 }
 
 /** Read a required non-empty string setting from a transport config. */

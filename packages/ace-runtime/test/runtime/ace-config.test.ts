@@ -4,24 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ACE_CONFIG_FILENAME,
-	channelWarnings,
-	createPublishers,
-	createTransports,
 	interpolateEnv,
 	loadAceConfig,
 	parseAceConfig,
 	resolveAceConfig,
+	resolveSubscription,
+	subscriptionEndpoint,
 } from "../../src/runtime/ace-config.ts";
-import { AceConfigError, type EndpointConfig } from "../../src/runtime/endpoint-config.ts";
-
-const inbox: EndpointConfig = {
-	name: "inbox",
-	transport: "redis-streams",
-	activation: "next_turn",
-	config: { stream: "ace:in.a", group: "agent-a" },
-	options: {},
-};
-const toB: EndpointConfig = { name: "to-b", transport: "redis-streams", config: { stream: "ace:in.b" }, options: {} };
+import { AceConfigError } from "../../src/runtime/endpoint-config.ts";
+import { channelStreamKey, NAMESPACE_DEFAULT } from "../../src/runtime/naming.ts";
 
 const directories: string[] = [];
 
@@ -37,196 +28,95 @@ function writeConfig(directory: string, config: unknown): string {
 	return path;
 }
 
+const minimal = { username: "noexcs", servers: { local: { url: "redis://127.0.0.1:6379" } } };
+
 afterEach(() => {
 	while (directories.length > 0) rmSync(directories.pop() as string, { recursive: true, force: true });
 });
 
 describe("parseAceConfig", () => {
-	it("accepts a subscription and a default activation", () => {
-		expect(parseAceConfig({ defaultActivation: "immediate", subscribe: [inbox] }, ".ace.json")).toEqual({
-			defaultActivation: "immediate",
-			subscribe: [{ ...inbox }],
+	it("accepts a username and a server", () => {
+		expect(parseAceConfig(minimal, ".ace.json")).toEqual({
+			username: "noexcs",
+			servers: { local: { url: "redis://127.0.0.1:6379" } },
 		});
 	});
 
-	it("accepts publish channels with a sender and keeps options", () => {
-		const parsed = parseAceConfig(
-			{
-				sender: "agent-a",
-				subscribe: [inbox],
-				publish: [{ ...toB, options: { socket: { connectTimeout: 5000 } } }],
-			},
-			".ace.json",
+	it("refuses a colon in the fixed segments", () => {
+		expect(() => parseAceConfig({ ...minimal, username: "noexcs:x" }, ".ace.json")).toThrow(/must not contain/);
+		expect(() =>
+			parseAceConfig({ username: "u", servers: { "ace:lan": { url: "redis://x" } } }, ".ace.json"),
+		).toThrow(/must not contain/);
+		expect(() =>
+			parseAceConfig({ username: "u", servers: { lan: { url: "redis://x", namespace: "a:b" } } }, ".ace.json"),
+		).toThrow(/must not contain/);
+	});
+
+	it("requires at least one server with a non-empty url", () => {
+		expect(() => parseAceConfig({ username: "u", servers: {} }, ".ace.json")).toThrow(/non-empty object/);
+		expect(() => parseAceConfig({ username: "u", servers: { lan: {} } }, ".ace.json")).toThrow(/url/);
+		expect(() => parseAceConfig({ username: "u", servers: { lan: { url: "" } } }, ".ace.json")).toThrow(/url/);
+	});
+
+	it("rejects unknown settings inside a server entry", () => {
+		expect(() =>
+			parseAceConfig({ username: "u", servers: { lan: { url: "redis://x", prefix: "ace" } } }, ".ace.json"),
+		).toThrow(/unknown setting/);
+	});
+
+	it("validates the remaining optional fields", () => {
+		expect(() => parseAceConfig({ ...minimal, defaultActivation: "later" }, ".ace.json")).toThrow(
+			/defaultActivation/,
 		);
-
-		expect(parsed.sender).toBe("agent-a");
-		expect(parsed.publish?.[0]?.options).toEqual({ socket: { connectTimeout: 5000 } });
+		expect(() => parseAceConfig({ ...minimal, projectConfig: "merge" }, ".ace.json")).toThrow(/projectConfig/);
+		expect(() => parseAceConfig({ ...minimal, subscribe: "inbox" }, ".ace.json")).toThrow(/subscribe/);
+		expect(() => parseAceConfig({ ...minimal, subscribe: [""] }, ".ace.json")).toThrow(/non-empty strings/);
+		expect(() => parseAceConfig({ ...minimal, manual: { ttl: 5 } }, ".ace.json")).toThrow(/unknown setting/);
 	});
 
-	it("accepts enabled: false and keeps it on the entry", () => {
-		expect(parseAceConfig({ subscribe: [{ ...inbox, enabled: false }] }, ".ace.json").subscribe[0]?.enabled).toBe(
-			false,
-		);
-	});
+	it("accepts a plain username and subscribe names as written", () => {
+		const parsed = parseAceConfig({ ...minimal, subscribe: ["inbox", "lan:ci-failures"] }, ".ace.json");
 
-	it.each([
-		["a non-object document", ["not", "an", "object"]],
-		["a delegated defaultActivation", { defaultActivation: "default", subscribe: [inbox] }],
-		["missing subscribe", { defaultActivation: "next_turn" }],
-		["empty subscribe", { subscribe: [] }],
-		["an unsupported transport", { subscribe: [{ ...inbox, transport: "kafka" }] }],
-		["an unknown transport kind", { subscribe: [{ name: "x", transport: "kafka", config: { topic: "t" } }] }],
-		[
-			"a subscription without a stream",
-			{ subscribe: [{ name: "x", transport: "redis-streams", config: { group: "g" } }] },
-		],
-		["an unknown setting in config", { subscribe: [{ ...inbox, config: { ...inbox.config, strem: "typo" } }] }],
-		["an unknown top-level key", { subscribe: [{ ...inbox, stram: "typo" }] }],
-		["an empty description", { subscribe: [{ ...inbox, description: "" }] }],
-		["a non-boolean enabled", { subscribe: [{ ...inbox, enabled: "yes" }] }],
-		["a non-object config", { subscribe: [{ ...inbox, config: "stream" }] }],
-		["a non-object options", { subscribe: [{ ...inbox, options: 7 }] }],
-		["an invalid activation", { subscribe: [{ ...inbox, activation: "soon" }] }],
-		[
-			"activation on a publish channel",
-			{ sender: "agent-a", subscribe: [inbox], publish: [{ ...toB, activation: "immediate" }] },
-		],
-		["an empty publish array", { sender: "agent-a", subscribe: [inbox], publish: [] }],
-		[
-			"a publish channel without a stream",
-			{ sender: "agent-a", subscribe: [inbox], publish: [{ name: "o", transport: "redis-streams", config: {} }] },
-		],
-		["a sender with a space", { sender: "agent a", subscribe: [inbox], publish: [toB] }],
-		["a sender with a newline", { sender: "agent\na", subscribe: [inbox], publish: [toB] }],
-		["an over-long sender", { sender: "a".repeat(129), subscribe: [inbox], publish: [toB] }],
-		["a duplicated subscribe name", { subscribe: [inbox, inbox] }],
-		["a zero manual limit", { subscribe: [inbox], manual: { max: 0 } }],
-		["an unknown manual key", { subscribe: [inbox], manual: { ttl: 10 } }],
-		["a duplicated publish name", { sender: "agent-a", subscribe: [inbox], publish: [toB, toB] }],
-	])("rejects %s", (_name, document) => {
-		expect(() => parseAceConfig(document, ".ace.json")).toThrow(AceConfigError);
-	});
-
-	it("accepts manual retention limits", () => {
-		const parsed = parseAceConfig({ subscribe: [inbox], manual: { max: 10, ttlMs: 1000 } }, ".ace.json");
-
-		expect(parsed.manual).toEqual({ max: 10, ttlMs: 1000 });
-	});
-
-	it("accepts a sender without publish channels", () => {
-		expect(parseAceConfig({ sender: "agent-a", subscribe: [inbox] }, ".ace.json").sender).toBe("agent-a");
-	});
-
-	it("names the file in the error", () => {
-		expect(() => parseAceConfig({}, "/tmp/project/.ace.json")).toThrow(/\/tmp\/project\/\.ace\.json/);
+		expect(parsed.subscribe).toEqual(["inbox", "lan:ci-failures"]);
 	});
 });
-
-describe("channelWarnings", () => {
-	it("warns when two subscriptions split a stream inside one group", () => {
-		const warnings = channelWarnings({
-			subscribe: [
-				{ ...inbox, name: "a" },
-				{ ...inbox, name: "b" },
-			],
-		});
-
-		expect(warnings[0]).toMatch(/same group/);
-	});
-
-	it("warns when two subscriptions deliver every event twice to one agent", () => {
-		const warnings = channelWarnings({
-			subscribe: [
-				{ ...inbox, name: "a" },
-				{ ...inbox, name: "b", config: { stream: "ace:in.a", group: "other" } },
-			],
-		});
-
-		expect(warnings[0]).toMatch(/every event twice/);
-	});
-
-	it("stays quiet for distinct channels", () => {
-		expect(
-			channelWarnings({ subscribe: [inbox, { ...inbox, name: "b", config: { stream: "ace:in.b", group: "g" } }] }),
-		).toEqual([]);
-	});
-});
-
-// `${NAME}` for fixtures that must contain a placeholder literally: built by interpolation, with the
-// brace escaped so the source never contains the sequence the linter forbids in plain strings.
-const ref = (name: string): string => `$\u007B${name}}`;
 
 describe("interpolateEnv", () => {
-	it("substitutes environment values anywhere in the document", () => {
-		const resolved = interpolateEnv(
-			{
-				subscribe: [
-					{
-						...inbox,
-						config: { stream: "ace:in", group: "g", url: `redis://:${ref("REDIS_PASSWORD")}@broker:6379` },
-					},
-				],
-			},
-			{ REDIS_PASSWORD: "s3cret" },
-			".ace.json",
-		) as { subscribe: Array<{ config: { url: string } }> };
+	// Built without writing `${` in a string literal: the linter reads that as a forgotten template.
+	const dollar = "$";
 
-		expect(resolved.subscribe[0]?.config.url).toBe("redis://:s3cret@broker:6379");
-	});
-
-	it("fails loudly when a referenced variable is unset", () => {
-		expect(() => interpolateEnv({ subscribe: [{ url: ref("MISSING") }] }, {}, ".ace.json")).toThrow(
-			/uses \$\{MISSING\} but the variable is not set/,
-		);
-	});
-
-	it("keeps a literal dollar with $$", () => {
-		expect(interpolateEnv(`cost: $${ref("PRICE")}`, { PRICE: "5" }, ".ace.json")).toBe(`cost: ${ref("PRICE")}`);
-	});
-
-	it("carries the agent directory through resolution", () => {
-		const cwd = temporaryDirectory();
-		writeConfig(cwd, {
-			subscribe: [inbox],
-			registry: { url: "redis://broker:6379", prefix: "team:agents" },
+	it("resolves a variable and refuses an unset one", () => {
+		expect(interpolateEnv({ url: `redis://:${dollar}{PASS}@h` }, { PASS: "s3cret" }, ".ace.json")).toEqual({
+			url: "redis://:s3cret@h",
 		});
-
-		expect(resolveAceConfig({ cwd }).registry).toEqual({ url: "redis://broker:6379", prefix: "team:agents" });
+		expect(() => interpolateEnv({ url: `${dollar}{PASS}` }, {}, ".ace.json")).toThrow(/is not set/);
 	});
 
-	it("is applied when loading the file", () => {
-		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [{ ...inbox, config: { stream: ref("ACE_TEST_STREAM"), group: "g" } }] });
-
-		expect(loadAceConfig({ cwd, env: { ACE_TEST_STREAM: "ace:from-env" } })?.config.subscribe[0]?.config.stream).toBe(
-			"ace:from-env",
-		);
+	it("writes a literal with $$", () => {
+		expect(interpolateEnv({ url: `${dollar}${dollar}{PASS}` }, { PASS: "x" }, ".ace.json")).toEqual({
+			url: `${dollar}{PASS}`,
+		});
 	});
 });
 
 describe("loadAceConfig", () => {
 	it("reads .ace.json from the working directory", () => {
 		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [inbox] });
+		writeConfig(cwd, minimal);
 
-		const loaded = loadAceConfig({ cwd });
+		const loaded = loadAceConfig({ cwd, env: {} });
 
 		expect(loaded?.source).toBe(join(cwd, ACE_CONFIG_FILENAME));
-		expect(loaded?.config.subscribe).toEqual([{ ...inbox }]);
+		expect(loaded?.config.username).toBe("noexcs");
 	});
 
-	it("prefers ACE_CONFIG over the working directory", () => {
+	it("prefers $ACE_CONFIG over the working directory", () => {
 		const cwd = temporaryDirectory();
 		const elsewhere = join(temporaryDirectory(), "custom.json");
-		writeConfig(cwd, { subscribe: [inbox] });
-		writeFileSync(
-			elsewhere,
-			JSON.stringify({ subscribe: [{ ...inbox, config: { stream: "ace:custom", group: "g" } }] }),
-		);
+		writeConfig(cwd, minimal);
+		writeFileSync(elsewhere, JSON.stringify({ ...minimal, username: "from-env" }));
 
-		expect(loadAceConfig({ cwd, env: { ACE_CONFIG: elsewhere } })?.config.subscribe[0]?.config.stream).toBe(
-			"ace:custom",
-		);
+		expect(loadAceConfig({ cwd, env: { ACE_CONFIG: elsewhere } })?.config.username).toBe("from-env");
 	});
 
 	it("returns undefined without a config file", () => {
@@ -242,28 +132,21 @@ describe("loadAceConfig", () => {
 });
 
 describe("host-global candidates", () => {
-	it("falls back to a host-global file when the project has none", () => {
+	it("falls back to a global file when the project has none", () => {
 		const cwd = temporaryDirectory();
 		const global = join(temporaryDirectory(), "ace.json");
-		writeFileSync(global, JSON.stringify({ subscribe: [inbox] }));
+		writeFileSync(global, JSON.stringify(minimal));
 
-		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
-
-		expect(loaded?.source).toBe(global);
-		expect(loaded?.config.subscribe).toEqual([{ ...inbox }]);
+		expect(loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] })?.source).toBe(global);
 	});
 
 	it("prefers the project file, and reports the global it shadowed", () => {
 		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [inbox] });
+		writeConfig(cwd, minimal);
 		const global = join(temporaryDirectory(), "ace.json");
-		writeFileSync(
-			global,
-			JSON.stringify({ subscribe: [{ ...inbox, config: { stream: "ace:global", group: "g" } }] }),
-		);
+		writeFileSync(global, JSON.stringify({ ...minimal, username: "global-user" }));
 
 		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
-
 		expect(loaded?.source).toBe(join(cwd, ACE_CONFIG_FILENAME));
 		expect(loaded?.shadowed).toBe(global);
 		expect(resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] }).warnings.join(" ")).toContain(
@@ -271,150 +154,144 @@ describe("host-global candidates", () => {
 		);
 	});
 
+	it("inherits username from the global file, then from $USER", () => {
+		const cwd = temporaryDirectory();
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(global, JSON.stringify({ ...minimal, username: "global-user" }));
+		// The project file says who the servers are; who the *user* is comes from further up.
+		writeConfig(cwd, { servers: minimal.servers });
+
+		expect(resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] }).username).toBe("global-user");
+		expect(resolveAceConfig({ cwd, env: { USER: "env-user" }, globalConfigPaths: [global] }).username).toBe(
+			"global-user",
+		);
+
+		const noGlobal = temporaryDirectory();
+		writeConfig(noGlobal, { servers: minimal.servers });
+		expect(resolveAceConfig({ cwd: noGlobal, env: { USER: "env-user" } }).username).toBe("env-user");
+		expect(() => resolveAceConfig({ cwd: noGlobal, env: {} })).toThrow(/username is required/);
+	});
+
 	it("lets a global file refuse to be overridden", () => {
 		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [inbox] });
+		writeConfig(cwd, minimal);
 		const global = join(temporaryDirectory(), "ace.json");
-		writeFileSync(
-			global,
-			JSON.stringify({
-				projectConfig: "ignore",
-				subscribe: [{ ...inbox, config: { stream: "ace:global", group: "g" } }],
-			}),
-		);
+		writeFileSync(global, JSON.stringify({ ...minimal, username: "global-user", projectConfig: "ignore" }));
 
-		const loaded = loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] });
-
-		expect(loaded?.source).toBe(global);
-		expect(loaded?.config.subscribe[0]?.config.stream).toBe("ace:global");
-	});
-
-	it("keeps $ACE_CONFIG above a project file and a global one", () => {
-		const cwd = temporaryDirectory();
-		const elsewhere = join(temporaryDirectory(), "custom.json");
-		writeConfig(cwd, { subscribe: [inbox] });
-		const global = join(temporaryDirectory(), "ace.json");
-		writeFileSync(global, JSON.stringify({ projectConfig: "ignore", subscribe: [inbox] }));
-		writeFileSync(
-			elsewhere,
-			JSON.stringify({ subscribe: [{ ...inbox, config: { stream: "ace:custom", group: "g" } }] }),
-		);
-
-		const loaded = loadAceConfig({ cwd, env: { ACE_CONFIG: elsewhere }, globalConfigPaths: [global] });
-
-		expect(loaded?.source).toBe(elsewhere);
-	});
-
-	it("names every candidate it looked in when nothing is found", () => {
-		const cwd = temporaryDirectory();
-		const global = join(temporaryDirectory(), "ace.json");
-
-		expect(() => resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] })).toThrow(
-			new RegExp(`looked in .*${ACE_CONFIG_FILENAME}.*${global.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
-		);
-	});
-
-	it('rejects a projectConfig other than "ignore"', () => {
-		expect(() => parseAceConfig({ projectConfig: "merge", subscribe: [inbox] }, ".ace.json")).toThrow(
-			/projectConfig must be "ignore"/,
-		);
+		expect(loadAceConfig({ cwd, env: {}, globalConfigPaths: [global] })?.config.username).toBe("global-user");
 	});
 });
 
 describe("resolveAceConfig", () => {
-	it("resolves channels, sender and warnings from the file", () => {
-		const cwd = temporaryDirectory();
-		const source = writeConfig(cwd, { sender: "agent-a", subscribe: [inbox], publish: [toB] });
-
-		const resolved = resolveAceConfig({ cwd, env: {} });
-
-		expect(resolved).toMatchObject({ source, sender: "agent-a" });
-		expect(resolved.subscribe[0]?.name).toBe("inbox");
-		expect(resolved.publish[0]?.name).toBe("to-b");
-		expect(resolved.disabled).toEqual([]);
-		// A configured `sender` is unused now: the session publishes as its directory member.
-		expect(resolved.warnings.join("\n")).toContain('sender "agent-a" is unused');
-	});
-
-	it("accepts publish channels without a sender, which the identity no longer needs", () => {
-		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [inbox], publish: [toB] });
-
-		const resolved = resolveAceConfig({ cwd, env: {} });
-
-		expect(resolved.publish[0]?.name).toBe("to-b");
-		expect(resolved.sender).toBeUndefined();
-		expect(resolved.warnings.join("\n")).not.toContain("is unused");
-	});
-
-	it("filters disabled channels out and reports them", () => {
+	it("resolves servers with their namespace defaulted", () => {
 		const cwd = temporaryDirectory();
 		writeConfig(cwd, {
-			sender: "agent-a",
-			subscribe: [inbox, { ...inbox, name: "paused", enabled: false, config: { stream: "ace:paused", group: "g" } }],
-			publish: [{ ...toB, enabled: false }],
+			username: "u",
+			servers: { local: { url: "redis://x" }, lan: { url: "redis://y", namespace: "lan" } },
 		});
 
 		const resolved = resolveAceConfig({ cwd, env: {} });
 
-		expect(resolved.subscribe.map((endpoint) => endpoint.name)).toEqual(["inbox"]);
-		expect(resolved.publish).toEqual([]);
-		expect(resolved.disabled.sort()).toEqual(["paused", "to-b"]);
+		expect(resolved.servers).toEqual([
+			{ name: "local", url: "redis://x", namespace: NAMESPACE_DEFAULT },
+			{ name: "lan", url: "redis://y", namespace: "lan" },
+		]);
 	});
 
-	it("leaves sender undefined when nothing is published", () => {
+	it("resolves subscriptions: a short name against the only server", () => {
 		const cwd = temporaryDirectory();
-		writeConfig(cwd, { subscribe: [inbox] });
+		writeConfig(cwd, { username: "noexcs", servers: { local: { url: "redis://x" } }, subscribe: ["inbox"] });
 
-		expect(resolveAceConfig({ cwd, env: {} }).sender).toBeUndefined();
+		const resolved = resolveAceConfig({ cwd, env: {} });
+
+		expect(resolved.subscriptions).toEqual([
+			{
+				server: { name: "local", url: "redis://x", namespace: "ace" },
+				channel: "ace:noexcs:inbox",
+				name: "ace:noexcs:inbox",
+			},
+		]);
 	});
 
-	it("requires the configuration file: MQ settings never come from the environment", () => {
+	it("reports two servers sharing one Redis as the two islands they are", () => {
 		const cwd = temporaryDirectory();
+		writeConfig(cwd, {
+			username: "u",
+			servers: { lan: { url: "redis://same", namespace: "lan" }, ci: { url: "redis://same", namespace: "ci" } },
+		});
 
-		expect(() =>
-			resolveAceConfig({ cwd, env: { ACE_STREAM: "ace:env", ACE_REDIS_URL: "redis://elsewhere" } }),
-		).toThrow(/no \.ace\.json found/);
+		expect(resolveAceConfig({ cwd, env: {} }).warnings.join(" ")).toContain("cannot see each other");
 	});
 });
 
-describe("createTransports / createPublishers", () => {
-	it("keys one transport per subscription name", () => {
-		const transports = createTransports(
-			[
-				{ ...inbox },
-				{ name: "alerts", transport: "redis-streams", config: { stream: "ace:alerts", group: "g" }, options: {} },
-			],
-			{ onError: () => {} },
+describe("resolveSubscription", () => {
+	const servers = [
+		{ name: "lan", url: "redis://x", namespace: "lan" },
+		{ name: "ci", url: "redis://y", namespace: "ci" },
+	];
+
+	it("completes the namespace and username of a short name", () => {
+		expect(resolveSubscription({ servers: [servers[0]!], username: "noexcs", name: "ci-failures" })).toEqual({
+			server: servers[0],
+			channel: "lan:noexcs:ci-failures",
+		});
+	});
+
+	it("refuses a short name when several servers could own it", () => {
+		expect(() => resolveSubscription({ servers, username: "noexcs", name: "ci-failures" })).toThrow(/ambiguous/);
+	});
+
+	it("honours an explicit server prefix", () => {
+		expect(resolveSubscription({ servers, username: "noexcs", name: "ci:ci-failures" })).toEqual({
+			server: servers[1],
+			channel: "ci:noexcs:ci-failures",
+		});
+	});
+
+	it("refuses an unknown server prefix and lists the known ones", () => {
+		expect(() => resolveSubscription({ servers, username: "noexcs", name: "nope:ci-failures" })).toThrow(
+			/unknown server "nope"/,
 		);
+	});
+});
 
-		expect(Object.keys(transports).sort()).toEqual(["alerts", "inbox"]);
-		expect(transports.inbox).not.toBe(transports.alerts);
+describe("subscriptionEndpoint", () => {
+	it("derives the address from the channel name and the group from the subscriber", () => {
+		const sender = "ace:noexcs:oh-my-pi:01a10a";
+
+		expect(
+			subscriptionEndpoint({ channel: "ace:noexcs:ci-failures", url: "redis://x", namespace: "ace", sender }),
+		).toEqual({
+			name: "ace:noexcs:ci-failures",
+			transport: "redis-streams",
+			activation: undefined,
+			description: undefined,
+			config: {
+				stream: channelStreamKey("ace", "ace:noexcs:ci-failures"),
+				group: sender,
+				url: "redis://x",
+				field: "message",
+			},
+			options: {},
+		});
 	});
 
-	it("keys one publisher per publication name", () => {
-		const publishers = createPublishers(
-			[{ ...toB }, { name: "to-c", transport: "redis-streams", config: { stream: "ace:in.c" }, options: {} }],
-			{ onError: () => {} },
-		);
+	it("takes a local label when the host needs one (the inbox)", () => {
+		const endpoint = subscriptionEndpoint({
+			channel: "ace:noexcs:oh-my-pi:01a10a",
+			name: "session-inbox",
+			url: "redis://x",
+			namespace: "ace",
+			sender: "ace:noexcs:oh-my-pi:01a10a",
+		});
 
-		expect(Object.keys(publishers).sort()).toEqual(["to-b", "to-c"]);
-		expect(publishers["to-b"]).not.toBe(publishers["to-c"]);
+		expect(endpoint.name).toBe("session-inbox");
+		expect(endpoint.config.group).toBe("ace:noexcs:oh-my-pi:01a10a");
 	});
+});
 
-	it("rejects an unsupported subscription transport kind", () => {
-		expect(() =>
-			createTransports([{ name: "alerts", transport: "kafka", config: { topic: "ace" }, options: {} }], {
-				onError: () => {},
-			}),
-		).toThrow(/unsupported transport "kafka"/);
-	});
-
-	it("rejects an unsupported publication transport kind", () => {
-		expect(() =>
-			createPublishers([{ name: "to-b", transport: "nats", config: { subject: "ace" }, options: {} }], {
-				onError: () => {},
-			}),
-		).toThrow(/unsupported transport "nats"/);
+describe("AceConfigError", () => {
+	it("is thrown for unusable configuration", () => {
+		expect(() => parseAceConfig(null, ".ace.json")).toThrow(AceConfigError);
 	});
 });

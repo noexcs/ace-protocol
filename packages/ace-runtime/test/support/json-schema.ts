@@ -9,7 +9,7 @@ export interface JsonSchemaNode {
 	type?: string;
 	required?: string[];
 	properties?: Record<string, JsonSchemaNode>;
-	additionalProperties?: boolean;
+	additionalProperties?: boolean | JsonSchemaNode;
 	items?: JsonSchemaNode;
 	const?: unknown;
 	enum?: readonly unknown[];
@@ -18,6 +18,8 @@ export interface JsonSchemaNode {
 	pattern?: string;
 	minimum?: number;
 	minItems?: number;
+	minProperties?: number;
+	propertyNames?: JsonSchemaNode;
 	allOf?: JsonSchemaNode[];
 	if?: JsonSchemaNode;
 	then?: JsonSchemaNode;
@@ -71,16 +73,24 @@ export function schemaErrors(
 			if (schema.type === "object") errors.push(`${path}: must be an object`);
 		} else {
 			const record = value as Record<string, unknown>;
+			if (schema.minProperties !== undefined && Object.keys(record).length < schema.minProperties) {
+				errors.push(`${path}: needs at least ${schema.minProperties} properties`);
+			}
+			for (const key of Object.keys(record)) {
+				if (schema.propertyNames) errors.push(...schemaErrors(key, schema.propertyNames, root, `${path}${key}: `));
+			}
 			for (const key of schema.required ?? []) {
 				if (!(key in record)) errors.push(`${path}${key}: is required`);
 			}
 			for (const [key, child] of Object.entries(schema.properties ?? {})) {
 				if (key in record) errors.push(...schemaErrors(record[key], child, root, `${path}${key}.`));
 			}
-			if (schema.additionalProperties === false) {
-				const known = new Set(Object.keys(schema.properties ?? {}));
-				for (const key of Object.keys(record)) {
-					if (!known.has(key)) errors.push(`${path}${key}: is not allowed`);
+			const known = new Set(Object.keys(schema.properties ?? {}));
+			for (const key of Object.keys(record)) {
+				if (known.has(key)) continue;
+				if (schema.additionalProperties === false) errors.push(`${path}${key}: is not allowed`);
+				else if (typeof schema.additionalProperties === "object" && schema.additionalProperties !== null) {
+					errors.push(...schemaErrors(record[key], schema.additionalProperties, root, `${path}${key}.`));
 				}
 			}
 		}

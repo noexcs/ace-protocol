@@ -1,4 +1,3 @@
-import type { ResolvedAceConfig } from "../runtime/ace-config.ts";
 import type { RegistryEntry } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 import { endpointAddress } from "../runtime/endpoint-config.ts";
@@ -23,10 +22,13 @@ export function describeEndpoint(endpoint: EndpointConfig): string {
 /**
  * The listing `ace_channels` returns: this session's channels as the model needs them — name, transport,
  * description, activation — without the deployment plumbing (`config`/`options`) or the burst internals.
+ *
+ * One section only: with channels living on a server and addresses derived from names, "what I publish
+ * to" is any channel name the model chooses (a peer's sender name for a direct message), not a separate
+ * configured list.
  */
 export function formatChannelListing(
 	subscriptions: readonly EndpointConfig[],
-	publications: readonly EndpointConfig[],
 	options: { derivedName?: string; disabled?: readonly string[] } = {},
 ): string {
 	const line = (endpoint: EndpointConfig): string =>
@@ -42,8 +44,6 @@ export function formatChannelListing(
 	return [
 		"subscribe:",
 		...subscriptions.map((endpoint) => `  ${line(endpoint)}`),
-		"publish:",
-		...(publications.length === 0 ? ["  (none)"] : publications.map((endpoint) => `  ${line(endpoint)}`)),
 		...(options.disabled === undefined || options.disabled.length === 0
 			? []
 			: [`disabled: ${options.disabled.join(", ")}`]),
@@ -51,24 +51,23 @@ export function formatChannelListing(
 }
 
 /**
- * The inputs every channel surface lists: the configured channels plus the inbox the agent directory
- * registered for this session. One function keeps `ace_channels`, `/ace list` and the manager from
+ * The inputs every channel surface lists: the channels this session subscribes to, plus the inbox the
+ * agent directory registered for it. One function keeps `ace_channels`, `/ace list` and the manager from
  * disagreeing about what this session is wired to.
  */
 export function channelListingInput(
-	config: ResolvedAceConfig,
+	subscriptions: readonly EndpointConfig[],
 	inbox?: EndpointConfig,
 ): {
 	subscriptions: readonly EndpointConfig[];
-	publications: readonly EndpointConfig[];
 	derivedName?: string;
 	disabled: readonly string[];
 } {
+	const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
 	return {
-		subscriptions: inbox === undefined ? config.subscribe : [...config.subscribe, inbox],
-		publications: config.publish,
+		subscriptions: all,
 		...(inbox === undefined ? {} : { derivedName: SESSION_INBOX }),
-		disabled: config.disabled,
+		disabled: all.filter((endpoint) => endpoint.enabled === false).map((endpoint) => endpoint.name),
 	};
 }
 
@@ -78,7 +77,6 @@ export interface ChannelReport {
 	agentState: string;
 	source?: string;
 	subscriptions: readonly EndpointConfig[];
-	publications: readonly EndpointConfig[];
 	/** Name of the inbox the agent directory registered for this session, when there is one. */
 	derivedName?: string;
 	disabled: readonly string[];
@@ -110,8 +108,6 @@ export function formatChannelReport(report: ChannelReport): string {
 		`${report.identity} (agent ${report.agentState})${report.source === undefined ? "" : ` — ${report.source}`}`,
 		"subscribe:",
 		...lines(report.subscriptions),
-		"publish:",
-		...lines(report.publications),
 		`disabled: ${report.disabled.length === 0 ? "(none)" : report.disabled.join(", ")}`,
 		`manual: ${report.pendingManual} pending, ${letters}`,
 	].join("\n");
