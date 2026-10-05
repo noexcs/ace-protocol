@@ -22,9 +22,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import type { AceMessage } from "ace-runtime";
-import { channelName, channelStreamKey } from "ace-runtime";
 import { createClient } from "redis";
+import type { AceMessage } from "../vendor/ace-runtime/dist/index.js";
+import { channelName, channelStreamKey } from "../vendor/ace-runtime/dist/index.js";
 
 const url = process.env.ACE_VERIFY_REDIS_URL ?? "redis://127.0.0.1:6379";
 const extensionPath = new URL("../extensions/ace.ts", import.meta.url).pathname;

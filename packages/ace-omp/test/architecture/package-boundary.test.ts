@@ -36,6 +36,21 @@ describe("package boundary", () => {
 		expect(offenders).toEqual([]);
 	});
 
+	it("declares no nested file: dependency — bun cannot resolve one inside an installed tarball", () => {
+		// `file:./vendor/ace-runtime` resolved in a checkout but not in an install: bun rewrites the
+		// specifier against its own cache root, where the tarball's `package/` level is missing. The
+		// vendored core is reached by relative path instead (tsconfig paths + the vitest alias cover the
+		// tests).
+		const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as {
+			dependencies?: Record<string, string>;
+		};
+		const fileDependencies = Object.entries(manifest.dependencies ?? {}).filter(([, spec]) =>
+			spec.startsWith("file:"),
+		);
+
+		expect(fileDependencies).toEqual([]);
+	});
+
 	it("imports the runtime through the copy inside this package", () => {
 		// The omp extension loader refuses a bare `ace-runtime` specifier (a linked sibling package does
 		// not resolve there, while the package's own node_modules and relative paths do). The plugin
