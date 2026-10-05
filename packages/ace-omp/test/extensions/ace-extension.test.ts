@@ -272,7 +272,7 @@ describe("tool arguments", () => {
 
 		// No directory is registered in this test session, so the only target fails at resolution — the same
 		// shape an unreachable peer gives. Defect 3: the thrown text is the documented field list, with the
-		// header's `delivered=0` and a `status=failed` row per input, not a `nothing published: …` sentence.
+		// header's `stored=0` and a `status=failed` row per input, not a `nothing published: …` sentence.
 		const message = await tool("ace_publish", tools)
 			.execute("call_1", { body: "hi", channel: "outbox" })
 			.then(
@@ -281,7 +281,7 @@ describe("tool arguments", () => {
 			);
 
 		const head = message?.split("\n")[0] ?? "";
-		expect(head).toContain("targets=1 delivered=0 failed=1 duplicates=0");
+		expect(head).toContain("targets=1 stored=0 failed=1 duplicates=0");
 		expect(message).toContain("target=outbox status=failed error=");
 		expect(message).not.toContain("nothing published");
 		// Bug 2: no event was created, so the header carries `event=none`, not an id and an empty `sender=`.

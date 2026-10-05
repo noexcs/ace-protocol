@@ -1,4 +1,22 @@
 /** Shared value helpers for protocol validation and runtime configuration checks. */
+/**
+ * A whole number of seconds as an ISO 8601 duration. Days, hours, minutes and seconds are decomposed so
+ * the result is the shortest form that names the value: `0` → `PT0S`, `33` → `PT33S`, `90` → `PT1M30S`,
+ * `3600` → `PT1H`, `86400` → `P1D`, `90061` → `P1DT1H1M1S`. A zero time component is never written
+ * (`PT1H`), a zero value is `PT0S` (never `PT`), fractions are rounded, and a negative or non-finite
+ * value is treated as zero.
+ */
+export function formatIsoDuration(totalSeconds) {
+    const seconds = Number.isFinite(totalSeconds) ? Math.max(0, Math.round(totalSeconds)) : 0;
+    const days = Math.floor(seconds / 86_400);
+    const hours = Math.floor((seconds % 86_400) / 3_600);
+    const minutes = Math.floor((seconds % 3_600) / 60);
+    const secs = seconds % 60;
+    const time = `${hours > 0 ? `${hours}H` : ""}${minutes > 0 ? `${minutes}M` : ""}${secs > 0 ? `${secs}S` : ""}`;
+    if (days > 0)
+        return `P${days}D${time === "" ? "" : `T${time}`}`;
+    return `PT${time === "" ? "0S" : time}`;
+}
 /** Whether `value` is a plain object (not `null`, not an array). */
 export function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

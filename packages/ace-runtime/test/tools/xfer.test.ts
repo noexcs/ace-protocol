@@ -26,7 +26,7 @@ const META: XferMeta = {
 	name: "报告 v2.pdf",
 	size: 4,
 	sha256: SHA,
-	createdAt: 1_000,
+	storedAt: 1_000,
 	expiresAt: 3_601_000,
 };
 
@@ -293,43 +293,108 @@ describe("validateGetInput", () => {
 });
 
 describe("formatSendResult", () => {
-	it("renders the one-line pickup information", () => {
+	const CREATED = Date.UTC(2026, 9, 5, 14, 28, 14, 306);
+	const EXPIRES = CREATED + 3_600_000;
+
+	it("renders the one-line pickup information with the effective name and instants", () => {
 		expect(
-			formatSendResult({ token: TOKEN, size: 1024, sha256: SHA, expiresIn: "PT1H", storedOn: ["local", "second"] }),
-		).toBe(`pickup=${TOKEN} size=1024 sha256=${SHA} expires_in=PT1H stored_on=local,second`);
+			formatSendResult({
+				token: TOKEN,
+				size: 1024,
+				sha256: SHA,
+				name: "report.txt",
+				ttl: "PT1H",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
+				storedOn: ["local", "second"],
+			}),
+		).toBe(
+			`pickup=${TOKEN} size=1024 sha256=${SHA} name=report.txt ttl=PT1H ` +
+				`stored_at=2026-10-05T14:28:14.306Z expires_at=2026-10-05T15:28:14.306Z stored_on=local,second`,
+		);
+	});
+
+	it("quotes a name that carries whitespace, keeping the one-line shape", () => {
+		expect(
+			formatSendResult({
+				token: TOKEN,
+				size: 1,
+				sha256: SHA,
+				name: "report v2.txt",
+				ttl: "PT30M",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
+				storedOn: ["local"],
+			}),
+		).toContain(' name="report v2.txt" ');
 	});
 
 	it("reports an empty stored_on when no server accepted the copy", () => {
-		expect(formatSendResult({ token: TOKEN, size: 0, sha256: SHA, expiresIn: "PT1H", storedOn: [] })).toBe(
-			`pickup=${TOKEN} size=0 sha256=${SHA} expires_in=PT1H stored_on=`,
-		);
+		expect(
+			formatSendResult({
+				token: TOKEN,
+				size: 0,
+				sha256: SHA,
+				name: "empty.bin",
+				ttl: "PT1H",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
+				storedOn: [],
+			}),
+		).toMatch(/ stored_on=$/);
 	});
 
 	it("quotes a stored_on value that carries whitespace, keeping the one-line shape", () => {
 		expect(
-			formatSendResult({ token: TOKEN, size: 1, sha256: SHA, expiresIn: "PT1H", storedOn: ["my host", "second"] }),
-		).toBe(`pickup=${TOKEN} size=1 sha256=${SHA} expires_in=PT1H stored_on="my host,second"`);
-		expect(formatSendResult({ token: TOKEN, size: 1, sha256: SHA, expiresIn: "PT1H", storedOn: ["my host"] })).toBe(
-			`pickup=${TOKEN} size=1 sha256=${SHA} expires_in=PT1H stored_on="my host"`,
-		);
+			formatSendResult({
+				token: TOKEN,
+				size: 1,
+				sha256: SHA,
+				name: "a.bin",
+				ttl: "PT1H",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
+				storedOn: ["my host", "second"],
+			}),
+		).toContain('stored_on="my host,second"');
 	});
 });
 
 describe("formatGetResult", () => {
-	it("renders the path, hash, size and server", () => {
+	const CREATED = Date.UTC(2026, 9, 5, 14, 28, 14, 306);
+	const EXPIRES = CREATED + 3_600_000;
+
+	it("renders the path, hash, size, name, server and the blob's instants", () => {
 		expect(
 			formatGetResult({
 				path: `/work/.ace/xfer/${TOKEN}/sess-1/report.txt`,
 				sha256: SHA,
 				size: 1024,
+				name: "report.txt",
 				from: "local",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
 			}),
-		).toBe(`path=/work/.ace/xfer/${TOKEN}/sess-1/report.txt sha256=${SHA} size=1024 from=local`);
+		).toBe(
+			`path=/work/.ace/xfer/${TOKEN}/sess-1/report.txt sha256=${SHA} size=1024 name=report.txt from=local ` +
+				`stored_at=2026-10-05T14:28:14.306Z expires_at=2026-10-05T15:28:14.306Z`,
+		);
 	});
 
 	it("quotes a path that carries whitespace, keeping the one-line shape", () => {
-		expect(formatGetResult({ path: "/work/.ace/xfer/x/s/report v2.txt", sha256: SHA, size: 4, from: "local" })).toBe(
-			`path="/work/.ace/xfer/x/s/report v2.txt" sha256=${SHA} size=4 from=local`,
+		expect(
+			formatGetResult({
+				path: "/work/.ace/xfer/x/s/report v2.txt",
+				sha256: SHA,
+				size: 4,
+				name: "report v2.txt",
+				from: "local",
+				storedAt: CREATED,
+				expiresAt: EXPIRES,
+			}),
+		).toBe(
+			`path="/work/.ace/xfer/x/s/report v2.txt" sha256=${SHA} size=4 name="report v2.txt" from=local ` +
+				`stored_at=2026-10-05T14:28:14.306Z expires_at=2026-10-05T15:28:14.306Z`,
 		);
 	});
 });

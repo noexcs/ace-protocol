@@ -56,6 +56,21 @@ export function redisStreamsConfigFrom(subscription) {
     };
 }
 /**
+ * The broker arrival instant a Redis stream entry id encodes, epoch milliseconds UTC.
+ *
+ * A Redis Streams entry id is `<millisecondsTime>-<sequenceNumber>`; the first segment is when the
+ * server appended the entry — the broker's arrival time, not when this consumer read it and not when
+ * the event is rendered. `undefined` when the id is not in that shape, so the renderer omits its
+ * `received at:` line instead of showing a fabricated time.
+ */
+export function redisStreamEntryTimestamp(id) {
+    const match = /^(\d+)-/.exec(id);
+    if (!match)
+        return undefined;
+    const millis = Number(match[1]);
+    return Number.isSafeInteger(millis) ? millis : undefined;
+}
+/**
  * Consume ACE messages from a Redis Stream consumer group (RFC §4, §17).
  *
  * Delivery policy:
@@ -201,7 +216,7 @@ export class RedisStreamsTransport {
             return;
         }
         try {
-            await handler(entry.payload);
+            await handler(entry.payload, redisStreamEntryTimestamp(entry.id));
             this.reclaimAttempts.delete(entry.id);
             await this.acknowledge(entry);
         }

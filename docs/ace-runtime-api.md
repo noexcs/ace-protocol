@@ -327,8 +327,8 @@ export async function takeBlob(options: { client; namespace; token }): Promise<{
 export function assertTransferSize(sizeBytes, options?: { maxBytes?: number }): void;  // 默认 8 MiB、硬上限 64 MiB、≥512 MiB 拒（每份副本）
 export function validateStoreInput(params): { path: string; ttl: string; ttlMs: number; name?: string };  // ace_store_file 入参
 export function validateGetInput(params): { token: string };                                             // ace_get_file 入参
-export function formatSendResult(options): string;   // `pickup=… size=… sha256=… expires_in=… stored_on=…`
-export function formatGetResult(options): string;    // `path=… sha256=… size=… from=…`
+export function formatSendResult(options): string;   // `pickup=… size=… sha256=… name=… ttl=… stored_at=… expires_at=… stored_on=…`
+export function formatGetResult(options): string;    // `path=… sha256=… size=… name=… from=… stored_at=… expires_at=…`
 
 // tools/xfer-files.ts —— 宿主面：读文件、逐 server fan-out、写隔离目录（只有这里碰 fs）
 export interface XferTarget { name: string; namespace: string; client: XferClient; }
@@ -369,7 +369,7 @@ export function describeSender(facts: HostFacts): string;    // `agent=… | ses
 // 目录条目的自述就是这个字符串本身：加固定前缀只会让每个会话的自述都变得一样。
 
 // tools/listing.ts
-export function describeDiscovered(entry: RegistryEntry, options?: { server?; self? }): string;  // `channel=<target> renews_in=<Ns>s self=<yes|no> description="<自述>"`
+export function describeDiscovered(entry: RegistryEntry, options?: { server?; self? }): string;  // `channel=<target> renews_in=<ISO 8601 duration> self=<yes|no> description="<自述>"`
 export function addressOf(endpoint: EndpointConfig): string;
 ```
 

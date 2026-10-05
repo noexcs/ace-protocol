@@ -1,4 +1,4 @@
-import type { AceMessage } from "../protocol/ace-message.ts";
+import type { AceMessage, Activation } from "../protocol/ace-message.ts";
 
 /** How need-to-process-now an ACE event is (RFC §7.1, §7.2). */
 export type InjectionMode = "immediate" | "next_turn";
@@ -11,8 +11,25 @@ export type InjectionMode = "immediate" | "next_turn";
 export interface InjectionContext {
 	/** Subscription name in this session's `.ace.json` (e.g. `from-wsl`). */
 	subscription: string;
-	/** Address it arrived on (e.g. `ace:lan:in.mac`), when the transport kind exposes one. */
-	address?: string;
+	/**
+	 * Uploaded channel name this session received the event on (`EndpointConfig.channel`), when the route
+	 * resolved one. Display-only: it labels the block, it is not an address to publish to — a reply goes
+	 * to the `sender:` channel. The renderer falls back to {@link subscription} when this is absent; it
+	 * never falls back to the transport's key, which stays inside the transport adapter (RFC §4).
+	 */
+	channel?: string;
+	/**
+	 * Activation the sender requested (`AceMessage.activation`), for the header's `activation:` line.
+	 * Display-only: it is the sender's request, never a delivery confirmation and never an
+	 * authorization — the receiver's own policy decides the effective activation (RFC §7).
+	 */
+	activation?: Activation;
+	/**
+	 * Broker arrival time, epoch milliseconds UTC — the instant the transport read the event, not the
+	 * instant it was rendered. Absent when the transport exposes no timestamp (in-memory transports,
+	 * explicit `manual` activation), in which case the header omits its `received at:` line.
+	 */
+	receivedAt?: number;
 	/**
 	 * Whether this session published the event itself: publishing to a channel this session reads
 	 * delivers the event back into the publisher's own context, where it is an echo, not a peer's

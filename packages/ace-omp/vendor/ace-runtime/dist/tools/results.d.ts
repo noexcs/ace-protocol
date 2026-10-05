@@ -7,18 +7,27 @@ import type { ReaderFacts } from "../runtime/agent-registry.ts";
  * The hosts keep only what is theirs: turning a core result into the host's tool-result shape.
  */
 /**
+ * A stored row's `note`, naming the target's shape: `stream-key` when the target is the transport's own
+ * stream key rather than an address (`isStreamKeyShaped`, `tools/publish.ts`), `completed-short-name`
+ * when the target was a short name the runtime auto-completed (`noexcs:inbox` →
+ * `ace:noexcs:noexcs:inbox`). Both together share one field, comma-separated in that order.
+ */
+export type PublishNote = "stream-key" | "completed-short-name" | "completed-short-name,stream-key";
+/**
  * One row of the `ace_publish` result: one input target and what happened to it. The result is a field
  * list, so a caller reads `status` instead of scraping a sentence.
  *
- * A delivered row's `note` is set when the target is the transport's own stream key rather than an
- * address (`isStreamKeyShaped`, `tools/publish.ts`); it renders as `note=stream-key`.
+ * A stored row is `status=stored`: ACE stored the event on the channel, which is not an acknowledgement
+ * that anything read it. Its `note` is set when the target's name has a shape worth naming (see
+ * {@link PublishNote}); a row for a `manual` publish additionally carries `awaiting_activation=yes`,
+ * added by {@link formatPublishResult} from the publish's own activation.
  */
 export type PublishTargetRow = {
     readonly target: string;
-    readonly status: "delivered";
+    readonly status: "stored";
     readonly peerNamed: boolean;
     readonly selfReads: boolean;
-    readonly note?: "stream-key";
+    readonly note?: PublishNote;
 } | {
     readonly target: string;
     readonly status: "duplicate";
@@ -29,7 +38,8 @@ export type PublishTargetRow = {
     readonly error: string;
 };
 /**
- * A delivered target: the channel the event was written to, and what the two reader checks found.
+ * A stored target: the channel the event was written to, and what the two reader checks found. The
+ * event is stored, not acknowledged — nothing here says a reader consumed it.
  *
  * `peerNamed` and `selfReads` are the two independent answers from {@link readerFactsOf}, rendered as
  * `peer_named=yes|no` and `self_reads=yes|no`. They are deliberately two fields named for the check
@@ -42,10 +52,13 @@ export type PublishTargetRow = {
  * channel is a name, not a mailbox) but it is what a typo looks like. What each field means is
  * spelled out once in the tool description, not per result.
  *
- * `streamKey` marks a target whose channel has the transport's key shape; it is named, never refused.
+ * `streamKey` marks a target whose channel has the transport's key shape; `completedShortName` marks a
+ * target the runtime auto-completed from a short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`),
+ * so the caller sees the name that was actually stored. Neither is refused; both are named.
  */
 export declare function deliveredChannel(target: string, facts: ReaderFacts, options?: {
     streamKey?: boolean;
+    completedShortName?: boolean;
 }): PublishTargetRow;
 /**
  * An input target that failed to resolve or deliver, reported by the input string as written — after a
@@ -65,14 +78,18 @@ export declare function duplicateTarget(target: string, of: string): PublishTarg
 /**
  * The `ace_publish` result: a header counting the call, then one row per input target, in input order.
  *
- * Rows, not prose: a caller reads `delivered=`/`duplicates=`/`failed=` and each row's `status` instead of
+ * Rows, not prose: a caller reads `stored=`/`duplicates=`/`failed=` and each row's `status` instead of
  * parsing a sentence, and the non-atomic mixed list is visible in the counts as well as the rows.
  * `duplicates=` is always present, `0` when there was none, so the header's arithmetic
- * `targets = delivered + duplicates + failed` holds in every result: `targets=2 delivered=1` alone
+ * `targets = stored + duplicates + failed` holds in every result: `targets=2 stored=1` alone
  * would look like a failure when the second input was merely a duplicate.
  *
+ * A `status=stored` row means the event was stored on the channel, not that anything read it. On a
+ * `manual` activation every stored row additionally carries `awaiting_activation=yes`, because the
+ * event is waiting for the receiver's user to activate it.
+ *
  * This is also the text of the all-failed outcome, which a host throws instead of collapsing to a
- * sentence: `delivered=0` with one `status=failed` row per input. The shape therefore does not depend
+ * sentence: `stored=0` with one `status=failed` row per input. The shape therefore does not depend
  * on how many targets succeeded — a caller that parses it once parses every outcome.
  *
  * The one deliberate shape difference is `id=`/`sender=`: an all-failed call created no event, so the

@@ -212,17 +212,17 @@ export function quarantinePath(root: string, token: string, sessionId: string, n
 
 /**
  * The metadata side key's value: what the receiver needs to name the file and to check the bytes
- * itself. `createdAt` and `expiresAt` are epoch milliseconds; `sha256` is integrity only.
+ * itself. `storedAt` and `expiresAt` are epoch milliseconds; `sha256` is integrity only.
  */
 export interface XferMeta {
-	/** The sender's file name (its original, unsanitised form). */
+	/** The effective file name the receiver writes: the sender's name after separator and control-character stripping. */
 	name: string;
 	/** Size in bytes of the blob. */
 	size: number;
 	/** Hex SHA-256 of the blob, computed by the sender. */
 	sha256: string;
 	/** When the blob was stored, epoch ms. */
-	createdAt: number;
+	storedAt: number;
 	/** When the keys expire, epoch ms. */
 	expiresAt: number;
 }
@@ -286,7 +286,7 @@ function parseMeta(raw: Uint8Array, key: string): XferMeta {
 		typeof value.name !== "string" ||
 		typeof value.size !== "number" ||
 		typeof value.sha256 !== "string" ||
-		typeof value.createdAt !== "number" ||
+		typeof value.storedAt !== "number" ||
 		typeof value.expiresAt !== "number"
 	) {
 		throw new Error(XFER_ERROR_TEXT.metaMalformed(key));
@@ -295,7 +295,7 @@ function parseMeta(raw: Uint8Array, key: string): XferMeta {
 		name: value.name,
 		size: value.size,
 		sha256: value.sha256,
-		createdAt: value.createdAt,
+		storedAt: value.storedAt,
 		expiresAt: value.expiresAt,
 	};
 }
@@ -404,36 +404,59 @@ function field(key: string, value: string): string {
 }
 
 /**
- * The `ace_store_file` result: one line the model relays verbatim. `stored_on=` is the servers the
- * copy landed on (empty when none accepted it — the caller reports the failures separately, per the
- * doc's "no success/failure verdict"); `expires_in=` echoes the requested ISO 8601 duration.
+ * The `ace_store_file` result: one line the model relays verbatim. `name=` is the **effective** name —
+ * the basename after separator and control-character stripping, the same name the receiver will write
+ * and the same one the blob's metadata carries — so the sender sees it without a round trip.
+ * `stored_on=` is the servers the copy landed on (empty when none accepted it — the caller reports the
+ * failures separately, per the doc's "no success/failure verdict"); `ttl=` echoes the requested ISO
+ * 8601 duration and `stored_at=`/`expires_at=` are UTC instants with milliseconds, so a receiver can
+ * tell when the token expires without re-fetching.
  */
 export function formatSendResult(options: {
 	token: string;
 	size: number;
 	sha256: string;
-	expiresIn: string;
+	name: string;
+	ttl: string;
+	storedAt: number;
+	expiresAt: number;
 	storedOn: readonly string[];
 }): string {
 	return [
 		`pickup=${options.token}`,
 		`size=${options.size}`,
 		`sha256=${options.sha256}`,
-		`expires_in=${options.expiresIn}`,
+		field("name", options.name),
+		`ttl=${options.ttl}`,
+		`stored_at=${new Date(options.storedAt).toISOString()}`,
+		`expires_at=${new Date(options.expiresAt).toISOString()}`,
 		field("stored_on", options.storedOn.join(",")),
 	].join(" ");
 }
 
 /**
  * The `ace_get_file` result: the quarantine path the bytes landed at, the hash computed here, the
- * size, and the server they came from. The hash is reported, never adjudicated — the caller compares
- * it with the sender's and with the metadata's.
+ * size, the name they were written under, the server they came from, and the blob's own
+ * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the pickup token
+ * expires without a second fetch. The hash is reported, never adjudicated — the caller compares it
+ * with the sender's and with the metadata's.
  */
-export function formatGetResult(options: { path: string; sha256: string; size: number; from: string }): string {
+export function formatGetResult(options: {
+	path: string;
+	sha256: string;
+	size: number;
+	name: string;
+	from: string;
+	storedAt: number;
+	expiresAt: number;
+}): string {
 	return [
 		field("path", options.path),
 		`sha256=${options.sha256}`,
 		`size=${options.size}`,
+		field("name", options.name),
 		field("from", options.from),
+		`stored_at=${new Date(options.storedAt).toISOString()}`,
+		`expires_at=${new Date(options.expiresAt).toISOString()}`,
 	].join(" ");
 }

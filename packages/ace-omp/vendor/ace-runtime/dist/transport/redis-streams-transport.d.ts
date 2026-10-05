@@ -43,6 +43,15 @@ export declare const REDIS_STREAMS_DEFAULTS: {
 export declare const REDIS_STREAMS_SUBSCRIPTION_KEYS: readonly ["stream", "group", "url", "consumer", "field", "count", "blockMs", "reclaimIdleMs", "reclaimAttempts", "retryDelayMs", "maxRetryDelayMs"];
 /** Extract and validate the Redis Streams settings of one subscription. */
 export declare function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStreamsConfig;
+/**
+ * The broker arrival instant a Redis stream entry id encodes, epoch milliseconds UTC.
+ *
+ * A Redis Streams entry id is `<millisecondsTime>-<sequenceNumber>`; the first segment is when the
+ * server appended the entry — the broker's arrival time, not when this consumer read it and not when
+ * the event is rendered. `undefined` when the id is not in that shape, so the renderer omits its
+ * `received at:` line instead of showing a fabricated time.
+ */
+export declare function redisStreamEntryTimestamp(id: string): number | undefined;
 /** An entry the transport gave up on after `reclaimAttempts` redeliveries. */
 export interface DroppedEntry {
     /** Stream entry id, so the record can be traced back to the stream. */

@@ -82,8 +82,12 @@ export declare class AceRuntime {
      * Throws {@link AceValidationError} for non-conforming messages. The transport-facing path
      * ({@link start}) logs and drops those instead, and lets other errors propagate so the transport
      * can retry or dead-letter (design doc §30).
+     *
+     * `receivedAt` is the broker arrival instant (epoch ms UTC) when the transport can tell it — the
+     * rendered block's `received at:` line comes from here, not from render time. It is omitted when the
+     * transport exposes no timestamp (design doc §18).
      */
-    handleRawMessage(raw: unknown, subscription: EndpointConfig): Promise<AceHandleResult>;
+    handleRawMessage(raw: unknown, subscription: EndpointConfig, receivedAt?: number): Promise<AceHandleResult>;
     /** Handle a raw message addressed to a configured subscription by name. */
     handleMessage(raw: unknown, subscriptionName: string): Promise<AceHandleResult>;
     /** Events retained for `manual` activation (RFC §7.3, §12). */

@@ -4,7 +4,7 @@ import { type AceMessage, type ConcreteActivation, isActivation } from "../proto
 import { AceValidationError, decodeAceMessage } from "../protocol/validator.ts";
 import type { Transport } from "../transport/transport.ts";
 import { DEFAULT_RUNTIME_ACTIVATION, resolveActivation } from "./activation-resolver.ts";
-import { AceConfigError, type EndpointConfig, endpointAddress } from "./endpoint-config.ts";
+import { AceConfigError, type EndpointConfig } from "./endpoint-config.ts";
 import { type DispatchResult, EventDispatcher } from "./event-dispatcher.ts";
 import {
 	DEFAULT_SPOOL_RULE,
@@ -170,7 +170,9 @@ export class AceRuntime {
 		this.started = true;
 		try {
 			for (const subscription of this.subscribe) {
-				await this.transportFor(subscription).start((raw) => this.deliver(raw, subscription));
+				await this.transportFor(subscription).start((raw, receivedAt) =>
+					this.deliver(raw, subscription, receivedAt),
+				);
 			}
 		} catch (error) {
 			// Do not claim to be started when a transport refused to connect.
@@ -199,8 +201,12 @@ export class AceRuntime {
 	 * Throws {@link AceValidationError} for non-conforming messages. The transport-facing path
 	 * ({@link start}) logs and drops those instead, and lets other errors propagate so the transport
 	 * can retry or dead-letter (design doc §30).
+	 *
+	 * `receivedAt` is the broker arrival instant (epoch ms UTC) when the transport can tell it — the
+	 * rendered block's `received at:` line comes from here, not from render time. It is omitted when the
+	 * transport exposes no timestamp (design doc §18).
 	 */
-	async handleRawMessage(raw: unknown, subscription: EndpointConfig): Promise<AceHandleResult> {
+	async handleRawMessage(raw: unknown, subscription: EndpointConfig, receivedAt?: number): Promise<AceHandleResult> {
 		this.metrics.increment(subscription.name, "received");
 
 		let message: AceMessage;
@@ -235,7 +241,8 @@ export class AceRuntime {
 			message,
 			subscription.name,
 			activation,
-			endpointAddress(subscription),
+			subscription.channel,
+			receivedAt,
 		);
 		// Remember only now: a failed delivery must stay eligible for redelivery.
 		seen.remember(message.sender, message.id);
@@ -267,9 +274,12 @@ export class AceRuntime {
 		}
 		this.logger.info?.(`[ACE] activating id=${id} sender=${sender} subscribe=${event.subscriptionName}`);
 		const origin = this.subscribe.find((entry) => entry.name === event.subscriptionName);
+		// Manual activation is a user action on this host, so there is no broker arrival time to show:
+		// `receivedAt` stays undefined and the block omits its `received at:` line (design doc §18).
 		await this.engine.inject(event.message, "next_turn", {
 			subscription: event.subscriptionName,
-			...(origin === undefined ? {} : { address: endpointAddress(origin) }),
+			...(origin?.channel === undefined ? {} : { channel: origin.channel }),
+			activation: event.message.activation,
 			...(this.selfSenders.has(event.message.sender) ? { self: true } : {}),
 		});
 	}
@@ -322,12 +332,7 @@ export class AceRuntime {
 		};
 
 		const origin = this.subscribe.find((entry) => entry.name === batch.subscription);
-		await this.dispatcher.dispatch(
-			summary,
-			batch.subscription,
-			"next_turn",
-			origin === undefined ? undefined : endpointAddress(origin),
-		);
+		await this.dispatcher.dispatch(summary, batch.subscription, "next_turn", origin?.channel);
 	}
 
 	private seenFor(subscriptionName: string): SeenMessageIds {
@@ -344,9 +349,9 @@ export class AceRuntime {
 		return transport;
 	}
 
-	private async deliver(raw: unknown, subscription: EndpointConfig): Promise<void> {
+	private async deliver(raw: unknown, subscription: EndpointConfig, receivedAt?: number): Promise<void> {
 		try {
-			await this.handleRawMessage(raw, subscription);
+			await this.handleRawMessage(raw, subscription, receivedAt);
 		} catch (error) {
 			if (error instanceof AceValidationError) {
 				const fields = error.issues.map((issue) => issue.path || "<message>").join(",");

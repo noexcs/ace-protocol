@@ -102,6 +102,21 @@ export function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStrea
 	};
 }
 
+/**
+ * The broker arrival instant a Redis stream entry id encodes, epoch milliseconds UTC.
+ *
+ * A Redis Streams entry id is `<millisecondsTime>-<sequenceNumber>`; the first segment is when the
+ * server appended the entry — the broker's arrival time, not when this consumer read it and not when
+ * the event is rendered. `undefined` when the id is not in that shape, so the renderer omits its
+ * `received at:` line instead of showing a fabricated time.
+ */
+export function redisStreamEntryTimestamp(id: string): number | undefined {
+	const match = /^(\d+)-/.exec(id);
+	if (!match) return undefined;
+	const millis = Number(match[1]);
+	return Number.isSafeInteger(millis) ? millis : undefined;
+}
+
 /** An entry the transport gave up on after `reclaimAttempts` redeliveries. */
 export interface DroppedEntry {
 	/** Stream entry id, so the record can be traced back to the stream. */
@@ -310,7 +325,7 @@ export class RedisStreamsTransport implements Transport {
 		}
 
 		try {
-			await handler(entry.payload);
+			await handler(entry.payload, redisStreamEntryTimestamp(entry.id));
 			this.reclaimAttempts.delete(entry.id);
 			await this.acknowledge(entry);
 		} catch (error) {

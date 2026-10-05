@@ -47,8 +47,10 @@ export class EventDispatcher {
 		message: AceMessage,
 		subscriptionName: string,
 		activation: ConcreteActivation,
-		/** Address the event arrived on, for the header; the subscription name is already here. */
-		address?: string,
+		/** Uploaded channel name the event arrived on, for the header; the subscription label when absent. */
+		channel?: string,
+		/** Broker arrival time (epoch ms UTC) when the transport exposes one; the header omits the line otherwise. */
+		receivedAt?: number,
 	): Promise<DispatchResult> {
 		if (activation === "manual") {
 			this.pendingEvents.store(message, subscriptionName);
@@ -67,7 +69,11 @@ export class EventDispatcher {
 		);
 		await this.engine.inject(message, activation, {
 			subscription: subscriptionName,
-			...(address === undefined ? {} : { address }),
+			...(channel === undefined ? {} : { channel }),
+			// The header's `activation:` line is the sender's *request*, not the effective activation
+			// resolved below (RFC §7): the block must not read as a confirmation of the latter.
+			activation: message.activation,
+			...(receivedAt === undefined ? {} : { receivedAt }),
 			...(this.selfSenders.has(message.sender) ? { self: true } : {}),
 		});
 		this.metrics?.increment(subscriptionName, running ? "queued" : "injected");

@@ -203,7 +203,7 @@ function parseMeta(raw, key) {
         typeof value.name !== "string" ||
         typeof value.size !== "number" ||
         typeof value.sha256 !== "string" ||
-        typeof value.createdAt !== "number" ||
+        typeof value.storedAt !== "number" ||
         typeof value.expiresAt !== "number") {
         throw new Error(XFER_ERROR_TEXT.metaMalformed(key));
     }
@@ -211,7 +211,7 @@ function parseMeta(raw, key) {
         name: value.name,
         size: value.size,
         sha256: value.sha256,
-        createdAt: value.createdAt,
+        storedAt: value.storedAt,
         expiresAt: value.expiresAt,
     };
 }
@@ -299,30 +299,42 @@ function field(key, value) {
     return `${key}=${FIELD_NEEDS_QUOTING.test(value) ? JSON.stringify(value) : value}`;
 }
 /**
- * The `ace_store_file` result: one line the model relays verbatim. `stored_on=` is the servers the
- * copy landed on (empty when none accepted it — the caller reports the failures separately, per the
- * doc's "no success/failure verdict"); `expires_in=` echoes the requested ISO 8601 duration.
+ * The `ace_store_file` result: one line the model relays verbatim. `name=` is the **effective** name —
+ * the basename after separator and control-character stripping, the same name the receiver will write
+ * and the same one the blob's metadata carries — so the sender sees it without a round trip.
+ * `stored_on=` is the servers the copy landed on (empty when none accepted it — the caller reports the
+ * failures separately, per the doc's "no success/failure verdict"); `ttl=` echoes the requested ISO
+ * 8601 duration and `stored_at=`/`expires_at=` are UTC instants with milliseconds, so a receiver can
+ * tell when the token expires without re-fetching.
  */
 export function formatSendResult(options) {
     return [
         `pickup=${options.token}`,
         `size=${options.size}`,
         `sha256=${options.sha256}`,
-        `expires_in=${options.expiresIn}`,
+        field("name", options.name),
+        `ttl=${options.ttl}`,
+        `stored_at=${new Date(options.storedAt).toISOString()}`,
+        `expires_at=${new Date(options.expiresAt).toISOString()}`,
         field("stored_on", options.storedOn.join(",")),
     ].join(" ");
 }
 /**
  * The `ace_get_file` result: the quarantine path the bytes landed at, the hash computed here, the
- * size, and the server they came from. The hash is reported, never adjudicated — the caller compares
- * it with the sender's and with the metadata's.
+ * size, the name they were written under, the server they came from, and the blob's own
+ * `stored_at=`/`expires_at=` read from its metadata — so the receiver learns when the pickup token
+ * expires without a second fetch. The hash is reported, never adjudicated — the caller compares it
+ * with the sender's and with the metadata's.
  */
 export function formatGetResult(options) {
     return [
         field("path", options.path),
         `sha256=${options.sha256}`,
         `size=${options.size}`,
+        field("name", options.name),
         field("from", options.from),
+        `stored_at=${new Date(options.storedAt).toISOString()}`,
+        `expires_at=${new Date(options.expiresAt).toISOString()}`,
     ].join(" ");
 }
 //# sourceMappingURL=xfer.js.map

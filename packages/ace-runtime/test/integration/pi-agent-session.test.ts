@@ -186,8 +186,16 @@ describe("ACE runtime with a real Pi agent session", () => {
 	});
 
 	it("renders the ACE event as context text with a stable header (design doc §18)", async () => {
-		expect(renderAceEvent(buildFailure, { subscription: "inbox", address: "ace:in.a" })).toBe(
-			"<ace_event>\nsender: build-service\nstream: ace:in.a\nid: evt_001\n<ace_body>\n" +
+		expect(
+			renderAceEvent(buildFailure, {
+				subscription: "inbox",
+				channel: "ace:in.a",
+				activation: "next_turn",
+				receivedAt: Date.UTC(2026, 9, 5, 14, 28, 14, 306),
+			}),
+		).toBe(
+			"<ace_event>\nsender: build-service\narrived via: ace:in.a\nactivation: next_turn\n" +
+				"received at: 2026-10-05T14:28:14.306Z\nid: evt_001\n<ace_body>\n" +
 				"Build failed for project foo at commit abc123.\n</ace_event>",
 		);
 	});

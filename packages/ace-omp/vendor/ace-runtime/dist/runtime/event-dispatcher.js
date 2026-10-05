@@ -14,8 +14,10 @@ export class EventDispatcher {
         this.selfSenders = selfSenders;
     }
     async dispatch(message, subscriptionName, activation, 
-    /** Address the event arrived on, for the header; the subscription name is already here. */
-    address) {
+    /** Uploaded channel name the event arrived on, for the header; the subscription label when absent. */
+    channel, 
+    /** Broker arrival time (epoch ms UTC) when the transport exposes one; the header omits the line otherwise. */
+    receivedAt) {
         if (activation === "manual") {
             this.pendingEvents.store(message, subscriptionName);
             this.metrics?.increment(subscriptionName, "stored");
@@ -26,7 +28,11 @@ export class EventDispatcher {
         this.logger.info?.(`[ACE] injecting id=${message.id} sender=${message.sender} subscribe=${subscriptionName} activation=${activation} agent=${running ? "running" : "idle"}`);
         await this.engine.inject(message, activation, {
             subscription: subscriptionName,
-            ...(address === undefined ? {} : { address }),
+            ...(channel === undefined ? {} : { channel }),
+            // The header's `activation:` line is the sender's *request*, not the effective activation
+            // resolved below (RFC §7): the block must not read as a confirmation of the latter.
+            activation: message.activation,
+            ...(receivedAt === undefined ? {} : { receivedAt }),
             ...(this.selfSenders.has(message.sender) ? { self: true } : {}),
         });
         this.metrics?.increment(subscriptionName, running ? "queued" : "injected");

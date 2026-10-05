@@ -24,7 +24,7 @@ const toolText = [
 ];
 const injected = renderAceEvent(
 	{ aceVersion: "0.1", id: "evt_1", sender: "peer:1", activation: "next_turn", body: "hello" },
-	{ subscription: "inbox", address: "ace:in.a" },
+	{ subscription: "inbox", channel: "ace:in.a", activation: "next_turn", receivedAt: 1_791_210_494_306 },
 );
 const surfaces = [ACE_TRUST_POLICY, injected, ...toolText];
 

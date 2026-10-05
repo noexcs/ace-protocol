@@ -80,7 +80,9 @@ describe("storeFile", () => {
 
 		expect(result.storedOn).toEqual(["first"]);
 		expect(result.text).toBe(
-			`pickup=${result.token} size=5 sha256=${sha256Of(new TextEncoder().encode("hello"))} expires_in=PT30M stored_on=first`,
+			`pickup=${result.token} size=5 sha256=${sha256Of(new TextEncoder().encode("hello"))} ` +
+				"name=report.txt ttl=PT30M stored_at=1970-01-01T00:16:40.000Z " +
+				"expires_at=1970-01-01T00:46:40.000Z stored_on=first",
 		);
 		expect(first.store.has(`ace:xfer:${result.token}`)).toBe(true);
 		expect(first.store.has(`ace:xfer:${result.token}:meta`)).toBe(true);
@@ -175,7 +177,7 @@ async function seed(
 		name,
 		size: bytes.byteLength,
 		sha256: sha256Of(bytes),
-		createdAt: NOW,
+		storedAt: NOW,
 		expiresAt: NOW + TTL_MS,
 	};
 	await putBlob({ client, namespace, token, bytes, meta, ttlMs: TTL_MS });
@@ -203,7 +205,10 @@ describe("receiveFile", () => {
 		expect(result.from).toBe("first");
 		expect(result.size).toBe(7);
 		expect(result.sha256).toBe(sha256Of(bytes));
-		expect(result.text).toBe(`path=${expectedPath} sha256=${sha256Of(bytes)} size=7 from=first`);
+		expect(result.text).toBe(
+			`path=${expectedPath} sha256=${sha256Of(bytes)} size=7 name=report.txt from=first ` +
+				"stored_at=1970-01-01T00:16:40.000Z expires_at=1970-01-01T01:16:40.000Z",
+		);
 		expect(await readFile(expectedPath)).toEqual(Buffer.from(bytes));
 	});
 

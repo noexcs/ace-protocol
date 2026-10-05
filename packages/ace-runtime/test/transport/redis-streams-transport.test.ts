@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { renderAceEvent } from "../../src/agent/pi-adapter.ts";
 import { AceRuntime } from "../../src/runtime/ace-runtime.ts";
 import { AceConfigError, type EndpointConfig } from "../../src/runtime/endpoint-config.ts";
-import { RedisStreamsTransport, redisStreamsConfigFrom } from "../../src/transport/redis-streams-transport.ts";
+import {
+	RedisStreamsTransport,
+	redisStreamEntryTimestamp,
+	redisStreamsConfigFrom,
+} from "../../src/transport/redis-streams-transport.ts";
 import { FakeAgentEngine } from "../support/fake-agent-engine.ts";
 import { FakeRedisStreamsClient } from "../support/fake-redis-client.ts";
 
@@ -39,6 +44,20 @@ async function stop(stopFn: () => Promise<void>, client: FakeRedisStreamsClient)
 async function waitFor(predicate: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 100 && !predicate(); attempt++) await Promise.resolve();
 }
+
+describe("redisStreamEntryTimestamp", () => {
+	it("reads the broker arrival millis from the entry id's first segment", () => {
+		expect(redisStreamEntryTimestamp("1791053000001-0")).toBe(1791053000001);
+		expect(redisStreamEntryTimestamp("1-0")).toBe(1);
+	});
+
+	it("returns undefined for an id that is not in the Redis Streams shape", () => {
+		// The renderer must omit `received at:` rather than fabricate a time from an unparseable id.
+		expect(redisStreamEntryTimestamp("not-an-id")).toBeUndefined();
+		expect(redisStreamEntryTimestamp("")).toBeUndefined();
+		expect(redisStreamEntryTimestamp("-0")).toBeUndefined();
+	});
+});
 
 describe("redisStreamsConfigFrom", () => {
 	it("keeps explicit settings", () => {
@@ -222,6 +241,22 @@ describe("RedisStreamsTransport consumption", () => {
 });
 
 describe("RedisStreamsTransport with the ACE runtime", () => {
+	it("passes the stream entry id's broker timestamp to the handler", async () => {
+		// The header's `received at:` line is the broker's append time, not the consumer's read time, so
+		// the transport hands the handler the id's first segment.
+		const { client, transport } = setup();
+		const received: Array<number | undefined> = [];
+		await transport.start(async (_raw, receivedAt) => {
+			received.push(receivedAt);
+		});
+
+		client.push({ id: "1791053000001-0", payload: validEntry });
+		await client.waitForAcks(1);
+
+		expect(received).toEqual([1791053000001]);
+		await stop(() => transport.stop(), client);
+	});
+
 	it("turns a stream entry into an injected ACE event and acknowledges it", async () => {
 		const { client, transport } = setup();
 		const engine = new FakeAgentEngine();
@@ -232,11 +267,22 @@ describe("RedisStreamsTransport with the ACE runtime", () => {
 		});
 
 		await runtime.start();
-		client.push({ id: "1-0", payload: validEntry });
+		client.push({ id: "1791053000001-0", payload: validEntry });
 		await client.waitForAcks(1);
 
 		expect(engine.injections).toHaveLength(1);
 		expect(engine.injections[0]?.message.id).toBe("evt_001");
+		// The whole chain: the entry id's broker time and the channel name reach the renderer's context.
+		expect(engine.injections[0]?.context).toMatchObject({
+			subscription: "build-events",
+			activation: "next_turn",
+			receivedAt: 1791053000001,
+		});
+		// `channel` is unset here, so `arrived via:` falls back to the subscription label.
+		const injected = engine.injections[0];
+		expect(injected).toBeDefined();
+		if (!injected?.context) throw new Error("expected an injection context");
+		expect(renderAceEvent(injected.message, injected.context)).toContain("arrived via: build-events");
 		await stop(() => runtime.stop(), client);
 	});
 

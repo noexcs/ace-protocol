@@ -1,4 +1,5 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AceLogger } from "../logger.ts";
 import type { AceMessage } from "../protocol/ace-message.ts";
 import type { AgentEngine, InjectionContext, InjectionMode } from "./agent-engine.ts";
 export interface PiAdapterOptions {
@@ -6,9 +7,13 @@ export interface PiAdapterOptions {
     session: AgentSession;
     /** Called when a run started by an injected ACE event fails. */
     onRunError?: (error: unknown) => void;
-    /** Renders an ACE event into Pi context text. Defaults to {@link renderAceEvent}. */
     /** Renders an ACE event into context text. Defaults to {@link renderAceEvent}. */
     renderEvent?: (message: AceMessage, context?: InjectionContext) => string;
+    /**
+     * Where the adapter reports a suppressed duplicate injection, so a host can tell adapter-level
+     * duplication from render-level duplication. Defaults to discarding the line.
+     */
+    logger?: AceLogger;
 }
 /**
  * Added to the host's system prompt by ACE-aware sessions (design doc §18).
@@ -36,14 +41,20 @@ export declare function withTrustPolicy(systemPrompt: string): string;
  * - `sender description`, when the sender supplied one and the event is not this session's own echo:
  *   on a self-echo the description is this session's own location, so repeating it tells the reader
  *   nothing it does not already know (the `self: yes` line already says the block is its own);
- * - `stream`, from {@link InjectionContext}: the Redis stream key the event was read from (the
- *   subscription name when the transport exposes no address). A sender's target name lives in the sender's
- *   own configuration, so it is not what a receiver can name;
+ * - `arrived via`, the channel name the event was received on ({@link InjectionContext.channel},
+ *   falling back to the subscription label). Display-only: it labels the block, it is not an address
+ *   to publish to — a reply goes to the `sender:` channel, and the transport's own key never surfaces;
+ * - `activation`, the activation the sender requested ({@link InjectionContext.activation}), verbatim
+ *   as the sender put it. Display-only: it is the sender's request, NOT a delivery confirmation and
+ *   not an authorization — the receiver's own policy decides the effective activation (RFC §7);
+ * - `received at`, the broker arrival instant in UTC ISO 8601 with milliseconds ({@link
+ *   InjectionContext.receivedAt}). It is when the transport read the event, never when it was
+ *   rendered; the line is omitted when the transport exposes no timestamp;
  * - `id`, the runtime-generated message id.
  *
  * The body is separated from the header by a fixed `<ace_body>` line, not by a blank line. A body is
- * opaque to ACE and may itself contain lines shaped like `sender:` or `stream:` — the two-real-session
- * evaluation sent exactly such a body. A blank line left "the header" and "the body" distinguishable
+ * opaque to ACE and may itself contain lines shaped like `sender:` or `arrived via:` — the
+ * two-real-session evaluation sent exactly such a body. A blank line left "the header" and "the body" distinguishable
  * only to a reader that already knew the header's length; with the fence, the header is exactly the
  * lines between `<ace_event>` and the **first** `<ace_body>`, and everything from the line after it to
  * `</ace_event>` is the body, verbatim. A later `<ace_body>` inside the body is body text like any
@@ -55,6 +66,22 @@ export declare function withTrustPolicy(systemPrompt: string): string;
  * never an authorization.
  */
 export declare function renderAceEvent(message: AceMessage, context?: InjectionContext): string;
+/**
+ * Short label for a session id, for logs, the status line, and rendered events.
+ *
+ * The tail is what distinguishes concurrent sessions: uuidv7 and friends spend their leading
+ * characters on a timestamp, so two sessions started seconds apart share a long prefix. Truncation
+ * happens here only — the protocol field keeps the full value, and the label is never an identifier.
+ */
+/**
+ * A UTC instant as ISO 8601 with milliseconds and a `Z` — `2026-10-05T14:28:14.306Z`.
+ *
+ * `Date.prototype.toISOString` already renders exactly this shape for a valid instant, so the formatter
+ * is a thin, named door onto it: the header's `received at:` line and (elsewhere) the transfer tools
+ * must agree on one shape, and a non-finite input — an unset clock, a NaN — must be refused rather than
+ * rendered as `Invalid Date`.
+ */
+export declare function formatInstant(epochMs: number): string;
 /**
  * Drives a Pi `AgentSession` from ACE events (design doc §16).
  *
@@ -78,6 +105,7 @@ export declare function renderAceEvent(message: AceMessage, context?: InjectionC
 export declare class PiAdapter implements AgentEngine {
     readonly session: AgentSession;
     private readonly hostOnRunError;
+    private readonly logger;
     private readonly runErrorListeners;
     private readonly renderEvent;
     private readonly queuedEvents;

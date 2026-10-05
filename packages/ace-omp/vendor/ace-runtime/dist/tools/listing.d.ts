@@ -9,13 +9,14 @@ export declare function addressOf(endpoint: EndpointConfig): string;
  */
 export declare function serverAddress(url: string): string;
 /**
- * One directory row as fields: `channel=<target> renews_in=<n>s self=<yes|no> description="<text>"`.
+ * One directory row as fields: `channel=<target> renews_in=<ISO 8601 duration> self=<yes|no> description="<text>"`.
  *
  * `channel` is the publish-ready target — the channel a peer publishes to reach that session, with the
  * `<server>:` prefix folded in when `server` is given (a multi-server session's names are unique per
  * server, so the prefixed form is what ace_publish accepts). `self` marks this session's own channel;
- * the listing omits that entry, so it is `no` on every row here. The self-description is quoted and
- * never shortened.
+ * the listing omits that entry, so it is `no` on every row here. `renews_in` is the peer's remaining
+ * lease as an ISO 8601 duration (`PT33S`, `PT1M30S`, `PT1H`), never a bare `33s`. The self-description
+ * is quoted and never shortened.
  */
 export declare function describeDiscovered(entry: RegistryEntry, options?: {
     server?: string;

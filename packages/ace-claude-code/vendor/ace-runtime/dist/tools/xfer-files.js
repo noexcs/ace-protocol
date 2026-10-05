@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
-import { assertTransferSize, formatGetResult, formatSendResult, newToken, putBlob, quarantinePath, takeBlob, XFER_ERROR_TEXT, } from "./xfer.js";
+import { assertTransferSize, formatGetResult, formatSendResult, newToken, putBlob, quarantinePath, sanitizeName, takeBlob, XFER_ERROR_TEXT, } from "./xfer.js";
 /** Refuse a missing path, a directory and an unreadable path by name, each in its own sentence. */
 async function assertReadableFile(absolute, written) {
     let info;
@@ -42,15 +42,18 @@ export async function storeFile(options) {
     }
     assertTransferSize(bytes.byteLength, options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes });
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const name = input.name ?? basename(absolute);
+    // The name that lands on the receiver's disk, computed here rather than only at the write: control
+    // characters and path separators are stripped, so `name=` in the result states the effective name
+    // (finding F6) instead of leaving the receiver to discover it.
+    const name = sanitizeName(input.name ?? basename(absolute));
     const token = newToken();
-    const createdAt = (options.now ?? Date.now)();
+    const storedAt = (options.now ?? Date.now)();
     const meta = {
         name,
         size: bytes.byteLength,
         sha256,
-        createdAt,
-        expiresAt: createdAt + input.ttlMs,
+        storedAt,
+        expiresAt: storedAt + input.ttlMs,
     };
     const storedOn = [];
     for (const target of targets) {
@@ -70,7 +73,16 @@ export async function storeFile(options) {
         }
     }
     return {
-        text: formatSendResult({ token, size: bytes.byteLength, sha256, expiresIn: input.ttl, storedOn }),
+        text: formatSendResult({
+            token,
+            size: bytes.byteLength,
+            sha256,
+            name,
+            ttl: input.ttl,
+            storedAt,
+            expiresAt: meta.expiresAt,
+            storedOn,
+        }),
         token,
         size: bytes.byteLength,
         sha256,
@@ -92,7 +104,15 @@ export async function receiveFile(options) {
         const sha256 = createHash("sha256").update(found.bytes).digest("hex");
         const path = await writeQuarantined(root, token, sessionId, found.meta.name, found.bytes);
         return {
-            text: formatGetResult({ path, sha256, size: found.bytes.byteLength, from: found.from }),
+            text: formatGetResult({
+                path,
+                sha256,
+                size: found.bytes.byteLength,
+                name: sanitizeName(found.meta.name),
+                from: found.from,
+                storedAt: found.meta.storedAt,
+                expiresAt: found.meta.expiresAt,
+            }),
             path,
             sha256,
             size: found.bytes.byteLength,

@@ -54,7 +54,7 @@ describe("AceRuntime dispatch (RFC §7, §9, §19)", () => {
 		await transport.publish(validRaw);
 
 		expect(engine.injections).toEqual([
-			{ message: validRaw, mode: "next_turn", context: { subscription: "build-events" } },
+			{ message: validRaw, mode: "next_turn", context: { subscription: "build-events", activation: "next_turn" } },
 		]);
 		await runtime.stop();
 	});
@@ -123,7 +123,7 @@ describe("AceRuntime dispatch (RFC §7, §9, §19)", () => {
 			{
 				message: { ...validRaw, activation: "manual" },
 				mode: "next_turn",
-				context: { subscription: "build-events" },
+				context: { subscription: "build-events", activation: "manual" },
 			},
 		]);
 		expect(runtime.pendingEvents).toHaveLength(0);

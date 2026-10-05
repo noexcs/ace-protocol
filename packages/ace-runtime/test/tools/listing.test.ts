@@ -38,7 +38,8 @@ describe("describeDiscovered", () => {
 		const row = describeDiscovered(entry);
 
 		expect(row).toContain("channel=ace:ana:oh-my-pi:01a1 ");
-		expect(row).toMatch(/renews_in=\d+s/);
+		expect(row).toMatch(/renews_in=PT(?:\d+H)?(?:\d+M)?\d+S/);
+		expect(row).not.toMatch(/renews_in=\d+s\b/);
 		expect(row).toContain(" self=no ");
 		expect(row).toContain('description="agent=oh-my-pi | cwd=/tmp/x"');
 	});

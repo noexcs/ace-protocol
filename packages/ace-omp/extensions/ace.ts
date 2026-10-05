@@ -601,6 +601,10 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						// A channel whose name is the transport's key shape is legal, but it is a copied stream
 						// key rather than an address; naming it keeps it from looking like a working target.
 						const streamKey = isStreamKeyShaped(target.channel);
+						// A resolved channel that differs from the input name means the runtime completed a
+						// short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`); a full name is stored as
+						// written, so the caller sees which name the event actually landed on.
+						const completedShortName = outcome.name !== target.channel;
 						if (!senders.includes(target.sender)) senders.push(target.sender);
 						// A sender name belongs to one server, so the event is built per target rather than once.
 						const message = validateAceMessage({
@@ -613,7 +617,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							body: input.body,
 						});
 						await publishToChannel(target, message);
-						rows.push(deliveredChannel(target.channel, facts, { streamKey }));
+						rows.push(deliveredChannel(target.channel, facts, { streamKey, completedShortName }));
 					} catch (error) {
 						rows.push(failedTarget(outcome.name, describeError(error)));
 					}
@@ -623,9 +627,9 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					(row): row is Extract<PublishTargetRow, { status: "failed" }> => row.status === "failed",
 				);
 				const text = formatPublishResult({ id, sender: senders.join(","), activation, rows });
-				// Nothing delivered is a failed call, but its text is the same field list — `delivered=0` with one
+				// Nothing stored is a failed call, but its text is the same field list — `stored=0` with one
 				// `status=failed` row per input — so the result shape does not depend on how many targets succeeded.
-				if (!rows.some((row) => row.status === "delivered")) throw new Error(text);
+				if (!rows.some((row) => row.status === "stored")) throw new Error(text);
 				return {
 					content: [{ type: "text", text }],
 					details: {
@@ -634,7 +638,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						sessionId,
 						activation,
 						rows,
-						delivered: rows.filter((row) => row.status === "delivered").length,
+						stored: rows.filter((row) => row.status === "stored").length,
 						failed: failed.length,
 						duplicates: rows.filter((row) => row.status === "duplicate").length,
 						bodyLength: input.body.length,

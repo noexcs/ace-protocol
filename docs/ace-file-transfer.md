@@ -20,9 +20,9 @@
 
 1. 发送方：`ace_store_file(path=…, ttl=…)` 读本地文件 → **在每个活跃 server 上各存一份**：
    `SET <该 server 的 ns>:xfer:<token> <binary> EX <ttl>`（`token` 为 128-bit 随机值，**键名即凭证**），
-   外加一枚**元数据旁键** `<该 server 的 ns>:xfer:<token>:meta`（`{name, size, sha256}`）。
+   外加一枚**元数据旁键** `<该 server 的 ns>:xfer:<token>:meta`（`{name, size, sha256, storedAt, expiresAt}`）。
    工具**只返回**一行可原样转达的取件信息，不发布任何事件：
-   `pickup=<token> size=… sha256=… expires_in=… stored_on=<server,server>`
+   `pickup=<token> size=… sha256=… name=<effective name> ttl=<ISO 8601 duration> stored_at=<UTC ISO 8601 with ms> expires_at=<UTC ISO 8601 with ms> stored_on=<server,server>`
 2. 转达：由**模型自行**把这行信息告知目标 agent（走既有的 `ace_publish` 或任何渠道）。
    取件码就是 **token**（不含 namespace、不含 server 名 —— 短、不易传错）。
 3. 接收方：`ace_get_file(token=…)` → 在**自己的**每个活跃 server 上按 `<自己的 ns>:xfer:<token>` 找 →
@@ -73,7 +73,8 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 13. **取件码就是 token**（不含 namespace、不含 server 名）。
 14. **落盘路径带会话 id**：`.ace/xfer/<token>/<sessionId>/<name>`（同机多会话不撞车）。
 15. **`send` 没有"给谁"参数**：由模型转达。
-16. **元数据旁键**：`<ns>:xfer:<token>:meta` = `{name, size, sha256}`，接收方据此可自行核对。
+16. **元数据旁键**：`<ns>:xfer:<token>:meta` = `{name, size, sha256, storedAt, expiresAt}`，接收方据此可自行核对、并直接看出 token 何时失效（不必再取一次）。
+    - **改名记录（2026-10-05）**：`storedAt` 原为 `createdAt`（对应结果行的 `created_at=` 改为 `stored_at=`）。理由：它记的是**存入**时刻（pickup token 生命开始的那一刻），不是文件创建时刻——一个去年创建、刚刚存入的文件会让 `createdAt` 点错事件；`storedAt` 与 `expiresAt` 成对，也呼应 publish 头里的 `stored=` 动词。这是**干净切换**：`:meta` 里找不到 `storedAt` 即视为元数据不合法，**不读旧键**。
 17. **不定义成功/失败语义**：`send` 只在结果里**写明在哪些 server 上保存成功**（`stored_on=`）；
    由 agent 自行判断"够不够"。
 18. **`server` 参数取消**：`ace_store_file(path=…, ttl=…)`，永远是"所有活跃 server 各存一份"。
@@ -92,7 +93,7 @@ TTL：**ISO 8601 duration** ✓（默认 `PT1H`，上限 `P1D`）。
 5. **同一会话用同一 token 取两次**：同路径覆盖（字节相同）✓ 还是另开目录 ✓？
 6. **`path` 指向目录 / 不存在 / 不可读**：三种都要有明确报错（不让它变成一次 0 字节的传输）。
 7. **权限与前置条件**：发送方需要 `SET`、接收方需要 `GET`；是否把这条写进工具文本（便于排查权限问题）。
-8. **`:meta` 里要不要带 `createdAt` / `expiresIn`**：接收方据此判断"这文件多新"。
+8. **`:meta` 里要不要带 `storedAt` / `expiresAt`**：**要**（见已定 16）——接收方据此判断 token 何时失效、文件何时存入，并在 `ace_get_file` 结果行里直接给出 `stored_at=`/`expires_at=`，不必再取一次。（原写 `createdAt`/`expiresIn`，2026-10-05 随已定 16 的改名记录改为 `storedAt`/`expiresAt`；`expiresIn` 的方向也不对——它是一个时长，而接收方要的是时刻。）
 
 ## 验收计划
 

@@ -27,7 +27,9 @@ export declare class EventDispatcher {
     private readonly selfSenders;
     constructor(engine: AgentEngine, pendingEvents: PendingEventStore, logger?: AceLogger, metrics?: AceMetrics, selfSenders?: ReadonlySet<string>);
     dispatch(message: AceMessage, subscriptionName: string, activation: ConcreteActivation, 
-    /** Address the event arrived on, for the header; the subscription name is already here. */
-    address?: string): Promise<DispatchResult>;
+    /** Uploaded channel name the event arrived on, for the header; the subscription label when absent. */
+    channel?: string, 
+    /** Broker arrival time (epoch ms UTC) when the transport exposes one; the header omits the line otherwise. */
+    receivedAt?: number): Promise<DispatchResult>;
 }
 //# sourceMappingURL=event-dispatcher.d.ts.map

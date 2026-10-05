@@ -1,7 +1,8 @@
 import { ACE_CONFIG_FILENAME } from "../runtime/ace-config.js";
 import { describeValue } from "../utils.js";
 /**
- * A delivered target: the channel the event was written to, and what the two reader checks found.
+ * A stored target: the channel the event was written to, and what the two reader checks found. The
+ * event is stored, not acknowledged — nothing here says a reader consumed it.
  *
  * `peerNamed` and `selfReads` are the two independent answers from {@link readerFactsOf}, rendered as
  * `peer_named=yes|no` and `self_reads=yes|no`. They are deliberately two fields named for the check
@@ -14,15 +15,22 @@ import { describeValue } from "../utils.js";
  * channel is a name, not a mailbox) but it is what a typo looks like. What each field means is
  * spelled out once in the tool description, not per result.
  *
- * `streamKey` marks a target whose channel has the transport's key shape; it is named, never refused.
+ * `streamKey` marks a target whose channel has the transport's key shape; `completedShortName` marks a
+ * target the runtime auto-completed from a short name (`noexcs:inbox` → `ace:noexcs:noexcs:inbox`),
+ * so the caller sees the name that was actually stored. Neither is refused; both are named.
  */
 export function deliveredChannel(target, facts, options = {}) {
+    const notes = [];
+    if (options.completedShortName === true)
+        notes.push("completed-short-name");
+    if (options.streamKey === true)
+        notes.push("stream-key");
     return {
         target,
-        status: "delivered",
+        status: "stored",
         peerNamed: facts.peerNamed,
         selfReads: facts.selfReads,
-        ...(options.streamKey === true ? { note: "stream-key" } : {}),
+        ...(notes.length === 0 ? {} : { note: notes.join(",") }),
     };
 }
 /**
@@ -45,10 +53,10 @@ export function duplicateTarget(target, of) {
     return { target, status: "duplicate", of };
 }
 /** One rendered row: lowercase `<field>=<value>` tokens, quoted only where a value can carry spaces. */
-function renderPublishRow(row) {
+function renderPublishRow(row, awaitingActivation) {
     switch (row.status) {
-        case "delivered":
-            return `target=${row.target} status=delivered peer_named=${row.peerNamed ? "yes" : "no"} self_reads=${row.selfReads ? "yes" : "no"}${row.note === undefined ? "" : ` note=${row.note}`}`;
+        case "stored":
+            return `target=${row.target} status=stored peer_named=${row.peerNamed ? "yes" : "no"} self_reads=${row.selfReads ? "yes" : "no"}${awaitingActivation ? " awaiting_activation=yes" : ""}${row.note === undefined ? "" : ` note=${row.note}`}`;
         case "duplicate":
             return `target=${row.target} status=duplicate of=${row.of}`;
         case "failed":
@@ -58,14 +66,18 @@ function renderPublishRow(row) {
 /**
  * The `ace_publish` result: a header counting the call, then one row per input target, in input order.
  *
- * Rows, not prose: a caller reads `delivered=`/`duplicates=`/`failed=` and each row's `status` instead of
+ * Rows, not prose: a caller reads `stored=`/`duplicates=`/`failed=` and each row's `status` instead of
  * parsing a sentence, and the non-atomic mixed list is visible in the counts as well as the rows.
  * `duplicates=` is always present, `0` when there was none, so the header's arithmetic
- * `targets = delivered + duplicates + failed` holds in every result: `targets=2 delivered=1` alone
+ * `targets = stored + duplicates + failed` holds in every result: `targets=2 stored=1` alone
  * would look like a failure when the second input was merely a duplicate.
  *
+ * A `status=stored` row means the event was stored on the channel, not that anything read it. On a
+ * `manual` activation every stored row additionally carries `awaiting_activation=yes`, because the
+ * event is waiting for the receiver's user to activate it.
+ *
  * This is also the text of the all-failed outcome, which a host throws instead of collapsing to a
- * sentence: `delivered=0` with one `status=failed` row per input. The shape therefore does not depend
+ * sentence: `stored=0` with one `status=failed` row per input. The shape therefore does not depend
  * on how many targets succeeded — a caller that parses it once parses every outcome.
  *
  * The one deliberate shape difference is `id=`/`sender=`: an all-failed call created no event, so the
@@ -74,20 +86,21 @@ function renderPublishRow(row) {
  * exactly the reading the marker exists to prevent. `activation=` and the counts stay in every header.
  */
 export function formatPublishResult(options) {
-    const delivered = options.rows.filter((row) => row.status === "delivered").length;
+    const stored = options.rows.filter((row) => row.status === "stored").length;
     const failed = options.rows.filter((row) => row.status === "failed").length;
     const duplicates = options.rows.filter((row) => row.status === "duplicate").length;
+    const awaitingActivation = options.activation === "manual";
     const head = [
         "ace 0.1 publish",
         // No delivery means no event was created, so there is no id to hand out and no sender to name.
-        ...(delivered === 0 ? ["event=none"] : [`id=${options.id}`, `sender=${options.sender}`]),
+        ...(stored === 0 ? ["event=none"] : [`id=${options.id}`, `sender=${options.sender}`]),
         `activation=${options.activation}`,
         `targets=${options.rows.length}`,
-        `delivered=${delivered}`,
+        `stored=${stored}`,
         `failed=${failed}`,
         `duplicates=${duplicates}`,
     ].join(" ");
-    return [head, ...options.rows.map(renderPublishRow)].join("\n");
+    return [head, ...options.rows.map((row) => renderPublishRow(row, awaitingActivation))].join("\n");
 }
 /** The sentence the directory tool adds under a `count=0` header when nobody else is online and no filter was given. */
 export const NO_LIVE_SESSIONS = "No other agent sessions are registered right now.";

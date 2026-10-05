@@ -1,6 +1,7 @@
 import type { RegistryEntry } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 import { endpointAddress } from "../runtime/endpoint-config.ts";
+import { formatIsoDuration } from "../utils.ts";
 
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export function addressOf(endpoint: EndpointConfig): string {
@@ -22,20 +23,21 @@ export function serverAddress(url: string): string {
 }
 
 /**
- * One directory row as fields: `channel=<target> renews_in=<n>s self=<yes|no> description="<text>"`.
+ * One directory row as fields: `channel=<target> renews_in=<ISO 8601 duration> self=<yes|no> description="<text>"`.
  *
  * `channel` is the publish-ready target — the channel a peer publishes to reach that session, with the
  * `<server>:` prefix folded in when `server` is given (a multi-server session's names are unique per
  * server, so the prefixed form is what ace_publish accepts). `self` marks this session's own channel;
- * the listing omits that entry, so it is `no` on every row here. The self-description is quoted and
- * never shortened.
+ * the listing omits that entry, so it is `no` on every row here. `renews_in` is the peer's remaining
+ * lease as an ISO 8601 duration (`PT33S`, `PT1M30S`, `PT1H`), never a bare `33s`. The self-description
+ * is quoted and never shortened.
  */
 export function describeDiscovered(entry: RegistryEntry, options: { server?: string; self?: boolean } = {}): string {
 	const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
 	const channel = options.server === undefined ? entry.channel : `${options.server}:${entry.channel}`;
 	return [
 		`channel=${channel}`,
-		`renews_in=${renewsIn}s`,
+		`renews_in=${formatIsoDuration(renewsIn)}`,
 		`self=${options.self === true ? "yes" : "no"}`,
 		`description=${JSON.stringify(entry.description)}`,
 	].join(" ");

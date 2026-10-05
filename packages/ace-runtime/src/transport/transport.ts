@@ -1,5 +1,12 @@
-/** Handler a transport invokes for every raw inbound message. */
-export type RawAceMessageHandler = (raw: unknown) => Promise<void>;
+/**
+ * Handler a transport invokes for every raw inbound message.
+ *
+ * `receivedAt` is the broker's arrival time for the message, epoch milliseconds UTC, when the
+ * transport can tell it — the Redis stream entry id carries it; transports without a broker-side
+ * timestamp (the in-memory transport) omit the argument, and the rendered event drops its
+ * `received at:` line rather than inventing render time (design doc §18).
+ */
+export type RawAceMessageHandler = (raw: unknown, receivedAt?: number) => Promise<void>;
 
 /**
  * Transport adapter boundary (RFC §4, §21).
