@@ -13,7 +13,7 @@
  * it is exactly what a typo looks like, so the result says so instead of reporting a silent success.
  */
 export declare function deliveredChannel(name: string, unknownSubscriber?: boolean): string;
-/** One entry of the failure list: `"target": reason`. */
+/** One entry of the failure list: `"<channel>": reason`. */
 export declare function failedTarget(target: string, detail: string): string;
 /** The `ace_publish` result: what went out, and what did not (with the memory of ids and sender). */
 export declare function formatPublishResult(options: {
@@ -33,7 +33,7 @@ export declare function formatDiscoveredSessions(rows: readonly string[]): strin
 export declare const TOOL_ERROR_TEXT: {
     readonly notRunning: "ACE is not running in this session; .ace.json is missing or did not load";
     readonly noDirectory: "no agent directory: no server from .ace.json is reachable";
-    readonly usagePublish: "ace_publish requires a non-empty `body` and a `target` (string or list of strings)";
+    readonly usagePublish: "ace_publish requires a non-empty `body` and a `channel` (string or list of strings)";
     readonly targetAmbiguous: (target: string, candidateCount: number, candidates: readonly string[]) => string;
     readonly targetNotFound: (target: string, live: readonly string[]) => string;
     readonly nothingPublished: (failures: readonly string[]) => string;

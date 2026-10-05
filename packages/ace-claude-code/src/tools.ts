@@ -117,7 +117,7 @@ const HOST_TOOL_TEXT = {
 
 /**
  * The four ACE tools, as `tools/list` returns them. When this session registered in the agent
- * directory, `senders` names the channel(s) it answers to: what other sessions pass as `target` for
+ * directory, `senders` names the channel(s) it answers to: what other sessions pass as `channel` for
  * a direct event to this one.
  */
 export function buildToolDefinitions(senders: readonly string[] = []): McpTool[] {
@@ -227,8 +227,8 @@ async function activateTool(ctx: ToolContext, args: Record<string, unknown>): Pr
 
 async function publishTool(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
 	const body = typeof args.body === "string" ? args.body : undefined;
-	const rawTarget = args.target;
-	const target = typeof rawTarget === "string" ? [rawTarget] : Array.isArray(rawTarget) ? rawTarget : undefined;
+	const rawChannel = args.channel;
+	const target = typeof rawChannel === "string" ? [rawChannel] : Array.isArray(rawChannel) ? rawChannel : undefined;
 	if (body === undefined || body.length === 0 || target === undefined || target.length === 0) {
 		throw new Error(TOOL_ERROR_TEXT.usagePublish);
 	}

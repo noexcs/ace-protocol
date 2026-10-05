@@ -19,7 +19,7 @@ export function deliveredChannel(name: string, unknownSubscriber = false): strin
 	return unknownSubscriber ? `channel "${name}" (no known subscriber)` : `channel "${name}"`;
 }
 
-/** One entry of the failure list: `"target": reason`. */
+/** One entry of the failure list: `"<channel>": reason`. */
 export function failedTarget(target: string, detail: string): string {
 	return `"${target}": ${detail}`;
 }
@@ -60,7 +60,7 @@ export function formatDiscoveredSessions(rows: readonly string[]): string {
 export const TOOL_ERROR_TEXT = {
 	notRunning: `ACE is not running in this session; ${ACE_CONFIG_FILENAME} is missing or did not load`,
 	noDirectory: `no agent directory: no server from ${ACE_CONFIG_FILENAME} is reachable`,
-	usagePublish: "ace_publish requires a non-empty `body` and a `target` (string or list of strings)",
+	usagePublish: "ace_publish requires a non-empty `body` and a `channel` (string or list of strings)",
 	targetAmbiguous: (target: string, candidateCount: number, candidates: readonly string[]): string =>
 		`target "${target}" matches ${candidateCount} live channels; pass the full channel name: ${candidates.join(", ")}`,
 	targetNotFound: (target: string, live: readonly string[]): string =>

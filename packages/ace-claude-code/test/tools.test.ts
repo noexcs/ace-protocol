@@ -146,7 +146,7 @@ describe("ace_publish", () => {
 		const { surface, messages, target } = fakeSurface();
 		const result = await executeTool(ctx({ publish: surface }), "ace_publish", {
 			body: "hello",
-			target: "outbox",
+			channel: "outbox",
 		});
 		expect(result.isError).toBeFalsy();
 		expect(messages).toHaveLength(1);
@@ -163,7 +163,7 @@ describe("ace_publish", () => {
 		const { surface, messages } = fakeSurface();
 		await executeTool(ctx({ publish: surface }), "ace_publish", {
 			body: "hello",
-			target: "outbox",
+			channel: "outbox",
 			activation: "immediate",
 		});
 		expect(messages[0]?.activation).toBe("immediate");
@@ -171,7 +171,7 @@ describe("ace_publish", () => {
 
 	it("reports an unresolvable target as a failure and publishes nothing", async () => {
 		const { surface, messages } = fakeSurface();
-		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", target: "nowhere" });
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", channel: "nowhere" });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toMatch(/nothing published/i);
 		expect(messages).toHaveLength(0);
@@ -179,15 +179,23 @@ describe("ace_publish", () => {
 
 	it("reports a broker failure as a failure", async () => {
 		const { surface } = fakeSurface(true);
-		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", target: "outbox" });
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", channel: "outbox" });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain("broker down");
 	});
 
 	it("is an error when ACE is not running", async () => {
-		const result = await executeTool(ctx({}), "ace_publish", { body: "hello", target: "outbox" });
+		const result = await executeTool(ctx({}), "ace_publish", { body: "hello", channel: "outbox" });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toMatch(/not running/);
+	});
+
+	it("rejects the old `target` parameter name", async () => {
+		const { surface, messages } = fakeSurface();
+		const result = await executeTool(ctx({ publish: surface }), "ace_publish", { body: "hello", target: "outbox" });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("`channel`");
+		expect(messages).toHaveLength(0);
 	});
 });
 

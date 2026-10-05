@@ -26,15 +26,15 @@ export declare const ACE_TOOL_NAMES: {
 export declare const TOOL_TEXT: {
     readonly publish: {
         readonly intro: string;
-        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `target`.", "If a publish result says a channel has no known subscriber, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
+        readonly guidelines: readonly ["Use ace_publish to notify another agent or service; keep the body self-contained.", "Choose the target by the peer it names; pass a list to publish the same event to several at once.", "Call ace_agents for the channels that are live right now, then pass one of them as `channel`.", "If a publish result says a channel has no known subscriber, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.", "Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.", string, "There is no reply protocol: if you expect an answer, say so and name the channel to answer on."];
         readonly params: {
             readonly body: "Event body; the peer's agent reads this";
             readonly activation: "How the receiver should process it (default: next_turn): \"immediate\" acts now, \"next_turn\" acts at the end of the receiver's turn, \"manual\" only stores it for the receiver's user to activate; pass \"default\" to let the receiver decide";
-            readonly target: string;
+            readonly channel: string;
         };
     };
     readonly agents: {
-        readonly description: "List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.";
+        readonly description: "List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `channel`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.";
         readonly guidelines: readonly ["Call ace_agents before ace_publish when the peer is not a channel this session reads."];
         readonly params: {
             readonly agent: "Filter by coding agent, e.g. \"oh-my-pi\" or \"pi\"";
@@ -42,14 +42,14 @@ export declare const TOOL_TEXT: {
         };
     };
     readonly channels: {
-        readonly description: "List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`; `channel` is what a peer publishes to, and `note` is the host's note about the channel (a peer's own self-description is in ace_agents, not here). Broker settings are left out";
+        readonly description: "List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out";
         /**
          * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
          * has no directory tool), so it is a separate piece a host appends or drops. Compose with
          * {@link channelsToolText} rather than concatenating by hand.
          */
         readonly agentsPointer: "— address live peers with ace_agents.";
-        readonly guidelines: readonly ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `target`."];
+        readonly guidelines: readonly ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`."];
     };
 };
 /**
@@ -60,11 +60,11 @@ export declare const TOOL_TEXT: {
 export declare function channelsToolText(options?: {
     agentsTool?: boolean;
 }): string;
-/** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
+/** Parameters of the publish tool: `body` and `channel` are required, `id` is generated for the caller. */
 export declare const PUBLISH_PARAMETERS: Type.TObject<{
     body: Type.TString;
     activation: Type.TOptional<Type.TUnsafe<"immediate" | "next_turn" | "manual" | "default">>;
-    target: Type.TUnion<[Type.TString, Type.TArray<Type.TString>]>;
+    channel: Type.TUnion<[Type.TString, Type.TArray<Type.TString>]>;
 }>;
 /** Parameters of the directory listing tool. */
 export declare const AGENTS_PARAMETERS: Type.TObject<{

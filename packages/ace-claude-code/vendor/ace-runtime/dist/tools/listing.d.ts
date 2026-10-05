@@ -14,7 +14,8 @@ export declare function describeEndpoint(endpoint: EndpointConfig): string;
  * `transport` the transport kind
  * `activation` the activation this receiver forces, or `default` to let the message decide
  * `self`     `yes` for this session's own channel: publishing there is how a peer reaches this session
- * `note`     the host's note about the channel — this is not the peer's self-description (`ace_agents` carries that)
+ * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none;
+ *            this is not the peer's self-description (`ace_agents` carries that)
  *
  * The local subscription label is a host detail, so it is not here; `/ace list` shows it.
  */

@@ -474,7 +474,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 					}),
 				);
 				const activation = params.activation ?? "next_turn";
-				const targets = [...new Set(typeof params.target === "string" ? [params.target] : params.target)];
+				const targets = [...new Set(typeof params.channel === "string" ? [params.channel] : params.channel)];
 				const delivered: string[] = [];
 				const failures: string[] = [];
 				const sentStreams = new Set<string>();

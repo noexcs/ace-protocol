@@ -37,7 +37,7 @@ acknowledged, and a `manual` event is retained without starting a turn).
 
 A session's channel is its address: a live session registers the channel named by its sender and can be found
 by its peers in the **agent directory** on Redis (RFC §22 item 1). `ace_agents` lists the channels that are
-online, and `ace_publish` takes a channel name as `target` — a `<server>:<channel>` prefix picks the server when
+online, and `ace_publish` takes a channel name as `channel` — a `<server>:<channel>` prefix picks the server when
 several are configured — or a list of channels to send one event to several peers at once. See
 [the contracts](docs/ace-runtime-contracts.md).
 

@@ -25,21 +25,36 @@ describe("formatChannelListing", () => {
 	it("emits one row per channel with the same keys in the same order", () => {
 		const rows = formatChannelListing([subscribed, inbox], { selfChannel: "ace:ana:oh-my-pi:01a10a" }).split("\n");
 
+		expect(rows[0]).toBe(
+			"subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it); `note` runs to the end of the line",
+		);
 		expect(rows[1]).toBe(
-			'  channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note="the WSL agent"',
+			"  channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note=the WSL agent",
 		);
 		// The session's own channel is what a peer replies to, so the row says so; an endpoint without an
 		// activation of its own reports `default` rather than dropping the key.
 		expect(rows[2]).toBe(
-			'  channel=ace:ana:oh-my-pi:01a10a transport=redis-streams activation=default self=yes note="this session\'s inbox"',
+			"  channel=ace:ana:oh-my-pi:01a10a transport=redis-streams activation=default self=yes note=this session's inbox",
 		);
 	});
 
-	it("quotes an empty note rather than dropping the key", () => {
+	it("leaves the note unquoted as the tail of the row", () => {
+		const chatty = endpoint({
+			name: "ace:ana:chatty",
+			channel: "ace:ana:chatty",
+			description: "reads slowly: batch of 3, spaces and all",
+		});
+
+		expect(formatChannelListing([chatty])).toContain(
+			"channel=ace:ana:chatty transport=redis-streams activation=default self=no note=reads slowly: batch of 3, spaces and all",
+		);
+	});
+
+	it("ends the row at `note=` when there is no note", () => {
 		const bare = endpoint({ name: "ace:ana:quiet", channel: "ace:ana:quiet" });
 
-		expect(formatChannelListing([bare])).toContain(
-			'channel=ace:ana:quiet transport=redis-streams activation=default self=no note=""',
+		expect(formatChannelListing([bare]).split("\n")[1]).toBe(
+			"  channel=ace:ana:quiet transport=redis-streams activation=default self=no note=",
 		);
 	});
 

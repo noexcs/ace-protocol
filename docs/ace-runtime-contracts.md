@@ -161,7 +161,7 @@ direct messages addressed to me | agent=<codingAgent [版本]> | session=<尾6> 
 | 参数 | 类型 | 必填 | 缺省 | 说明 |
 |---|---|---|---|---|
 | `body` | string | **是** | — | 不透明文本，对端 agent 直接读 |
-| `target` | string \| string[] | **是** | — | 频道名（多 server 时也可用目录里能唯一匹配的前缀），或其列表；列表=一次发多个目标 |
+| `channel` | string \| string[] | **是** | — | 频道名（多 server 时也可用目录里能唯一匹配的前缀），或其列表；列表=一次发多个目标 |
 | `activation` | enum | 否 | **`next_turn`** | `default` \| `next_turn` \| `immediate` \| `manual`；传 `default` 才是"交给接收方决定" |
 
 没有 `id` 参数：**事件 id 由运行时生成**（`evt_<uuid>`），一次调用内所有目标共用同一个 id，并作为结果的一部分返回给调用者。发行端**不需要注册**：每次调用现场构造 `sender`、`senderDescription`，接收端直接显示、不查目录。
@@ -201,7 +201,7 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 
 1. `Use ace_publish to notify another agent or service; keep the body self-contained.`
 2. `Choose the target by the peer it names; pass a list to publish the same event to several at once.`
-3. ``Call ace_agents for the channels that are live right now, then pass one of them as `target`.``
+3. ``Call ace_agents for the channels that are live right now, then pass one of them as `channel`.``
 4. `If a publish result says a channel has no known subscriber, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.`
 5. `Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.`
 6. ``To answer an event, publish to a channel ace_agents lists as live: the header's `sender` is who wrote it and that name is their channel; a sender with no live channel (a service, or a session that has gone) cannot be answered there.``
@@ -213,7 +213,7 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 |---|---|
 | `body` | `Event body; the peer's agent reads this` |
 | `activation` | `How the receiver should process it (default: next_turn): "immediate" acts now, "next_turn" acts at the end of the receiver's turn, "manual" only stores it for the receiver's user to activate; pass "default" to let the receiver decide` |
-| `target` | ``Where to publish: a channel name — one this session reads, or one ace_agents lists as live (a `<server>:` prefix picks the server when several are configured) — or a list of channel names. Names are not validated: a channel nobody subscribes to is accepted, and the event is stored there.`` |
+| `channel` | ``Where to publish: a channel name — one this session reads, or one ace_agents lists as live (a `<server>:` prefix picks the server when several are configured) — or a list of channel names. Names are not validated: a channel nobody subscribes to is accepted, and the event is stored there.`` |
 
 ### 4.2 `ace_agents`
 
@@ -229,7 +229,7 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 **工具描述（模型可见）**
 
 ```text
-List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.
+List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `channel`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.
 ```
 
 **promptGuidelines（模型可见）**
@@ -300,7 +300,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 |---|---|
 | 参数 | 无 |
 | 只读 | 是：从运行时已解析的订阅（派生的收件箱 + 配置的 `subscribe`）列举，不写、不改；运行时不存任何通道策略 |
-| 输出 | 一段 `subscribe:`，每行 `名 · transport · "描述" · [activation]`；注册表为本会话建的收件箱标 `(registered for this session)` |
+| 输出 | 一段 `subscribe:` 头 + 每通道一行 `channel=… transport=… activation=… self=… note=…`（`note` 为行尾原文，可空，故不引号）；`self=yes` 标本会话自己的通道 |
 | 不含 | `config`/`options`（broker 细节）、spool（内部实现） |
 | `details` | `{ subscribe: [{ name, transport, description?, activation?, derived }], count }` |
 | target | 可发的目标就是频道名（配置的订阅名，或 `ace_agents` 列出的在线 channel）；没有单独的 `publish` 列表 |
@@ -308,14 +308,14 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 **工具描述（模型可见）**
 
 ```text
-List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`; `channel` is what a peer publishes to, and `note` is the host's note about the channel (a peer's own self-description is in ace_agents, not here). Broker settings are left out — address live peers with ace_agents.
+List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out — address live peers with ace_agents.
 ```
 
 （末尾指向 `ace_agents` 的一句只属于注册了该工具的宿主；不注册的宿主用 `channelsToolText({ agentsTool: false })` 去掉它。）
 
 **promptGuidelines（模型可见）**
 
-1. ``Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `target`.``
+1. ``Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`.``
 
 **参数**：无（工具不接受参数，也不接受额外键）。
 

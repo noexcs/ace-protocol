@@ -20,23 +20,26 @@ export function describeEndpoint(endpoint) {
  * `transport` the transport kind
  * `activation` the activation this receiver forces, or `default` to let the message decide
  * `self`     `yes` for this session's own channel: publishing there is how a peer reaches this session
- * `note`     the host's note about the channel — this is not the peer's self-description (`ace_agents` carries that)
+ * `note`     the host's note about the channel — the unquoted tail of the row, empty when there is none;
+ *            this is not the peer's self-description (`ace_agents` carries that)
  *
  * The local subscription label is a host detail, so it is not here; `/ace list` shows it.
  */
 export function formatChannelListing(subscriptions, options = {}) {
     const line = (endpoint) => {
-        const target = endpoint.channel ?? endpoint.name;
+        const name = endpoint.channel ?? endpoint.name;
         return [
-            `channel=${target}`,
+            `channel=${name}`,
             `transport=${endpoint.transport}`,
             `activation=${endpoint.activation ?? "default"}`,
-            `self=${target === options.selfChannel ? "yes" : "no"}`,
-            `note=${endpoint.description === undefined ? '""' : JSON.stringify(endpoint.description)}`,
+            `self=${name === options.selfChannel ? "yes" : "no"}`,
+            // The note is the unquoted tail of the row: everything after `note=` is the note verbatim, so
+            // a whitespace split never breaks and an empty note is simply `note=` at the end of the line.
+            `note=${endpoint.description ?? ""}`,
         ].join(" ");
     };
     return [
-        "subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it)",
+        "subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it); `note` runs to the end of the line",
         ...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
     ].join("\n");
 }

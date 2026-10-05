@@ -190,15 +190,15 @@ sends a direct event by publishing to the name — there is no `publish` list to
 ```text
 agent A (sender ace:alice:pi:<sessionId>)    agent B (sender ace:bob:pi:<sessionId>)
   inbox: ace:alice:pi:<sessionId>               inbox: ace:bob:pi:<sessionId>
-       │  ace_publish target="ace:bob:pi:<sessionId>" ──►  injected into B's conversation
-       │  ◄────────── ace_publish target="ace:alice:pi:<sessionId>" ──────
+       │  ace_publish channel="ace:bob:pi:<sessionId>" ──►  injected into B's conversation
+       │  ◄────────── ace_publish channel="ace:alice:pi:<sessionId>" ──────
 ```
 
 Each side's events carry the sender `<namespace>:<username>:<coding-agent>:<sessionId>` — the same name as the
 channel it registers — so B sees who and which session a message came from without any lookup. `ace_agents`
-lists the live channels; pass one as `target`.
+lists the live channels; pass one as `channel`.
 
-`ace_publish` takes `body` (the event text the peer's agent reads) and `target` — a channel name, or a list of
+`ace_publish` takes `body` (the event text the peer's agent reads) and `channel` — a channel name, or a list of
 channel names to publish one event to several peers at once. With several servers configured, prefix the channel
 with `<server>:` to pick the server, and a bare name is resolved against each server's directory (an ambiguous
 name fails and names the candidates instead of guessing). `activation` defaults to `next_turn`; pass `default` to
@@ -229,7 +229,7 @@ down (RFC §22 item 1).
   keeps the directory clean);
 - `ace_channels` lists what this session reads — the derived inbox first — read-only, straight from
   `.ace.json`, without broker settings;
-- `ace_agents` lists what is live right now; `ace_publish` accepts a channel name as `target`, and a list of
+- `ace_agents` lists what is live right now; `ace_publish` accepts a channel name as `channel`, and a list of
   channels to publish one event to several peers at once. With several servers configured, prefix the name
   `<server>:<channel>`; an ambiguous bare name fails and names the servers instead of guessing;
 - a target's Redis stream is derived from the channel name (`<ns>:ch:<channel>`) on the server that carries it;
@@ -286,7 +286,7 @@ it subscribes to, how delivery works, the `<ace_event>` shape a peer sees, and t
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `body` | string | yes | — | `Event body; the peer's agent reads this` |
-| `target` | string \| string[] | yes | — | `Where to publish: a channel name (a <server>:<channel> prefix picks the server when several are configured), or a list to publish the same event to several channels` |
+| `channel` | string \| string[] | yes | — | `Where to publish: a channel name (a <server>:<channel> prefix picks the server when several are configured), or a list to publish the same event to several channels` |
 | `activation` | `default` \| `next_turn` \| `immediate` \| `manual` | no | `next_turn` | `How urgently the peer should process it (default: next_turn); pass "default" to let the receiver decide` |
 
 Prompt guidelines: keep the body self-contained; choose the target by the peer it names, or pass a list to
@@ -299,7 +299,7 @@ not a parameter.
 **`ace_agents`**
 
 > List the other agent sessions reachable right now — this session is not listed. Each row is a channel name
-> you can pass to ace_publish as `target`.
+> you can pass to ace_publish as `channel`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

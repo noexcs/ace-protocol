@@ -147,7 +147,7 @@ uploaded as `<namespace>:<username>:<name>` under *that server's* namespace, a f
 stream key is derived from the name
 (`<namespace>:ch:<name>`), and this session's own inbox is the channel named by its sender
 (`<namespace>:<username>:<codingAgent>:<sessionId>`). There is no `publish` list: `ace_publish` takes
-any channel name as its `target`.
+any channel name as its `channel`.
 
 [`example/.ace.json`](example/.ace.json) is a working default: user `claude` on one server `local`
 (`redis://127.0.0.1:6379`, namespace `ace`), subscribing to the channel `inbox` — uploaded as
@@ -175,7 +175,7 @@ session by name:
   (`<namespace>:<username>:<codingAgent>:<sessionId>`): the runtime registers that channel in the
   directory and appends a derived subscription named `session-inbox`, so somebody is reading what the
   directory advertises. `ace_channels` lists it alongside the configured channels, and the
-  `ace_publish` description names it — the string a peer passes as `target`.
+  `ace_publish` description names it — the string a peer passes as `channel`.
 - **One registration per server.** A session on several servers gets one channel per server, named in
   that server's namespace; the derived local inbox labels are prefixed with the server name so nothing
   collides.
@@ -288,7 +288,7 @@ they are the operator's, not the agent's):
 | Tool | Purpose |
 | --- | --- |
 | `ace_channels` | List this session's channel names (with their activation) and the derived `session-inbox` when it is registered. Display only — never an authorization. |
-| `ace_publish {body, target, activation?}` | Publish a valid ACE 0.1 event from this session to a channel name (`<server>:<channel>` picks the server; a short name is completed with the server's namespace and user). Carries the session as `sender` (`<namespace>:<username>:<codingAgent>:<sessionId>`) and `sessionId`. |
+| `ace_publish {body, channel, activation?}` | Publish a valid ACE 0.1 event from this session to a channel name (`<server>:<channel>` picks the server; a short name is completed with the server's namespace and user). Carries the session as `sender` (`<namespace>:<username>:<codingAgent>:<sessionId>`) and `sessionId`. |
 | `ace_pending` | List the `manual` events this session is holding, as `sender/id`. |
 | `ace_activate {sender, id}` | Release one held `manual` event; it is injected as a `next_turn` channel event. |
 

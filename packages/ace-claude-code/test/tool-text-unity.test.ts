@@ -32,8 +32,8 @@ describe("tool text unity with the runtime spec", () => {
 	it("takes the publish parameter schema from the runtime", () => {
 		const schema = publishDef?.inputSchema as { required?: string[]; properties?: Record<string, unknown> };
 
-		expect(schema.required).toEqual(["body", "target"]);
-		expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["activation", "body", "target"]);
+		expect(schema.required).toEqual(["body", "channel"]);
+		expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["activation", "body", "channel"]);
 	});
 
 	it("adds the directory channel to the shared text instead of rewording it", () => {

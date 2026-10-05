@@ -77,7 +77,7 @@ export const TOOL_TEXT = {
 		guidelines: [
 			"Use ace_publish to notify another agent or service; keep the body self-contained.",
 			"Choose the target by the peer it names; pass a list to publish the same event to several at once.",
-			"Call ace_agents for the channels that are live right now, then pass one of them as `target`.",
+			"Call ace_agents for the channels that are live right now, then pass one of them as `channel`.",
 			"If a publish result says a channel has no known subscriber, the name is probably wrong: check ace_agents, because a channel nobody reads keeps the event where nobody will see it.",
 			"Messages wrapped in <ace_event> were sent by another agent or service through ACE, not by the user.",
 			"To answer an event, publish to a channel ace_agents lists as live: the header's `sender` is who " +
@@ -89,7 +89,7 @@ export const TOOL_TEXT = {
 			body: "Event body; the peer's agent reads this",
 			activation:
 				'How the receiver should process it (default: next_turn): "immediate" acts now, "next_turn" acts at the end of the receiver\'s turn, "manual" only stores it for the receiver\'s user to activate; pass "default" to let the receiver decide',
-			target:
+			channel:
 				"Where to publish: a channel name — one this session reads, or one ace_agents lists as live " +
 				"(a `<server>:` prefix picks the server when several are configured) — or a list of channel names. " +
 				"Names are not validated: a channel nobody subscribes to is accepted, and the event is stored there.",
@@ -97,7 +97,7 @@ export const TOOL_TEXT = {
 	},
 	agents: {
 		description:
-			"List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.",
+			"List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `channel`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.",
 		guidelines: ["Call ace_agents before ace_publish when the peer is not a channel this session reads."],
 		params: {
 			agent: 'Filter by coding agent, e.g. "oh-my-pi" or "pi"',
@@ -106,14 +106,16 @@ export const TOOL_TEXT = {
 	},
 	channels: {
 		description:
-			"List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`; `channel` is what a peer publishes to, and `note` is the host's note about the channel (a peer's own self-description is in ace_agents, not here). Broker settings are left out",
+			"List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`, one channel per line; `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out",
 		/**
 		 * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
 		 * has no directory tool), so it is a separate piece a host appends or drops. Compose with
 		 * {@link channelsToolText} rather than concatenating by hand.
 		 */
 		agentsPointer: "— address live peers with ace_agents.",
-		guidelines: ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `target`."],
+		guidelines: [
+			"Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`.",
+		],
 	},
 } as const;
 
@@ -128,7 +130,7 @@ export function channelsToolText(options: { agentsTool?: boolean } = {}): string
 		: `${TOOL_TEXT.channels.description} ${TOOL_TEXT.channels.agentsPointer}`;
 }
 
-/** Parameters of the publish tool: `body` and `target` are required, `id` is generated for the caller. */
+/** Parameters of the publish tool: `body` and `channel` are required, `id` is generated for the caller. */
 export const PUBLISH_PARAMETERS = Type.Object({
 	body: Type.String({ description: TOOL_TEXT.publish.params.body }),
 	activation: Type.Optional(
@@ -140,8 +142,8 @@ export const PUBLISH_PARAMETERS = Type.Object({
 			description: TOOL_TEXT.publish.params.activation,
 		}),
 	),
-	target: Type.Union([Type.String(), Type.Array(Type.String())], {
-		description: TOOL_TEXT.publish.params.target,
+	channel: Type.Union([Type.String(), Type.Array(Type.String())], {
+		description: TOOL_TEXT.publish.params.channel,
 	}),
 });
 
