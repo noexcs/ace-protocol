@@ -55,6 +55,16 @@ async function microrounds(ticks = 200): Promise<void> {
 	for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
 }
 
+/**
+ * The transport's `inFlight` entry ids — private state, which is exactly what the delivery-queue
+ * guard turns on, so the test pins it through a runtime check rather than a fabricated type.
+ */
+function inFlightIds(transport: RedisStreamsTransport): Set<unknown> {
+	const value: unknown = Reflect.get(transport, "inFlight");
+	if (!(value instanceof Set)) throw new Error("RedisStreamsTransport has no inFlight set");
+	return value;
+}
+
 describe("redisStreamEntryTimestamp", () => {
 	it("reads the broker arrival millis from the entry id's first segment", () => {
 		expect(redisStreamEntryTimestamp("1791053000001-0")).toBe(1791053000001);
@@ -416,6 +426,49 @@ describe("RedisStreamsTransport delivery queue", () => {
 		// throttle the loop to one batch at a time for no reason.
 		expect(REDIS_STREAMS_DELIVERY_QUEUE_LIMIT).toBeGreaterThan(16 * 10);
 	});
+	it("takes a failed delivery out of inFlight, so a later reclaim can re-queue it", async () => {
+		// The 0.2.14 boundary, at the transport: a released queued delivery makes the handler reject, and
+		// if the entry stayed in `inFlight` the reclaim pass would keep skipping it — the entry would hold
+		// a queue slot forever instead of being retried and, eventually, dead-lettered.
+		let now = 0;
+		const { client, transport, errors } = setup({ reclaimIdleMs: 50 }, { now: () => now });
+		const inFlight = inFlightIds(transport);
+		const gate = Promise.withResolvers<void>();
+		const handled: string[] = [];
+		await transport.start(async (raw) => {
+			handled.push(String(raw));
+			if (handled.length === 1) {
+				await gate.promise;
+				throw new Error("the run settled without surfacing this text");
+			}
+		});
+
+		client.push({ id: "1-0", payload: "first" });
+		await waitFor(() => handled.length === 1);
+		expect(inFlight.has("1-0")).toBe(true);
+
+		gate.resolve();
+		await waitFor(() => !inFlight.has("1-0"));
+
+		expect(inFlight.has("1-0")).toBe(false);
+		// Failed, not acknowledged: the entry is still the broker's to redeliver.
+		expect(client.acked).toEqual([]);
+		expect(errors.map(String)).toContain("Error: the run settled without surfacing this text");
+
+		// And it is reclaimable again: the next pass hands it to this consumer once more.
+		now = 100;
+		await waitFor(() => client.reads.length >= 2);
+		client.pushReclaimable({ id: "1-0", payload: "first" });
+		client.releaseRead();
+		await waitFor(() => handled.length === 2);
+
+		expect(client.reclaimed).toHaveLength(1);
+		expect(handled).toEqual(["first", "first"]);
+		await client.waitForAcks(1);
+		expect(client.acked).toEqual(["1-0"]);
+		await stop(() => transport.stop(), client);
+	});
+
 	it("does not reclaim an entry it has accepted and is still delivering", async () => {
 		let now = 0;
 		const { client, transport, errors } = setup({ reclaimIdleMs: 50, reclaimAttempts: 1 }, { now: () => now });

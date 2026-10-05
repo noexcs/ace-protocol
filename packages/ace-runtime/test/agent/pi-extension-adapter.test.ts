@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { DeliveryObserver } from "../../src/agent/event-delivery-observer.ts";
+import { DeliveryNotSurfacedError, type DeliveryObserver } from "../../src/agent/event-delivery-observer.ts";
 import { renderAceEvent } from "../../src/agent/event-rendering.ts";
 import {
 	type DeliverAs,
@@ -55,12 +55,12 @@ class ManualTimer {
 class ControllableObserver implements DeliveryObserver {
 	readonly observed: AceMessage[] = [];
 	readonly released: AceMessage[] = [];
-	private readonly waiters: Array<() => void> = [];
+	private readonly waiters: Array<{ resolve: () => void; reject: (error: unknown) => void; text: string }> = [];
 
-	observe(message: AceMessage): Promise<void> {
+	observe(message: AceMessage, rendered?: string): Promise<void> {
 		this.observed.push(message);
-		const { promise, resolve } = Promise.withResolvers<void>();
-		this.waiters.push(resolve);
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		this.waiters.push({ resolve, reject, text: rendered ?? "" });
 		return promise;
 	}
 
@@ -68,9 +68,14 @@ class ControllableObserver implements DeliveryObserver {
 		this.released.push(message);
 	}
 
+	/** Fail every pending observation, the way the host's settle signal does. */
+	failPending(): void {
+		for (const waiter of this.waiters.splice(0)) waiter.reject(new DeliveryNotSurfacedError(waiter.text));
+	}
+
 	/** Resolve every pending observation at once, the way the host echoes a delivered message. */
 	deliver(): void {
-		for (const resolve of this.waiters.splice(0)) resolve();
+		for (const waiter of this.waiters.splice(0)) waiter.resolve();
 	}
 }
 
@@ -83,6 +88,8 @@ function setup(
 		observer?: DeliveryObserver;
 		timer?: ManualTimer;
 		renderEvent?: (message: AceMessage) => string;
+		/** Where the adapter's log lines go; collected by tests that assert on them. */
+		logger?: (line: string) => void;
 	} = {},
 ) {
 	const pi = new FakePi();
@@ -94,6 +101,7 @@ function setup(
 		setTimer: timer.setTimer,
 		...(options.observer ? { observeDelivery: options.observer } : {}),
 		...(options.renderEvent ? { renderEvent: options.renderEvent } : {}),
+		...(options.logger ? { logger: { info: options.logger } } : {}),
 	});
 	return { pi, adapter, timer };
 }
@@ -314,6 +322,76 @@ describe("PiExtensionAdapter observed delivery", () => {
 		await expect(adapter.inject(event, "next_turn")).resolves.toBeUndefined();
 
 		expect(pi.sent).toHaveLength(1);
+	});
+});
+
+describe("PiExtensionAdapter released delivery", () => {
+	// The 0.2.14 boundary: a queued `aside` has no wall clock, so a run that settled without surfacing
+	// it left the wait — and the broker entry — pending forever. The host's settle signal ends the wait
+	// as *not delivered*: `inject` rejects so the transport keeps the entry pending for reclaim.
+	it("rejects a queued delivery the host never surfaced, and logs the release", async () => {
+		const observer = new ControllableObserver();
+		const lines: string[] = [];
+		const { adapter } = setup({
+			observer,
+			idle: true,
+			supportsAside: true,
+			logger: (line) => lines.push(line),
+		});
+
+		const injecting = adapter.inject(event, "next_turn", { subscription: "inbox" });
+		await Promise.resolve();
+		expect(observer.observed).toEqual([event]);
+
+		observer.failPending();
+
+		await expect(injecting).rejects.toThrow("the run settled without surfacing this text");
+		expect(lines).toEqual([
+			"[ACE] queued delivery released: the run settled without surfacing id=evt_001 sender=build-service subscribe=inbox",
+		]);
+		// The drop path (`release`) is not what a settled run uses: that one settles nothing.
+		expect(observer.released).toEqual([]);
+	});
+
+	it("re-waits a redelivery after a release without sending the text again", async () => {
+		const observer = new ControllableObserver();
+		const { pi, adapter } = setup({ observer, idle: true, supportsAside: true });
+		const context = { subscription: "inbox" };
+
+		const first = adapter.inject(event, "next_turn", context);
+		await Promise.resolve();
+		observer.failPending();
+		await expect(first).rejects.toThrow("the run settled without surfacing this text");
+		expect(pi.sent).toHaveLength(1);
+
+		// The broker redelivers the still-pending entry. The identity record is "handed to the host" and a
+		// release cannot roll it back — oh-my-pi may surface queued text in a later run, so a re-send would
+		// duplicate it. The redelivery re-attaches to the observation and waits.
+		const second = adapter.inject(event, "next_turn", context);
+		await Promise.resolve();
+
+		expect(pi.sent).toHaveLength(1);
+		expect(observer.observed).toEqual([event, event]);
+
+		observer.deliver();
+		await expect(second).resolves.toBeUndefined();
+	});
+
+	it("cancels the bounded wait's timer when a released delivery rejects", async () => {
+		// The bounded paths listen to the same settle signal, so the release can beat the wall clock; the
+		// timer must not stay armed behind it.
+		const observer = new ControllableObserver();
+		const timer = new ManualTimer();
+		const { adapter } = setup({ observer, timer, idle: true, supportsAside: true });
+
+		const injecting = adapter.inject(event, "immediate");
+		await Promise.resolve();
+		expect(timer.armed).toBe(true);
+
+		observer.failPending();
+
+		await expect(injecting).rejects.toThrow("the run settled without surfacing this text");
+		expect(timer.armed).toBe(false);
 	});
 });
 

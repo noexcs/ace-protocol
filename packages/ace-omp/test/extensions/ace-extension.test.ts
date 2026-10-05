@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import aceExtension, { aceCompletions } from "../../extensions/ace.ts";
 import { channelMenuItems } from "../../extensions/ace-manager.ts";
+import { AceDeliveryObserver, renderAceEvent } from "../../vendor/ace-runtime/dist/index.js";
 
 // The extension reads the host-global config from `$XDG_CONFIG_HOME/omp/ace.json` (falling back to
 // `~/.omp/agent/ace.json`). Point it at an empty directory: a developer's own configuration must
@@ -167,6 +168,67 @@ describe("subagent sessions", () => {
 
 			expect(notifications.join("\n")).toContain("not started");
 		});
+	});
+});
+
+describe("queued delivery release", () => {
+	const message = {
+		aceVersion: "0.1",
+		id: "evt_001",
+		sender: "build-service",
+		activation: "next_turn",
+		body: "Build failed for project foo.",
+	} as const;
+
+	it("releases a still-pending injection when the host says the run settled", async () => {
+		// The primary trigger: `agent_settled` means no automatic retry, compaction or queued
+		// continuation will run, so a queued wait whose text never surfaced must end here.
+		const delivery = new AceDeliveryObserver();
+		const { api, handlers } = fakeExtensionApi();
+		aceExtension(api, { delivery });
+		const { ctx } = fakeContext("main", "/tmp");
+
+		const pending = delivery.observe(message);
+		expect(delivery.pendingCount).toBe(1);
+
+		handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+
+		await expect(pending).rejects.toThrow("the run settled without surfacing this text");
+		expect(delivery.pendingCount).toBe(0);
+		// Idempotent: the next run's settle signal finds nothing left to release.
+		handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+		expect(delivery.pendingCount).toBe(0);
+	});
+
+	it("releases a still-pending injection on session shutdown", async () => {
+		// The backstop: a session can end mid-run. It must run before the reader stops, because the
+		// transport's stop drains the delivery queue and an unreleased wait would make that drain hang.
+		const delivery = new AceDeliveryObserver();
+		const { api, handlers } = fakeExtensionApi();
+		aceExtension(api, { delivery });
+		const { ctx } = fakeContext("main", "/tmp");
+
+		const pending = delivery.observe(message);
+
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+
+		await expect(pending).rejects.toThrow("the run settled without surfacing this text");
+		expect(delivery.pendingCount).toBe(0);
+	});
+
+	it("deletes a released waiter, so a delivered text is never released later", async () => {
+		const delivery = new AceDeliveryObserver();
+		const { api, handlers } = fakeExtensionApi();
+		aceExtension(api, { delivery });
+		const { ctx } = fakeContext("main", "/tmp");
+
+		const surfaced = delivery.observe(message);
+		delivery.accept({ message: { role: "user", content: renderAceEvent(message) } });
+		await expect(surfaced).resolves.toBeUndefined();
+
+		handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+
+		expect(delivery.pendingCount).toBe(0);
 	});
 });
 

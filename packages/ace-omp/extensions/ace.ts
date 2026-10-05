@@ -285,7 +285,21 @@ export function aceCompletions(
 /** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
 
-export default function aceExtension(pi: ExtensionAPI): void {
+/**
+ * The one piece of wiring the host cannot hand the extension, so the extension builds it — unless a
+ * caller passes one in.
+ *
+ * Production calls `aceExtension(pi)`: the extension probes the host and builds its own delivery
+ * observer for oh-my-pi. The extension test injects an observer here so it can drive the host's
+ * `agent_settled` / `session_shutdown` signals against a real pending observation, using the same
+ * fake `ExtensionAPI` the other extension tests use.
+ */
+export interface AceExtensionInternals {
+	/** Use this delivery observer instead of the host-detected one. */
+	delivery?: AceDeliveryObserver;
+}
+
+export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionInternals = {}): void {
 	/** One server this session is live on: its connection, and the channel named by this session there. */
 	interface ActiveServer {
 		server: ResolvedServer;
@@ -332,7 +346,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 	// `sendUserMessage` always starts a turn, so wiring the observer there would add a wait with no
 	// measured problem behind it.
 	const host = detectHostDelivery(pi);
-	const delivery = host.supportsAside ? new AceDeliveryObserver() : undefined;
+	const delivery = internals.delivery ?? (host.supportsAside ? new AceDeliveryObserver() : undefined);
 	if (delivery) pi.on("message_start", (event) => delivery.accept(event));
 
 	const adapter = new PiExtensionAdapter({
@@ -344,6 +358,28 @@ export default function aceExtension(pi: ExtensionAPI): void {
 		logger: { info: (line) => console.error(line) },
 		...(delivery ? { observeDelivery: delivery } : {}),
 	});
+
+	/**
+	 * End every queued wait whose text never surfaced in the run it was queued for.
+	 *
+	 * A queued `aside`/`followUp` has no wall clock — its surface time is the next step boundary —
+	 * so a run that settles without surfacing one used to leave the wait pending forever: the entry
+	 * was never acked, the transport's `inFlight` guard kept skipping it, and one of the 256
+	 * delivery-queue slots was gone for good. `agent_settled` is the signal that ends that: it fires
+	 * only once no automatic retry, compaction or queued continuation will run, so nothing more from
+	 * that run is coming. Releasing fails the wait as *not delivered* (never as a surface), `inject`
+	 * rejects, the entry leaves `inFlight`, and reclaim → `reclaimAttempts` → the dead-letter file
+	 * take over.
+	 *
+	 * Idempotent by construction: the observer drops a waiter the moment its text surfaces, so a
+	 * delivery that already surfaced is never released, and a repeat signal finds nothing pending.
+	 * It also cannot touch the adapter's identity record, so a redelivery re-attaches to the
+	 * observation instead of calling `sendUserMessage` again.
+	 */
+	function releaseUnsurfacedDeliveries(): void {
+		delivery?.failPending();
+	}
+	pi.on("agent_settled", () => releaseUnsurfacedDeliveries());
 
 	// Registered once without configuration, then re-registered at session start with the channel
 	// directory. Same name replaces the definition, and Pi rebuilds tool declarations per request.
@@ -892,6 +928,10 @@ export default function aceExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return;
+		// Backstop for `agent_settled`: a session can end mid-run. Must run *before* `shutdownAce`
+		// stops the reader — the transport's `stop()` drains the delivery queue, and a queued wait
+		// that never gets released would make that drain hang on the entry it is holding.
+		releaseUnsurfacedDeliveries();
 		// Order matters: `unregister` drops this session's own stream (and its group), so the reader has to
 		// be gone first — otherwise it wakes up to a deleted group and reports NOGROUP on the way out.
 		shuttingDown = true;

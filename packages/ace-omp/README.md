@@ -29,6 +29,9 @@ omp plugin link "$PWD"                 # registers it under ~/.omp/plugins
 omp plugin list                        # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
+An updated plugin takes effect in a **new session**: the extension is loaded at session start, so a session
+that is already running keeps the code it was started with — install or update, then restart.
+
 **Why the core is vendored.** The host's extension loader resolves relative imports and the plugin's own
 `node_modules`, but *not* a bare `ace-runtime` specifier that points at a linked sibling package: the
 extension then fails to load with `Cannot find package 'ace-runtime'` (probed against omp 18.5.0 — the

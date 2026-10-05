@@ -91,7 +91,7 @@
 | 消费组起点 | **从队尾起**（`XGROUP CREATE … $ MKSTREAM`，`BUSYGROUP` 忽略） |
 | 消费者名 | `consumer`，缺省 `ace-<pid>` |
 | 确认 | 处理成功才 `XACK`；失败留 PEL（RFC §17） |
-| 投递队列 | 每条订阅一个串行队列：读循环把 entry 交队列后**不等**投递完成就继续读——投递等待（queued `aside` 到下一个 step 边界，无墙钟）既不停读也不停重投；顺序 = 读入顺序，同一时刻只跑一条；上限 256 条（`REDIS_STREAMS_DELIVERY_QUEUE_LIMIT`），到顶则读循环等队列腾位，**从不丢条目** |
+| 投递队列 | 每条订阅一个串行队列：读循环把 entry 交队列后**不等**投递完成就继续读——投递等待（queued `aside` 到下一个 step 边界，无墙钟）既不停读也不停重投；顺序 = 读入顺序，同一时刻只跑一条；上限 256 条（`REDIS_STREAMS_DELIVERY_QUEUE_LIMIT`），到顶则读循环等队列腾位，**从不丢条目**。queued 等待由宿主 settle 信号释放为「未投递」（§5.1）：`inject` 抛错 → 条目离开 `inFlight`、留 PEL，重投/死信得以接管，不再永久占格 |
 | 停机 | 先停读 → 排空队列（已读的 entry 仍投递、仍 `XACK`；失败留 PEL）→ 才 `client.close()` |
 | 重投 | 读空且距上次 ≥ `reclaimIdleMs` 时 `XAUTOCLAIM`，每条目最多 `reclaimAttempts` 次投递；与投递队列无关，投递在飞时照跑；已交给本消费者投递（队列中或投递中）的条目跳过，不算"失联" |
 | 放弃 | 达到上限：先交死信（§3.4），成功才 `XACK`；写失败则不 `XACK` 且每条目只报一次错 |
@@ -442,7 +442,20 @@ Fetch a file a peer stored with ace_store_file, by its token. The token is the w
 | 路径 | 何时 `XACK` |
 |---|---|
 | 默认 | handler resolve 之后（= 事件已交给宿主引擎） |
-| oh-my-pi（扩展形态） | handler **等到注入文本出现在会话里**才 resolve；30s（`deliveryTimeoutMs`）内没出现则抛错 → 不 `XACK`，条目留 PEL 等重投 |
+| oh-my-pi（扩展形态），有墙钟的路径（prompt 路径、`steer`） | handler **等到注入文本出现在会话里**才 resolve；30s（`deliveryTimeoutMs`）内没出现则抛错 → 不 `XACK`，条目留 PEL 等重投 |
+| oh-my-pi（扩展形态），queued 路径（`aside`/`followUp`，无墙钟） | 文本出现才 resolve；**宿主生命周期信号**（`agent_settled` 为主，`session_shutdown` 兜底）到来而文本仍未出现 → 观测**以"未投递"失败**（`failPending` 让等待者 reject，**绝不 resolve**）→ `inject` 抛错 → 不 `XACK` |
+
+queued 路径的终止状态（0.2.15 起）：无墙钟意味着"宿主永不浮现"会把等待挂死——条目不 `XACK`、transport 的 `inFlight` 一直跳过它、256 格投递队列的一格永久占住（这就是 0.2.14 的已知边界）。现在的链路是：
+
+```text
+run settle（agent_settled，或 session_shutdown 兜底）而文本仍未浮现
+  → 观测释放为「未投递」（reject，不是 resolve；resolve 对 inject 就是"已投递"，会误 ack）
+  → inject 抛错 → transport 不 XACK、条目离开 inFlight、留 PEL
+  → 重投（reclaimed）重试
+  → 反复释放耗尽 reclaimAttempts → 写死信文件（dropped，可见、可重放）
+```
+
+两条不变量不变：(a) **身份记录（"已交给宿主"）不回滚**，所以重投只重新挂观测、**不重发** `sendUserMessage`——宿主可能在后续 run 里才浮现排队的文本，重发就是重复；(b) 释放**幂等**，且 `<ace_event>` 文本已浮现的等待者早被 `accept` 移除，永远不会被判成 released。释放时适配器打一行可检索日志：`[ACE] queued delivery released: the run settled without surfacing id=… sender=… subscribe=…`（bounded 路径同信号释放时是 `bounded delivery released: …`）。
 
 因此端到端语义是：**传输层至少一次**（受 `reclaimAttempts` 上限与死信兜底）、**代理层至多一次**（`(sender,id)` 去重窗口，进程内、每订阅一份、容量 1024、仅"已处理"才登记）。超时重投可能造成一次重复——事件 id 在注入头部里，可辨识。
 
@@ -492,7 +505,7 @@ Fetch a file a peer stored with ace_store_file, by its token. The token is the w
   → 分发：
        manual → 入 pending store（stored）
        否则   → 注入宿主（idle injected / running queued）
-  → 宿主确认（omp：等观测到文本）→ XACK
+  → 宿主确认（omp：等观测到文本；queued 无墙钟，run settle 仍未浮现 → 释放为「未投递」、抛错留 PEL）→ XACK
 ```
 
 ### 6.3 重投与死信
@@ -569,6 +582,7 @@ npm run replay:dead-letters [--dry-run] [--url URL] [--dir DIR] [file…]
 | `next_turn`（running） | `followUp` | `aside`（步边界，不打断工具批） |
 | `immediate`（running / idle） | `steer` / prompt | `steer` / prompt |
 | idle 队列会自排空吗 | 会 | **不会**（`steer`/`followUp` 只入队）→ 故必须有观测确认（§5.1） |
+| queued 等待的结束信号 | — | 监听 `agent_settled`（主：run 已 settle，不再有自动重试/压缩/排队续跑）与 `session_shutdown`（兜底）：仍在等文本的注入释放为「未投递」（§5.1）。释放幂等，已浮现的等待者不动；`session_shutdown` 里必须在 `shutdownAce` **之前**释放——`stop()` 要排空投递队列，挂死的等待会把排空卡住 |
 | 子会话 | 无此机制 | 扩展被重绑到每个子会话 → **只在主会话（`ctx.agent.kind !== "sub"`）注册与订阅** |
 | 单进程多运行时 | — | 用一个进程级标记防止第二个运行时加入同一消费组、把事件分走 |
 | 回合失败的信号 | 助理消息带 `stopReason=error\|aborted` | 同上；**只监听 `message_end`，不要注册 `turn_end`**：oh-my-pi 把它当 boundary 事件，仅仅注册就会让会话永不 settle |
@@ -584,5 +598,6 @@ npm run replay:dead-letters [--dry-run] [--url URL] [--dir DIR] [file…]
 | Correlation / Causation | 未做：`createdAt`、`sequence`、`correlationId` 均未定义 |
 | Backlog / 重放 | 部分做：死信有重放命令（§6.10）；频道流本身仍无 backlog（消费组从队尾起） |
 | 其他传输 | 未做：仅 `redis-streams`（+测试用 in-memory） |
+| queued 投递永久挂起（0.2.14 的已知边界） | **已关闭（0.2.15）**：宿主 settle 信号（`agent_settled` 主 / `session_shutdown` 兜底）把未浮现的 queued 注入释放为「未投递」——`inject` 抛错、条目离开 `inFlight`、留 PEL，经重投 → `reclaimAttempts` → **死信文件**终止，不再永久占用 256 格投递队列中的一格。身份记录抑制重发，故反复释放只会把事件送进死信（可见、可重放），不会重复注入 |
 
 | 身份命名 | 已统一：一条 channel 的名字 = 某个会话的 **sender 名** `<ns>:<username>:<coding-agent>:<sessionId>`；直投对方就是往这条 channel 发；目录只是"这些自动 channel 现在在线"的索引，不存在单独的 "member" 概念 |

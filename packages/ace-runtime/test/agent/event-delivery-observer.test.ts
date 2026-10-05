@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { AceDeliveryObserver } from "../../src/agent/event-delivery-observer.ts";
+import {
+	AceDeliveryObserver,
+	DeliveryNotSurfacedError,
+	UNSURFACED_RELEASE_REASON,
+} from "../../src/agent/event-delivery-observer.ts";
 import { renderAceEvent } from "../../src/agent/event-rendering.ts";
 import type { AceMessage } from "../../src/protocol/ace-message.ts";
 
@@ -68,6 +72,61 @@ describe("AceDeliveryObserver", () => {
 
 		observer.release(event);
 
+		expect(observer.pendingCount).toBe(0);
+	});
+
+	it("fails a pending observation as not-delivered when the run settled without surfacing it", async () => {
+		// The failure that reaches `inject`: not a surface, so the caller must not acknowledge.
+		const observer = new AceDeliveryObserver();
+		const waiting = observer.observe(event);
+		expect(observer.pendingCount).toBe(1);
+
+		observer.failPending();
+
+		const error: unknown = await waiting.then(
+			() => undefined,
+			(reason: unknown) => reason,
+		);
+		expect(error).toBeInstanceOf(DeliveryNotSurfacedError);
+		expect(String(error)).toContain(UNSURFACED_RELEASE_REASON);
+		expect((error as DeliveryNotSurfacedError).rendered).toBe(renderAceEvent(event));
+		expect(observer.pendingCount).toBe(0);
+
+		// Idempotent: a second settle signal finds nothing left to fail.
+		observer.failPending();
+		expect(observer.pendingCount).toBe(0);
+	});
+
+	it("never reports a text that surfaced as released", async () => {
+		const observer = new AceDeliveryObserver();
+		const waiting = observer.observe(event);
+		let rejected = false;
+		void waiting.catch(() => {
+			rejected = true;
+		});
+
+		observer.accept(userMessage(renderAceEvent(event)));
+		await expect(waiting).resolves.toBeUndefined();
+
+		// The settle signal arrives after the text already surfaced: the waiter is gone, so nothing is
+		// released — a released-but-actually-delivered event would be re-queued and duplicated.
+		observer.failPending();
+
+		expect(rejected).toBe(false);
+		expect(observer.pendingCount).toBe(0);
+	});
+
+	it("fails every pending waiter when the run settles, and only the pending ones", async () => {
+		const observer = new AceDeliveryObserver();
+		const other: AceMessage = { ...event, id: "evt_002" };
+		const surfaced = observer.observe(event);
+		const pending = observer.observe(other);
+
+		observer.accept(userMessage(renderAceEvent(event)));
+		observer.failPending();
+
+		await expect(surfaced).resolves.toBeUndefined();
+		await expect(pending).rejects.toThrow(UNSURFACED_RELEASE_REASON);
 		expect(observer.pendingCount).toBe(0);
 	});
 

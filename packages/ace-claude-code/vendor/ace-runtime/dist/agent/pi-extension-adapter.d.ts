@@ -1,7 +1,7 @@
 import type { AceLogger } from "../logger.ts";
 import type { AceMessage } from "../protocol/ace-message.ts";
 import type { AgentEngine, InjectionContext, InjectionMode } from "./agent-engine.ts";
-import type { DeliveryObserver } from "./event-delivery-observer.ts";
+import { type DeliveryObserver } from "./event-delivery-observer.ts";
 /**
  * How the host queues an injected message.
  *
@@ -105,7 +105,7 @@ export interface PiExtensionAdapterOptions {
  *
  * | delivery | paths | wait |
  * |---|---|---|
- * | queued | `deliverAs: "aside"` / `"followUp"` | no wall clock — wait for the observation; the transport's `reclaimAttempts`/`reclaimIdleMs` bounds the retry |
+ * | queued | `deliverAs: "aside"` / `"followUp"` | no wall clock — wait for the observation; the host's settle signal (`agent_settled`) releases a wait whose text never surfaced, and the transport's `reclaimAttempts`/`reclaimIdleMs` bounds the retry |
  * | bounded | prompt path (no `deliverAs`), `steer` | fail after `deliveryTimeoutMs` (default 30s), so the entry stays pending and reclaim can redeliver it |
  *
  * A queued delivery surfaces at the next step boundary, and a model turn lasts as long as it lasts —
@@ -113,6 +113,15 @@ export interface PiExtensionAdapterOptions {
  * succeeded (`sendUserMessage` returned; the message is queued and will surface). The paths where
  * the host is expected to surface the event in the current turn keep the timeout, which is the
  * only signal that the host dropped it.
+ *
+ * A queued wait ends instead on the host's lifecycle signal: when the run settles without surfacing
+ * the text, the observation is released as *not delivered* (`DeliveryNotSurfacedError`), `inject`
+ * logs the release and rejects, and the entry stays pending for reclaim. The identity record is not
+ * rolled back — the release does not mean the host forgot the message, only that this run never
+ * showed it — so a redelivery re-attaches to the observation and never calls `sendUserMessage`
+ * again. Because of that, repeated releases end at the transport's `reclaimAttempts` cap and the
+ * event lands in the dead-letter file (visible and replayable) instead of holding one of the 256
+ * delivery-queue slots forever.
  *
  * Deviations from {@link AgentEngine}: `waitForIdle` resolves immediately, because a session
  * shutdown must never block the interactive UI on a live turn.
@@ -135,9 +144,13 @@ export declare class PiExtensionAdapter implements AgentEngine {
     /** The delivery this host understands for the event's urgency and the agent's state. */
     private deliveryFor;
     /**
-     * Wait for the observation. A queued delivery waits without a wall clock (its surface time is the
-     * next step boundary and not knowable); a bounded one fails after {@link deliveryTimeoutMs} so the
-     * broker keeps the entry pending for reclaim.
+     * Wait for the observation.
+     *
+     * A queued delivery waits without a wall clock (its surface time is the next step boundary and
+     * not knowable); it ends when the text surfaces or when the host settles the run without
+     * surfacing it, in which case the observation rejects and this rethrows — the entry stays
+     * pending for reclaim. A bounded delivery fails after {@link deliveryTimeoutMs} for the same
+     * reason, so the broker keeps the entry pending either way.
      */
     private awaitDelivery;
     /** Record an identity as handed to the host, evicting the oldest past the capacity. */
