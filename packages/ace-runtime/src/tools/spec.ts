@@ -111,7 +111,10 @@ export const TOOL_TEXT = {
 			"a mistyped or departed name stores the event on that channel (or fails to resolve) with no directory " +
 			"check — read each delivered row's `peer_named=`/`self_reads=` and check ace_agents before trusting a " +
 			"name. Publishing to a channel this session itself reads delivers the event back into this same session " +
-			"too, marked `self: yes` in the block — a session that echoes what it reads would publish to itself; when " +
+			"too, marked `self: yes` in the block — a session that echoes what it reads would publish to itself; on " +
+			"that self-echo the block omits the `sender description:` line, because the description is this session's " +
+			"own location and `self: yes` already says the block is yours, so tell your own deliveries from a peer's " +
+			"by the `self:` line, never by whether `sender description:` is present; when " +
 			"one event reaches two channels this session reads, the two deliveries are not one batch, they come back " +
 			"in separate turns with the same id and different `stream:` keys, and even a single one can lag several " +
 			"turns behind the publish: the receiver's host decides when and how many event blocks land — several " +
@@ -168,6 +171,9 @@ export const TOOL_TEXT = {
 			"Choose the target by the peer it names; pass a list to publish the same event to several at once.",
 			"Each target in a list is attempted on its own, so a mixed list is non-atomic: the targets that resolve are published even when others fail, every failure is a `target=… status=failed error=…` row on the result, and the call fails (throws) only when nothing was delivered, and that failure text is the same field list (`delivered=0` with one `status=failed` row per input), not a prose sentence. A partly good list therefore returns a *successful* result whose header counts `delivered=`, `duplicates=` and `failed=`; read those rows, because catching errors alone reads a mistyped target as a full success. That per-target path is for an entry that is *valid but unresolvable*; an invalid `channel` (empty, whitespace, a control character, an empty segment, the wrong type) or an unknown argument rejects the whole call before anything is sent, so nothing is published.",
 			"Call ace_agents for the channels that are live right now, then pass one of them as `channel`.",
+			"A peer you share two servers with has one ace_agents row per server (same session id, a different " +
+				"`channel` each): to reach that peer, publish once with every row naming it as `channel`, one target " +
+				"per shared server — read ace_agents first to get the rows.",
 			"A publish row's `peer_named=` and `self_reads=` are two separate checks, not a verdict: `peer_named=yes` " +
 				"means a live directory entry names the channel (some other session's own channel equals it), " +
 				"`self_reads=yes` means this session reads the channel. `peer_named=no` does not mean nobody else " +
@@ -244,9 +250,10 @@ export const TOOL_TEXT = {
 			"only, in config order), so a live server with no peers contributes no rows but is still listed there. " +
 			"The result is a header `ace " +
 			"0.1 agents count=N servers=<name>,<name>` (plus `filter=<agent>` when an `agent` filter was given) then " +
-			"one row per live " +
-			"session: `channel=<target> renews_in=<N>s self=<yes|no> " +
-			'description="<what it says about itself>"`. With no live session the header is still returned, ' +
+			"one row per live (session, server) channel: `channel=<target> renews_in=<N>s self=<yes|no> " +
+			'description="<what it says about itself>"`. `count=` counts those rows, not sessions: one session live ' +
+			"on N servers contributes N rows, once per server, carrying the same session id — that shared id is the " +
+			"only thing tying the rows together. With no live session the header is still returned, " +
 			"`count=0`, followed by a sentence saying whether nothing is registered or the filter matched nothing. " +
 			"An `agent` filter that is empty or whitespace-only after trimming is no filter at all, so the rows are " +
 			"listed whole rather than reduced to `count=0`. " +
@@ -307,9 +314,12 @@ export const TOOL_TEXT = {
 			"the peer learns nothing until you hand it the token, by whatever channel you already have — but the " +
 			"bytes go to every server this session is live on, and those servers need not be on this machine, so a " +
 			"remote server does receive them over the network. " +
-			"The bytes never enter any model's context. The token is the whole capability — whoever holds it can " +
-			"fetch the bytes until the ttl expires, and it carries no namespace and no server name — so treat it as " +
-			"a secret and hand it only to the intended peer. Storing needs SET permission on each server and " +
+			"The bytes never enter any model's context. The token is the whole capability among ACE sessions — " +
+			"whoever holds it can fetch the bytes until the ttl expires, and it carries no namespace and no server " +
+			"name — but it is not a barrier against the broker: anyone with access to a server's storage can read " +
+			"`ace:xfer:<token>` and its `:meta` directly, without the token, so the broker's own access control is " +
+			"all that protects the bytes. Treat the token as a secret and hand it only to the intended peer. Storing " +
+			"needs SET permission on each server and " +
 			"fetching needs GET; a copy that did not land is simply absent from `stored_on=`, so the permission on " +
 			"that server is the thing to check. One call stores the same token on every live server, in configuration " +
 			"order, and defines no success/failure semantics: `stored_on=` names exactly the servers the copy landed " +
@@ -353,11 +363,11 @@ export const TOOL_TEXT = {
 	},
 	getFile: {
 		description:
-			"Fetch a file a peer stored with ace_store_file, by its pickup token. The token is the whole capability: " +
-			"anyone who holds it can fetch the same bytes until the ttl expires, and the read is non-destructive, " +
-			"so fetching does not consume the code and others can still fetch it. The tool tries each of this " +
-			"session's live servers in configuration order and takes the first hit; fetching needs GET permission " +
-			"and storing needed SET. Nothing is written outside `<working directory>/.ace/xfer/<token>/" +
+			"Fetch a file a peer stored with ace_store_file, by its pickup token. The token is the whole capability " +
+			"among ACE sessions: anyone who holds it can fetch the same bytes until the ttl expires, and the read is " +
+			"non-destructive, so fetching does not consume the code and others can still fetch it. The tool tries " +
+			"each of this session's live servers in configuration order and takes the first hit; fetching needs GET " +
+			"permission and storing needed SET. Nothing is written outside `<working directory>/.ace/xfer/<token>/" +
 			"<sessionId>/`: the file name comes from the sender's metadata, never from an argument, so no caller can " +
 			"choose a write path — an existing file with identical bytes is overwritten, and a differing one is " +
 			"written beside it with a numeric suffix. The result is one line: `path=<quarantine path> sha256=<hex> " +
@@ -365,7 +375,9 @@ export const TOOL_TEXT = {
 			"result value: one that contains whitespace is JSON-quoted, wrapped in leading and trailing double " +
 			'quotes, so a path with a space appears as `path="/…/note (2).txt"`, while a value without whitespace ' +
 			"is bare and an empty value stays empty. `sha256=` is computed here from the bytes written, not taken on trust, so " +
-			"compare it yourself with the hash the sender relayed and with the sender's metadata. A token absent " +
+			"compare it yourself with the hash the sender relayed and with the sender's metadata. The result carries " +
+			"no expiry: nothing in it says how long the token stays valid, so an expired token reports itself only " +
+			"on a re-fetch, as a token absent from every server. A token absent " +
 			"from every server is a normal, diagnosable outcome: it may have expired, or you and the sender may " +
 			"share no server.",
 		guidelines: [

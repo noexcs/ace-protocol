@@ -338,7 +338,8 @@ body with `<ace_body>`, so a body line shaped like `sender:` or `stream:` is bod
 **`ace_agents`**
 
 > List the other sessions reachable right now — this session is not listed. The result is a header
-> `ace 0.1 agents count=N` then one row per live session: `channel=<target> renews_in=<N>s self=<yes|no>
+> `ace 0.1 agents count=N` then one row per live (session, server) channel (`count=` counts rows, not sessions:
+> one session live on N servers appears N times, once per server, with the same session id): `channel=<target> renews_in=<N>s self=<yes|no>
 > description="<what it says about itself>"`. The `channel` value is the publish-ready target to pass as the
 > ace_publish `channel`, and is always the row's first field — with more than one server it reads
 > `<server>:<channel>`. `renews_in` is the seconds left on the session's lease; the lease renews roughly every
