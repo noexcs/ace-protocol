@@ -229,7 +229,7 @@ Publish an ACE 0.1 event to a peer agent or service. The recipient's agent recei
 **工具描述（模型可见）**
 
 ```text
-List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and the countdown is how long until that row goes stale.
+List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.
 ```
 
 **promptGuidelines（模型可见）**
@@ -308,7 +308,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 **工具描述（模型可见）**
 
 ```text
-List this session's ACE channels: the channels it reads — its own inbox, named by its sender, plus the subscribed names from .ace.json (broker settings are left out). Any channel name is a valid ace_publish target, including the peers ace_agents lists — address live peers with ace_agents.
+List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`; `channel` is what a peer publishes to, and `note` is the host's note about the channel (a peer's own self-description is in ace_agents, not here). Broker settings are left out — address live peers with ace_agents.
 ```
 
 （末尾指向 `ace_agents` 的一句只属于注册了该工具的宿主；不注册的宿主用 `channelsToolText({ agentsTool: false })` 去掉它。）

@@ -9,26 +9,37 @@ const endpoint = (over: Partial<EndpointConfig> & { name: string }): EndpointCon
 	...over,
 });
 
+const inbox = endpoint({
+	name: "session-inbox",
+	channel: "ace:ana:oh-my-pi:01a10a",
+	description: "this session's inbox",
+});
+const subscribed = endpoint({
+	name: "ace:ana:from-wsl",
+	channel: "ace:ana:from-wsl",
+	activation: "next_turn",
+	description: "the WSL agent",
+});
+
 describe("formatChannelListing", () => {
-	const inbox = endpoint({
-		name: "session-inbox",
-		channel: "ace:ana:oh-my-pi:01a10a",
-		description: "this session's inbox",
-	});
-	const subscribed = endpoint({
-		name: "ace:ana:from-wsl",
-		channel: "ace:ana:from-wsl",
-		activation: "next_turn",
-		description: "the WSL agent",
+	it("emits one row per channel with the same keys in the same order", () => {
+		const rows = formatChannelListing([subscribed, inbox], { selfChannel: "ace:ana:oh-my-pi:01a10a" }).split("\n");
+
+		expect(rows[1]).toBe(
+			'  channel=ace:ana:from-wsl transport=redis-streams activation=next_turn self=no note="the WSL agent"',
+		);
+		// The session's own channel is what a peer replies to, so the row says so; an endpoint without an
+		// activation of its own reports `default` rather than dropping the key.
+		expect(rows[2]).toBe(
+			'  channel=ace:ana:oh-my-pi:01a10a transport=redis-streams activation=default self=yes note="this session\'s inbox"',
+		);
 	});
 
-	it("leads with the channel a peer publishes to, and notes a differing local label", () => {
-		const text = formatChannelListing([subscribed, inbox], { derivedName: "ace:ana:oh-my-pi:01a10a" });
+	it("quotes an empty note rather than dropping the key", () => {
+		const bare = endpoint({ name: "ace:ana:quiet", channel: "ace:ana:quiet" });
 
-		expect(text).toContain('ace:ana:from-wsl · redis-streams · "the WSL agent" · [next_turn]');
-		// The inbox is the case that used to be unaddressable: the row must show the channel, not the label.
-		expect(text).toContain(
-			'ace:ana:oh-my-pi:01a10a · (as "session-inbox") · redis-streams · "this session\'s inbox" · (registered for this session)',
+		expect(formatChannelListing([bare])).toContain(
+			'channel=ace:ana:quiet transport=redis-streams activation=default self=no note=""',
 		);
 	});
 
@@ -39,8 +50,6 @@ describe("formatChannelListing", () => {
 
 describe("channelListingInput", () => {
 	it("marks the inbox by the channel it reads", () => {
-		const inbox = endpoint({ name: "session-inbox", channel: "ace:ana:oh-my-pi:01a10a" });
-
-		expect(channelListingInput([], inbox).derivedName).toBe("ace:ana:oh-my-pi:01a10a");
+		expect(channelListingInput([], inbox).selfChannel).toBe("ace:ana:oh-my-pi:01a10a");
 	});
 });

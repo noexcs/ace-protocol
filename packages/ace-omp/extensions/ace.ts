@@ -433,7 +433,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							text: formatChannelListing(listing.subscriptions, {
 								...(sessionInbox === undefined
 									? {}
-									: { derivedName: sessionInbox.channel ?? sessionInbox.name }),
+									: { selfChannel: sessionInbox.channel ?? sessionInbox.name }),
 							}),
 						},
 					],
@@ -443,7 +443,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 							transport: endpoint.transport,
 							...(endpoint.description === undefined ? {} : { description: endpoint.description }),
 							...(endpoint.activation === undefined ? {} : { activation: endpoint.activation }),
-							derived:
+							self:
 								(endpoint.channel ?? endpoint.name) ===
 								(sessionInbox === undefined ? undefined : (sessionInbox.channel ?? sessionInbox.name)),
 						})),
@@ -870,7 +870,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						`address: ${endpointAddress(endpoint) ?? "(none)"}`,
 						...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
 						...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
-						...(name === sessionInbox?.name
+						...(name === (sessionInbox?.channel ?? sessionInbox?.name)
 							? ["origin: named by this session's sender on the agent directory"]
 							: []),
 					];
@@ -904,7 +904,7 @@ export default function aceExtension(pi: ExtensionAPI): void {
 						agentState: adapter.isRunning() ? "running" : "idle",
 						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
 						subscriptions: listing.subscriptions,
-						...(sessionInbox === undefined ? {} : { derivedName: sessionInbox.name }),
+						...(sessionInbox === undefined ? {} : { selfChannel: sessionInbox.channel ?? sessionInbox.name }),
 						pendingManual: pending.length,
 						deadLetters: {
 							count: deadLetters?.count ?? 0,

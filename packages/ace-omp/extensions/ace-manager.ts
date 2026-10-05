@@ -47,7 +47,7 @@ export interface ChannelMenu {
 /** One row per channel: what this session reads. */
 export function channelMenuItems(input: {
 	subscriptions: readonly EndpointConfig[];
-	derivedName?: string;
+	selfChannel?: string;
 }): SelectItem[] {
 	const row = (endpoint: EndpointConfig): SelectItem => {
 		const address = endpointAddressOf(endpoint);
@@ -58,7 +58,7 @@ export function channelMenuItems(input: {
 			"[in]",
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
 			endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
-			target === input.derivedName ? "(registered for this session)" : undefined,
+			target === input.selfChannel ? "(self — peers reply here)" : undefined,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 		];
 		return {

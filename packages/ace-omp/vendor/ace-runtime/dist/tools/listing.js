@@ -6,39 +6,37 @@ export function addressOf(endpoint) {
 /** One directory row: the channel to address, what it says about itself (never shortened), and how fresh it is. */
 export function describeDiscovered(entry) {
     const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
-    return `${entry.channel} — ${entry.description} (renews in ${renewsIn}s)`;
+    return `${entry.channel} — self-description: ${entry.description} (renews in ${renewsIn}s)`;
 }
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 export function describeEndpoint(endpoint) {
     return `"${endpoint.name}"${endpoint.description ? ` (${endpoint.description})` : ""} → ${addressOf(endpoint)}`;
 }
 /**
- * The listing `ace_channels` returns: this session's channels as the model needs them — name, transport,
- * description, activation — without the deployment plumbing (`config`/`options`) or the burst internals.
+ * The listing `ace_channels` returns: this session's channels as the model needs them. Every row carries
+ * the same keys in the same order, because a model parses this more reliably than prose:
  *
- * One section only: with channels living on a server and addresses derived from names, "what I publish
- * to" is any channel name the model chooses (a peer's sender name for a direct message), not a separate
- * configured list.
+ * `channel`  the addressable name — what a peer publishes to (the only field that matters to another session)
+ * `transport` the transport kind
+ * `activation` the activation this receiver forces, or `default` to let the message decide
+ * `self`     `yes` for this session's own channel: publishing there is how a peer reaches this session
+ * `note`     the host's note about the channel — this is not the peer's self-description (`ace_agents` carries that)
+ *
+ * The local subscription label is a host detail, so it is not here; `/ace list` shows it.
  */
 export function formatChannelListing(subscriptions, options = {}) {
     const line = (endpoint) => {
-        // The channel name leads: it is what another session publishes to. The local label is a note when
-        // it differs, and the header states the field order once instead of labelling every row.
         const target = endpoint.channel ?? endpoint.name;
         return [
-            target,
-            endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
-            endpoint.transport,
-            endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
-            endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-            target === options.derivedName ? "(registered for this session)" : undefined,
-        ]
-            .filter((part) => part !== undefined)
-            .join(" · ");
+            `channel=${target}`,
+            `transport=${endpoint.transport}`,
+            `activation=${endpoint.activation ?? "default"}`,
+            `self=${target === options.selfChannel ? "yes" : "no"}`,
+            `note=${endpoint.description === undefined ? '""' : JSON.stringify(endpoint.description)}`,
+        ].join(" ");
     };
     return [
-        "subscribe:",
-        "  each row: channel · transport · description · [activation] — the channel is what a peer publishes to",
+        "subscribe: one row per channel; `self=yes` is this session's own channel (peers publish there to reach it)",
         ...(subscriptions.length === 0 ? ["  (none)"] : subscriptions.map((endpoint) => `  ${line(endpoint)}`)),
     ].join("\n");
 }
@@ -51,7 +49,7 @@ export function channelListingInput(subscriptions, inbox) {
     const all = inbox === undefined ? subscriptions : [...subscriptions, inbox];
     return {
         subscriptions: all,
-        ...(inbox === undefined ? {} : { derivedName: inbox.channel ?? inbox.name }),
+        ...(inbox === undefined ? {} : { selfChannel: inbox.channel ?? inbox.name }),
     };
 }
 /**
@@ -65,7 +63,7 @@ export function formatChannelReport(report) {
         const extras = [
             endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
             endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-            target === report.derivedName ? "(registered for this session)" : undefined,
+            target === report.selfChannel ? "(self — peers reply here)" : undefined,
             endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
         ].filter((part) => part !== undefined);
         const where = `${endpoint.transport}${stream === undefined ? "" : ` ${stream}`}`;

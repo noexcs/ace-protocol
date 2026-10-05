@@ -65,12 +65,12 @@ describe("manager rows", () => {
 					options: {},
 				},
 			],
-			derivedName: "session-inbox",
+			selfChannel: "session-inbox",
 		});
 
 		expect(items.map((item) => `${item.label} → ${item.description}`)).toEqual([
 			'● from-wsl → redis-streams ace:lan:in.mac · [in] · [next_turn] · "the WSL agent"',
-			"● session-inbox → redis-streams ace:lan:events:x · [in] · (registered for this session)",
+			"● session-inbox → redis-streams ace:lan:events:x · [in] · (self — peers reply here)",
 		]);
 	});
 });

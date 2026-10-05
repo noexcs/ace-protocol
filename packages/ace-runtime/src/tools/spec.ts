@@ -97,7 +97,7 @@ export const TOOL_TEXT = {
 	},
 	agents: {
 		description:
-			"List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and the countdown is how long until that row goes stale.",
+			"List the other sessions reachable right now — this session is not listed. Each row reads `<channel> — self-description: <what it says about itself> (renews in Ns)`: the channel is what you pass to ace_publish as `target`, and `renews in Ns` is that session's lease — it renews roughly every 90 seconds, so a small number means it is about to go away and a large one means its owner asked for a long lease.",
 		guidelines: ["Call ace_agents before ace_publish when the peer is not a channel this session reads."],
 		params: {
 			agent: 'Filter by coding agent, e.g. "oh-my-pi" or "pi"',
@@ -106,7 +106,7 @@ export const TOOL_TEXT = {
 	},
 	channels: {
 		description:
-			"List this session's ACE channels: the channels it reads — its own inbox, named by its sender, plus the subscribed names from .ace.json (broker settings are left out). Any channel name is a valid ace_publish target, including the peers ace_agents lists",
+			"List this session's ACE channels — the channels it reads: its own inbox (named by its sender, marked `self=yes`) plus the subscribed names from .ace.json. Each row is `channel=… transport=… activation=… self=… note=…`; `channel` is what a peer publishes to, and `note` is the host's note about the channel (a peer's own self-description is in ace_agents, not here). Broker settings are left out",
 		/**
 		 * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
 		 * has no directory tool), so it is a separate piece a host appends or drops. Compose with

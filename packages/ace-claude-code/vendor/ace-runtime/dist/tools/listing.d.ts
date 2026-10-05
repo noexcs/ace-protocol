@@ -7,15 +7,19 @@ export declare function describeDiscovered(entry: RegistryEntry): string;
 /** One directory line: `"to-b" (agent-b) → redis-streams ace:in.b`. */
 export declare function describeEndpoint(endpoint: EndpointConfig): string;
 /**
- * The listing `ace_channels` returns: this session's channels as the model needs them — name, transport,
- * description, activation — without the deployment plumbing (`config`/`options`) or the burst internals.
+ * The listing `ace_channels` returns: this session's channels as the model needs them. Every row carries
+ * the same keys in the same order, because a model parses this more reliably than prose:
  *
- * One section only: with channels living on a server and addresses derived from names, "what I publish
- * to" is any channel name the model chooses (a peer's sender name for a direct message), not a separate
- * configured list.
+ * `channel`  the addressable name — what a peer publishes to (the only field that matters to another session)
+ * `transport` the transport kind
+ * `activation` the activation this receiver forces, or `default` to let the message decide
+ * `self`     `yes` for this session's own channel: publishing there is how a peer reaches this session
+ * `note`     the host's note about the channel — this is not the peer's self-description (`ace_agents` carries that)
+ *
+ * The local subscription label is a host detail, so it is not here; `/ace list` shows it.
  */
 export declare function formatChannelListing(subscriptions: readonly EndpointConfig[], options?: {
-    derivedName?: string;
+    selfChannel?: string;
 }): string;
 /**
  * The inputs every channel surface lists: the channels this session subscribes to, plus the inbox the
@@ -24,7 +28,8 @@ export declare function formatChannelListing(subscriptions: readonly EndpointCon
  */
 export declare function channelListingInput(subscriptions: readonly EndpointConfig[], inbox?: EndpointConfig): {
     subscriptions: readonly EndpointConfig[];
-    derivedName?: string;
+    /** The channel this session's own sender names: the row `ace_channels` marks `self=yes`. */
+    selfChannel?: string;
 };
 /** Everything `/ace list` prints; the human face, so addresses are included (the tool's listing leaves them out). */
 export interface ChannelReport {
@@ -32,8 +37,8 @@ export interface ChannelReport {
     agentState: string;
     source?: string;
     subscriptions: readonly EndpointConfig[];
-    /** Name of the inbox the agent directory registered for this session, when there is one. */
-    derivedName?: string;
+    /** The session's own channel: `/ace list` marks that row as the one peers reply to. */
+    selfChannel?: string;
     pendingManual: number;
     deadLetters: {
         count: number;
