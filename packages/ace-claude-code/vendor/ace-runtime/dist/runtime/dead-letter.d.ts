@@ -6,8 +6,8 @@ export interface DeadLetterRecord {
     at: number;
     /** Channel the event arrived on. */
     subscription: string;
-    /** Broker entry id, to trace it back to the stream. */
-    brokerId: string;
+    /** Stream entry id, to trace it back to the stream. */
+    streamEntryId: string;
     /** Stream it came from; `replay:dead-letters` publishes back here. */
     stream: string;
     /** Field the payload was stored under, so a replay writes the same shape. */

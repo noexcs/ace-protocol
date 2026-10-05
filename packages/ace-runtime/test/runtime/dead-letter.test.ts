@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 const entry: DroppedEntry = {
-	brokerId: "1791053000000-0",
+	streamEntryId: "1791053000000-0",
 	stream: "ace:in.a",
 	field: "message",
 	payload: '{"aceVersion":"0.1","id":"evt_1"}',
@@ -45,7 +45,7 @@ describe("DeadLetterSink", () => {
 		expect(JSON.parse(record as string)).toEqual({
 			at: 1_000,
 			subscription: "inbox",
-			brokerId: entry.brokerId,
+			streamEntryId: entry.streamEntryId,
 			stream: "ace:in.a",
 			field: "message",
 			attempts: 3,
@@ -61,13 +61,13 @@ describe("DeadLetterSink", () => {
 		const sink = new DeadLetterSink({ dir, now: () => 1_000 });
 
 		await sink.record("inbox", entry);
-		await sink.record("alerts", { ...entry, brokerId: "1791053000001-0", payload: undefined });
+		await sink.record("alerts", { ...entry, streamEntryId: "1791053000001-0", payload: undefined });
 
 		const lines = readFileSync(join(dir, "dead-letter.1000.jsonl"), "utf8").trim().split("\n");
 		expect(lines).toHaveLength(2);
 		expect(JSON.parse(lines[1] as string)).toMatchObject({
 			subscription: "alerts",
-			brokerId: "1791053000001-0",
+			streamEntryId: "1791053000001-0",
 			payload: null,
 		});
 		expect(sink.count).toBe(2);

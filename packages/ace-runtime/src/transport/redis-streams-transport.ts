@@ -104,8 +104,8 @@ export function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStrea
 
 /** An entry the transport gave up on after `reclaimAttempts` redeliveries. */
 export interface DroppedEntry {
-	/** Broker entry id, so the record can be traced back to the stream. */
-	brokerId: string;
+	/** Stream entry id, so the record can be traced back to the stream. */
+	streamEntryId: string;
 	/** Stream the entry came from; a replay publishes back to exactly this stream. */
 	stream: string;
 	/** Entry field carrying the AceMessage JSON, so a replay writes the same shape. */
@@ -266,7 +266,7 @@ export class RedisStreamsTransport implements Transport {
 				this.metrics?.increment(this.name, "dropped");
 				try {
 					await this.onDropped?.({
-						brokerId: entry.id,
+						streamEntryId: entry.id,
 						stream: this.config.stream,
 						field: this.config.field,
 						payload: entry.payload,

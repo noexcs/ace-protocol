@@ -31,7 +31,7 @@ export class DeadLetterSink {
         const record = {
             at: this.now(),
             subscription,
-            brokerId: entry.brokerId,
+            streamEntryId: entry.streamEntryId,
             stream: entry.stream,
             field: entry.field,
             attempts: entry.attempts,
@@ -43,7 +43,7 @@ export class DeadLetterSink {
         appendDurably(path, `${JSON.stringify(record)}\n`);
         this.records += 1;
         this.prune();
-        this.logger?.info?.(`[ACE] dead letter subscribe=${subscription} brokerId=${entry.brokerId} attempts=${entry.attempts} path=${path}`);
+        this.logger?.info?.(`[ACE] dead letter subscribe=${subscription} streamEntryId=${entry.streamEntryId} attempts=${entry.attempts} path=${path}`);
     }
     /** Records appended by this runtime, for `/ace`. */
     get count() {

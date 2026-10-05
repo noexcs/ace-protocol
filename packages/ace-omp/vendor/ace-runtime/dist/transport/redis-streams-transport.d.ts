@@ -45,8 +45,8 @@ export declare const REDIS_STREAMS_SUBSCRIPTION_KEYS: readonly ["stream", "group
 export declare function redisStreamsConfigFrom(subscription: EndpointConfig): RedisStreamsConfig;
 /** An entry the transport gave up on after `reclaimAttempts` redeliveries. */
 export interface DroppedEntry {
-    /** Broker entry id, so the record can be traced back to the stream. */
-    brokerId: string;
+    /** Stream entry id, so the record can be traced back to the stream. */
+    streamEntryId: string;
     /** Stream the entry came from; a replay publishes back to exactly this stream. */
     stream: string;
     /** Entry field carrying the AceMessage JSON, so a replay writes the same shape. */

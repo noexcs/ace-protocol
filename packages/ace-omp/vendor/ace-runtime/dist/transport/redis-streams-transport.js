@@ -167,7 +167,7 @@ export class RedisStreamsTransport {
                 this.metrics?.increment(this.name, "dropped");
                 try {
                     await this.onDropped?.({
-                        brokerId: entry.id,
+                        streamEntryId: entry.id,
                         stream: this.config.stream,
                         field: this.config.field,
                         payload: entry.payload,

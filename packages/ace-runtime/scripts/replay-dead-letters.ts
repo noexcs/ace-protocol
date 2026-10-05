@@ -88,7 +88,7 @@ try {
 		skipped += outcome.skipped;
 		failed += outcome.failed.length;
 		for (const failure of outcome.failed) {
-			console.error(`  FAILED ${failure.stream} ${failure.brokerId}: ${String(failure.error)}`);
+			console.error(`  FAILED ${failure.stream} ${failure.streamEntryId}: ${String(failure.error)}`);
 		}
 		console.log(
 			`${file}\n  replayed ${outcome.replayed}, skipped ${outcome.skipped}, failed ${outcome.failed.length}\n  → ${summarizeReplay(records) || "(nothing)"}`,

@@ -9,6 +9,13 @@
 
 本文与代码同步维护：改契约必须改本文，改本文必须对照代码。代码位置以 `packages/ace-runtime/` 为根；**名字的生成只有一处实现**：`src/runtime/naming.ts`（键名、channel 名、sender 名都从它派生，宿主与工具不再自己拼）。
 
+**术语（2026-10-05 定稿）**
+
+- **server** = **配置域**：`.ace.json` 的 `servers` 项，一个 server 就是一个完整 ACE 域（一台 Redis + 其上的成员目录与频道）。配置键、工具文本、结果行（`servers=<name>,<name>`、`<server>:` 前缀、`stored_on=`）一律用这个词。
+- **transport** = **线路接缝**：`src/transport/transport.ts` 的 `interface Transport { start, stop }`，每个订阅一个实例；真实现只有 `redis-streams`，测试用 `in-memory`。它不是配置旋钮，也不暴露给模型。
+- **broker** = **只作散文词**，指"存这些东西的底座本身"（例如"有 broker 访问权的人可以直读键"）。它**永不作为类型名、永不作为配置键**。`docs/ace-plan.md` §1.2 的 `Broker` / `BrokerKind` / `BrokerDescriptor` 与 `Transport → Broker` 改名均已**撤回**（2026-10-05），理由见该节。
+- 死信记录里的 **`streamEntryId`** 是 Redis 的 stream entry id（0.2.12 前叫 `brokerId`；改动为干净切换，不读旧键）。
+
 ---
 
 ## 1. 协议面（引用 RFC，不复述）
@@ -144,7 +151,7 @@ agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | pl
 | 项 | 约定 |
 |---|---|
 | 路径 | `<deadLetterDir>/dead-letter.<时间戳>.jsonl`（oh-my-pi 用 `<cwd>/.ace`） |
-| 行字段 | `{ at, subscription, brokerId, stream, field, attempts, reason, payload \| null }`（`payload` 原样字符串；`stream`/`field` 让重放能原样写回） |
+| 行字段 | `{ at, subscription, streamEntryId, stream, field, attempts, reason, payload \| null }`（`payload` 原样字符串；`stream`/`field` 让重放能原样写回） |
 | 时机 | 达到 `reclaimAttempts` 上限、在 `XACK` **之前**写入；写失败则不 `XACK` |
 | 保留 | 内置默认：24h / 50 个文件，先按时间后按数量 |
 | 重放 | `npm run replay:dead-letters`（`--dry-run`、`--url`、`--dir`、`file…`）：按记录里的 `stream`/`field` 原样写回，接收方会再校验一次；缺 `stream`/`field`/`payload` 的记录跳过并计数 |
@@ -342,7 +349,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 **工具描述（模型可见）**
 
 ```text
-List this session's ACE channels — the channels it reads: its own inbox channels (one per server it is live on, each named by this session's sender there and marked `self=yes`) plus the subscribed names from .ace.json. A channel is a shared broadcast topic, not a private mailbox: everyone subscribed reads every event published to it, so `inbox` names a topic like any other, not something personal. The result is a header `ace 0.1 channels count=N self=M unavailable=K` then one flush-left row per channel: `channel=… transport=… activation=… self=… note=…`. `count` is the number of channel rows, `self` how many of them are marked `self=yes`, and `unavailable` how many trailing lines begin `unavailable:` — those lines are not channel rows: they name a configured server that did not come up (`unavailable: server "<name>" did not come up (<address> is not reachable)`) and each subscription it dropped (`unavailable: <channel> (server "<name>" did not come up)`). `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Broker settings are left out — address live peers with ace_agents.
+List this session's ACE channels — the channels it reads: its own inbox channels (one per server it is live on, each named by this session's sender there and marked `self=yes`) plus the subscribed names from .ace.json. A channel is a shared broadcast topic, not a private mailbox: everyone subscribed reads every event published to it, so `inbox` names a topic like any other, not something personal. The result is a header `ace 0.1 channels count=N self=M unavailable=K` then one flush-left row per channel: `channel=… transport=… activation=… self=… note=…`. `count` is the number of channel rows, `self` how many of them are marked `self=yes`, and `unavailable` how many trailing lines begin `unavailable:` — those lines are not channel rows: they name a configured server that did not come up (`unavailable: server "<name>" did not come up (<address> is not reachable)`) and each subscription it dropped (`unavailable: <channel> (server "<name>" did not come up)`). `channel` is what a peer publishes to, and `note` is the host's note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own self-description is in ace_agents, not here). Server settings (url, namespace, credentials) are left out — address live peers with ace_agents.
 ```
 
 （末尾指向 `ace_agents` 的一句只属于注册了该工具的宿主；不注册的宿主用 `channelsToolText({ agentsTool: false })` 去掉它。）

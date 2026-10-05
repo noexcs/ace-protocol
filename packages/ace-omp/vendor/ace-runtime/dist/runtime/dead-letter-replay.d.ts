@@ -11,7 +11,7 @@ export interface ReplayOutcome {
     skipped: number;
     failed: Array<{
         stream: string;
-        brokerId: string;
+        streamEntryId: string;
         error: unknown;
     }>;
 }

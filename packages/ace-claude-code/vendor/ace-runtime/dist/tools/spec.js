@@ -305,7 +305,7 @@ export const TOOL_TEXT = {
             "not come up (<address> is not reachable)`) and each subscription it dropped (`unavailable: <channel> " +
             '(server "<name>" did not come up)`). `channel` is what a peer publishes to, and `note` is the host\'s ' +
             "note about the channel, running to the end of the line (unquoted, empty when there is none; a peer's own " +
-            "self-description is in ace_agents, not here). Broker settings are left out",
+            "self-description is in ace_agents, not here). Server settings (url, namespace, credentials) are left out",
         /**
          * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
          * has no directory tool), so it is a separate piece a host appends or drops. Compose with

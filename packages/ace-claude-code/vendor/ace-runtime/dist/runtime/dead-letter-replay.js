@@ -36,7 +36,7 @@ function isReplayable(value) {
         return false;
     if (!("payload" in value) || typeof value.payload !== "string")
         return false;
-    if (!("brokerId" in value) || typeof value.brokerId !== "string")
+    if (!("streamEntryId" in value) || typeof value.streamEntryId !== "string")
         return false;
     return true;
 }
@@ -59,7 +59,7 @@ export async function replayDeadLetters(records, publish) {
             outcome.replayed += 1;
         }
         catch (error) {
-            outcome.failed.push({ stream: record.stream, brokerId: record.brokerId, error });
+            outcome.failed.push({ stream: record.stream, streamEntryId: record.streamEntryId, error });
         }
     }
     return outcome;

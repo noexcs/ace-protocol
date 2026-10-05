@@ -5,7 +5,7 @@ import { parseDeadLetters, replayDeadLetters, summarizeReplay } from "../../src/
 const record: DeadLetterRecord = {
 	at: 1_000,
 	subscription: "inbox",
-	brokerId: "1791053000000-0",
+	streamEntryId: "1791053000000-0",
 	stream: "ace:in.a",
 	field: "message",
 	attempts: 3,
@@ -44,7 +44,7 @@ describe("parseDeadLetters", () => {
 describe("replayDeadLetters", () => {
 	it("publishes each payload back to its own stream, in file order", async () => {
 		const published: Array<[string, string, string]> = [];
-		const second = { ...record, brokerId: "1791053000001-0", stream: "ace:in.b", payload: "second" };
+		const second = { ...record, streamEntryId: "1791053000001-0", stream: "ace:in.b", payload: "second" };
 
 		const outcome = await replayDeadLetters([record, second], async (stream, field, payload) => {
 			published.push([stream, field, payload]);
@@ -75,7 +75,7 @@ describe("replayDeadLetters", () => {
 		expect(written).toEqual(["ace:in.b"]);
 		expect(outcome.replayed).toBe(1);
 		expect(outcome.failed).toHaveLength(1);
-		expect(outcome.failed[0]).toMatchObject({ stream: "ace:in.a", brokerId: record.brokerId });
+		expect(outcome.failed[0]).toMatchObject({ stream: "ace:in.a", streamEntryId: record.streamEntryId });
 	});
 });
 

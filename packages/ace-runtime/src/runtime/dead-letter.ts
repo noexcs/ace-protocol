@@ -9,8 +9,8 @@ export interface DeadLetterRecord {
 	at: number;
 	/** Channel the event arrived on. */
 	subscription: string;
-	/** Broker entry id, to trace it back to the stream. */
-	brokerId: string;
+	/** Stream entry id, to trace it back to the stream. */
+	streamEntryId: string;
 	/** Stream it came from; `replay:dead-letters` publishes back here. */
 	stream: string;
 	/** Field the payload was stored under, so a replay writes the same shape. */
@@ -70,7 +70,7 @@ export class DeadLetterSink {
 		const record: DeadLetterRecord = {
 			at: this.now(),
 			subscription,
-			brokerId: entry.brokerId,
+			streamEntryId: entry.streamEntryId,
 			stream: entry.stream,
 			field: entry.field,
 			attempts: entry.attempts,
@@ -83,7 +83,7 @@ export class DeadLetterSink {
 		this.records += 1;
 		this.prune();
 		this.logger?.info?.(
-			`[ACE] dead letter subscribe=${subscription} brokerId=${entry.brokerId} attempts=${entry.attempts} path=${path}`,
+			`[ACE] dead letter subscribe=${subscription} streamEntryId=${entry.streamEntryId} attempts=${entry.attempts} path=${path}`,
 		);
 	}
 

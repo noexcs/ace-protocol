@@ -1,7 +1,6 @@
 # ace-runtime 导出面摘要（宿主接线只需这一页）
 
-**对应今天的形状**：`transport` / `config` / `EndpointConfig`。`docs/ace-plan.md` 里的
-`Broker` / `dispatch` / `consume` 是**目标形状，尚未实施** —— 接线时别混用。
+**对应今天的形状**：`transport` / `config` / `EndpointConfig` —— 配置是 `{ username, servers }`（每个 server = 一个完整 ACE 域），线路接缝是 §1 的 `Transport`（只有 `redis-streams` 一种真实现 + 测试用 `InMemoryTransport`）。`docs/ace-plan.md` 里的 `Broker` / `dispatch` / `consume` 是**已撤回的目标形状**（§1.2，2026-10-05）：接线时别照它写，也别把两套词混用。
 来源：`packages/ace-runtime/src/**`（2026-10-05 现状）。改 runtime 时请同步本页。
 形状与术语以 [`ace-runtime-contracts.md`](ace-runtime-contracts.md) 为准；本页只是导出面速查。
 

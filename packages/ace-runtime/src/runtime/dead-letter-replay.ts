@@ -12,7 +12,7 @@ export interface ParsedDeadLetters {
 export interface ReplayOutcome {
 	replayed: number;
 	skipped: number;
-	failed: Array<{ stream: string; brokerId: string; error: unknown }>;
+	failed: Array<{ stream: string; streamEntryId: string; error: unknown }>;
 }
 
 /**
@@ -48,7 +48,7 @@ function isReplayable(value: unknown): value is DeadLetterLine {
 	if (!("stream" in value) || typeof value.stream !== "string" || value.stream.length === 0) return false;
 	if (!("field" in value) || typeof value.field !== "string" || value.field.length === 0) return false;
 	if (!("payload" in value) || typeof value.payload !== "string") return false;
-	if (!("brokerId" in value) || typeof value.brokerId !== "string") return false;
+	if (!("streamEntryId" in value) || typeof value.streamEntryId !== "string") return false;
 	return true;
 }
 
@@ -73,7 +73,7 @@ export async function replayDeadLetters(
 			await publish(record.stream, record.field, record.payload);
 			outcome.replayed += 1;
 		} catch (error) {
-			outcome.failed.push({ stream: record.stream, brokerId: record.brokerId, error });
+			outcome.failed.push({ stream: record.stream, streamEntryId: record.streamEntryId, error });
 		}
 	}
 	return outcome;

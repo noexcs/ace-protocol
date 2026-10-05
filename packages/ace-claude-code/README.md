@@ -157,9 +157,9 @@ any channel name as its `channel`.
 cp example/.ace.json /path/to/your/project/.ace.json
 ```
 
-Broker settings (url, namespace, credentials) live in `servers`; the stream, group and field are
+Server settings (url, namespace, credentials) live in `servers`; the stream, group and field are
 transport details derived from the channel name, not part of the ACE message. `$VAR` interpolation
-from the environment is supported, so a broker password never has to be committed.
+from the environment is supported, so a server password never has to be committed.
 
 ### Agent directory (automatic)
 

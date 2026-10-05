@@ -9,11 +9,21 @@
 
 - **Channel（含 dispatch/consume）与 Subscription 住注册中心**，本地 ACE 文件只留**部署信息**。
 - 本地文件形状 = `LocalAceConfig`：`{ registry: { url, prefix? }, brokers: BrokerDescriptor[] }`。
+  **现状（2026-10-05 核实）**：实现是 `{ username, servers }`（`schema/ace-config.schema.json`），每个 server 就是一个
+  完整 ACE 域；下面的 `LocalAceConfig` 是将来把频道搬进注册中心时的形状，**尚未实施**。
 - 端点（url/凭据）只在本地的 Broker 项里，**寻址不进本地文件、端点不进注册中心**；这条分工是 dispatch/consume
   能跨 kind 统一的前提。
 - 协议层**不动**：0.1 的 `dispatch` / `consume` 本就是不透明的，改的只是实现侧的形状。
 
-### 1.2 Broker 模型
+### 1.2 Broker 模型 —— **撤回（2026-10-05）**
+
+> **本节不实施。** 实施后核实：代码是 **server 为中心** —— `.ace.json` 的 `servers` 就是一个完整 ACE 域
+> （Redis + 成员目录 + 频道），`src/` 里没有任何 `Broker` / `BrokerKind` / `BrokerDescriptor`；而 `Transport`
+> 是**真实存在且在用的线路接缝**（`src/transport/transport.ts`：`interface Transport { start, stop }`，每订阅一个实例，
+> 实现有 `RedisStreamsTransport` + 测试用 `InMemoryTransport`，运行时只认 `Transport`、不认 Redis）。
+> 只有一个成员的 `BrokerKind` 枚举 + 单一实现的 descriptor 属于**投机抽象**，而且会用第二个词盖掉已被约 21 个真实会话
+> 验证过的 server 词汇（`servers=`、`<server>:` 前缀、`stored_on=`）。**保留两个概念**：**server** = 部署域（配置层），
+> **transport** = 线路（实现层）。以下原文留档，将来真出现第二种 kind 时再取用。
 
 - 概念从 `Transport` 改为 **`Broker`**：`BrokerId` = 本地**实例**名（`local-redis`），`BrokerKind` = **种类**。
 - 本轮**只支持 `redis-streams`**；`nats-jetstream` / `kafka` / `mqtt` / 入站类 `http` / `file` 留在候选里，
@@ -68,6 +78,9 @@
 1. **正则边界**：建议默认只允许精确名/前缀，正则需显式开启，正则下强制先 `dryRun`，并设命中上限。
 2. **冷启动**：注册中心不可达或从未订阅过时可订阅集为空 —— 留"上次订阅集"快照，还是接受"重启后重新订阅"？
 3. **所有权/权限**：谁能 `create`、能否覆盖同名、谁能删（建议 `owner` + 不可覆盖 + 审计）。无认证现状下是软约束。
+> **第 4、5 条随 §1.2 一并不实施（2026-10-05）**：两条都长在已撤回的 `BrokerDescriptor.defaults` 上；
+> 现行实现里 `REDIS_STREAMS_DEFAULTS` 是内建常量，**没有** `trim` 这个旋钮，也没有可改默认组语义的
+> `defaults.consume.group`。原文留档。
 4. **`trim` 默认的破坏性**：接受"默认修剪 10000 条"，还是默认不修剪？
 5. **默认交付语义**：`group` 默认 = participant 名（广播）；若想默认同组瓜分，改 `defaults.consume.group` 即可。
 
@@ -101,8 +114,10 @@
    因此这两个宿主的工具面**只能**是 MCP。另需始终分清：**工具（出站）与 Channel（入站）是两条正交的轴** ——
    Claude 上两者恰好同源（同一个 MCP server），Codex 上则是 MCP 工具 + app-server 两套。
 5. **迁移项**（`runtime-contracts.ts` §五）：删 `sessionId`、`ace_agents` → `ace_participants`、
-   `config` → `dispatch`/`consume`、`body` 不透明化、**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、
-   工具文本、docs、两个宿主 README 一次改齐）。
+   `config` → `dispatch`/`consume`、`body` 不透明化。
+   ~~**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、工具文本、docs、两个宿主 README 一次改齐）~~
+   —— **撤回（2026-10-05）**：见 §1.2。`Transport` 保留原名与"线路接缝"职责（它已在用：每订阅一个实例，
+   `RedisStreamsTransport` + 测试用 `InMemoryTransport`），`server` 保留为配置域的词，不做这次改名。
 
 ## 4. 宿主侧工作（**暂停，只记录，不动手**）
 

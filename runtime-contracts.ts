@@ -37,14 +37,14 @@ export interface InboundEvent {
 export interface OutboundResult {
 	/** 实际写入的 broker 地址。 */
 	address?: string;
-	/** broker 自己的写入标识（Redis stream id、Kafka offset…）。 */
-	brokerId?: string;
+	/** 承载自己的写入标识（Redis stream id、Kafka offset…）。 */
+	streamEntryId?: string;
 }
 
 /**
  * transport 接缝：broker ⇄ 信封。分帧、寻址、确认、重投、重连都在实现里。
  *
- * 注意词汇：**这一层的 "broker" 指的是承载本身（Redis）**，即模型里的一个 `Server`；而 `brokerId`
+ * 注意词汇：**这一层的 "broker" 指的是承载本身（Redis）**，即模型里的一个 `Server`；而 `streamEntryId`
  * 是**承载自己的写入标识**（stream id、offset…），不是 `ServerName`。
  *
  * **目标形状 vs 现状**：这里是目标形状（显式 `InboundEvent.ack()`）。当前 Pi/oh-my-pi 实现用的是

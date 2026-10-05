@@ -150,7 +150,7 @@ describe("RedisStreamsTransport resilience", () => {
 
 		expect(recorded).toEqual([
 			{
-				brokerId: "9-0",
+				streamEntryId: "9-0",
 				stream: "ace:in",
 				field: "message",
 				payload: validEntry,
