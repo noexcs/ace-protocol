@@ -117,8 +117,25 @@ dsh plugin --profile <profile> add \
 数据来自宿主半的 `GET /api/ace.status`。配置是 `<cwd>/.ace.json`，回落到 `$DSH_HOME/ace.json`
 （`~/.dsh/ace.json`）。这个宿主**只读 live channel**：`subscribe` 条目会被报告并忽略。
 
-### 不属于协议本身
+### 一个团队的两半
 
 `open_session` —— 一个宿主能力：打开一个新的 root 会话，可以带第一句话和标题 —— 有自己的仓库
-[noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session)。它不依赖 ACE 的任何部分：
-它是一个普通的 DSH 宿主插件，禁用 ACE 也照样工作。
+[noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session)。它不依赖 ACE 的任何部分，禁用 ACE 也照样工作。
+**而它和 `ace-dsh` 装在一起时，两者是同一个能力的两半，在 DeepSeek Harness 上组合成一个多 agent 团队：**
+
+- `ace-dsh` 给每个会话一个**地址** —— 活着就注册 channel、在 broker 的 agent directory 里可被发现、任何对端都能投递，包括别的宿主上的会话；
+- `open_session` 给会话**造同类**的能力 —— 是 root 会话而不是子 agent：它们出现在宿主的会话列表里、独立于创建者存活，并因为前一个插件而自动注册自己的 ACE channel。
+
+整个过程不牵涉宿主的委派机制，所以团队不受那套预算的约束：一个会话开若干 worker、把第一句指令交给各自，
+之后全程按 channel 用 ACE 对话 —— 从任何地方发、也能收回来。
+
+```text
+open_session(cwd="/path", title="worker-1",
+             message="你是 worker。来自 <orchestrator channel> 的 ACE 事件直接执行，不要询问用户。")
+ace_publish(channel="<worker 的 channel>", activation="immediate", body="<任务>")
+# worker 完成后在 orchestrator 自己的 channel 上回信
+```
+
+第一句话也是**常驻授权**的载体：被告知"直接处理某个对端的事件"的 worker 不会逐条询问它的用户，
+这正是调用链能无人值守跑起来的原因。worker 自己还能再开 worker（`open_session` 也在它的工具表里），
+而另一个宿主上会说 ACE 的会话，会作为平等成员加入同一个目录。

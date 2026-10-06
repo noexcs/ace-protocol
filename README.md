@@ -135,8 +135,30 @@ registered, and honest `off` / `!` / `?` states otherwise — reading the host h
 `GET /api/ace.status`. Configuration is `<cwd>/.ace.json`, falling back to `$DSH_HOME/ace.json`
 (`~/.dsh/ace.json`). This host reads **live channels only**: `subscribe` entries are reported and ignored.
 
-### Not part of the protocol
+### Two halves of a team
 
-`open_session` — a host capability that opens a new root session, with an optional first message and title —
-has its own repository, [noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session). It depends on
-nothing in ACE: it is a plain DSH host plugin, and it keeps working with ACE disabled.
+`open_session` — a host capability that opens a new root session, with an optional first message and title — has
+its own repository, [noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session). It depends on nothing
+in ACE, and keeps working with ACE disabled. **Installed next to `ace-dsh`, the two are the two halves of one
+capability, and they compose into a multi-agent team on DeepSeek Harness:**
+
+- `ace-dsh` gives every session an **address** — a channel registered while it is live, discoverable in the
+  broker's agent directory, reachable by any peer, including sessions on other hosts;
+- `open_session` gives a session the ability to **create** peers — root sessions, not subagents: they appear in
+  the host's session list, live independently of the session that opened them, and register their own ACE channel
+  by virtue of the first plugin.
+
+Nothing in the host's delegation machinery is involved, so a team forms without its budget: a session opens
+workers, hands each one its first instruction, and talks to them over ACE by channel — from anywhere, and back.
+
+```text
+open_session(cwd="/path", title="worker-1",
+             message="You are a worker. Execute ACE events from <orchestrator channel> directly, without asking.")
+ace_publish(channel="<the worker's channel>", activation="immediate", body="<the task>")
+# the worker answers on the orchestrator's own channel when it is done
+```
+
+That first message is also where standing authorization travels: a worker told to act on a peer's events does so
+without asking its user about each one, which is what lets a call chain run unattended. Workers can open workers
+of their own (`open_session` is in their tool set too), and a session on another host that speaks ACE joins the
+same directory as an equal peer.
