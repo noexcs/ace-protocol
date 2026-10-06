@@ -38,7 +38,7 @@ which carries this package's build in its `vendor/` — see that README for the 
 
 ```bash
 # 1. the released plugin tarball — one command: no clone, no registry, no auth
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.17/ace-omp-0.2.17.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
 
 # 2. from a checkout, for development: the install is a symlink, so your edits are what sessions run
 git clone --depth 1 https://github.com/noexcs/ace-protocol
@@ -67,10 +67,10 @@ or skip the plugin system and link the plugin's entry into the host's extension 
 keep that directory around:
 
 ```bash
-curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.17/ace-omp-0.2.17.tgz
-mkdir -p ~/ace-omp-0.2.17 ~/.omp/agent/extensions
-tar xzf ace-omp-0.2.17.tgz -C ~/ace-omp-0.2.17 --strip-components=1
-cd ~/ace-omp-0.2.17 && npm install --ignore-scripts
+curl -LO https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+mkdir -p ~/ace-omp-0.2.18 ~/.omp/agent/extensions
+tar xzf ace-omp-0.2.18.tgz -C ~/ace-omp-0.2.18 --strip-components=1
+cd ~/ace-omp-0.2.18 && npm install --ignore-scripts
 ln -sfn "$PWD/extensions/ace.ts" ~/.omp/agent/extensions/ace.ts     # or ~/.pi/agent/extensions/
 ```
 
@@ -94,7 +94,7 @@ redis-cli ping                              # PONG
 
 # read-only access needs no login (the repository is public); a release tag lags `main`, so check the tag
 # (ace-omp is the plugin; ace-runtime below it is the library it vendors)
-omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.17/ace-omp-0.2.17.tgz
+omp install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
 cat > .ace.json <<'JSON'
 { "username": "ana",
   "servers": { "local": { "url": "redis://127.0.0.1:6379", "subscribe": [ "inbox" ] } } }
