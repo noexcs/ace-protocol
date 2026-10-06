@@ -80,8 +80,9 @@ jobs:
       # not the current build.
       - name: Vendored runtime is current
         run: node ../../scripts/check-vendor-sync.ts
-      # Seven scenarios against the Redis service above: delivery, poison messages, reclaim after a
-      # failed delivery, dedup, sender allowlists, manual activation, burst spooling.
+      # Twelve scenarios against the Redis service above: delivery and its ack, poison messages,
+      # reclaim after a failed delivery, dedup, open inbound, manual activation, burst spooling, the
+      # agent directory and its sweep, dead-letter replay, direct publish by channel name, shutdown order.
       - name: Live broker scenarios
         run: npm run verify:live
         env:
