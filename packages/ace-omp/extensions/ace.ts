@@ -1472,6 +1472,14 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	 * and *rewrites* that block when it is the immediately preceding chat entry — its anti-spam rule for
 	 * back-to-back status lines — so two `/ace` reports with no chat activity in between show the newer one,
 	 * while any turn pins each report as its own block.
+	 *
+	 * The obvious workaround does not work, measured rather than assumed: emitting a separator status
+	 * (`notify(" ", "info")`) before each report does not protect the earlier one — the separator is itself a
+	 * status slot, so the report rewrites *it*, and the next separator rewrites the previous report away (frame
+	 * for this in `/tmp/ace-frames/sep`). A separator *after* a report erases that report outright. The only
+	 * chat-appending calls besides `showStatus` are `showWarning`/`showError`, which inject `Warning: `/
+	 * `Error: ` and recolour the whole line, so using them for a listing would state something false about it.
+	 * The coalescing therefore stays a host behaviour ACE documents instead of working around.
 	 */
 	function showPanel(ctx: ExtensionCommandContext, panel: () => AcePanel): boolean {
 		if (ctx.mode !== "tui") return false;
