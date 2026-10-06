@@ -17,7 +17,7 @@ verify the design end to end.
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | The engineering guide for the first implementation |
 | [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, Redis key layout, tool parameters, delivery semantics, flows, invariants |
 | [`packages/ace-runtime/`](packages/ace-runtime) | The runtime: protocol, transports, agent engines, Pi extension |
-| [`pi/`](pi) | Upstream Pi checkout (gitignored) used for integration testing against its sources |
+| [`oh-my-pi/`](oh-my-pi) | Upstream oh-my-pi checkout (gitignored) used for integration testing against its sources |
 
 ## Status
 
@@ -27,13 +27,22 @@ a real broker. Other agent hosts are planned, not started — see
 [the runtime README](packages/ace-runtime/README.md) for the host boundary, and
 [ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
 
-Verified today: 565 tests (441 in the host-neutral core across 31 test files, 20 in the ace-omp host plugin
-across 3, 65 in the ace-claude-code plugin across 9, 39 in the ace-codex bridge across 4), `npm run verify:live` in `packages/ace-runtime` (12 scenarios against a real Redis Streams broker:
-delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst
-spooling, the agent directory lifecycle and its crash sweep, dead-letter replay, and direct publish by channel
-name), and `npm run verify:omp` in `packages/ace-omp` (3 scenarios inside a real `omp --mode rpc` session: the
-system-prompt policy reaches the provider request, a `next_turn` event reaches the conversation and is
-acknowledged, and a `manual` event is retained without starting a turn).
+Verified on 2026-10-06: 618 tests pass and 6 fail — 481 in the host-neutral core across 31 test files,
+39 in the ace-omp host plugin across 3, 65 in the ace-codex bridge across 4, and in the ace-claude-code
+plugin 59 pass while 6 fail: its publish path still imports `isStreamKeyShaped`, a core helper the
+stream-free surface removed, so `ace_publish` there errors out (`isStreamKeyShaped is not a function`).
+That breakage predates this repository's latest release — the same 6 fail on the commit before it.
+
+`npm run verify:live` in `packages/ace-runtime` covers 12 scenarios against a real Redis Streams broker
+(delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst
+spooling, the agent directory lifecycle and its crash sweep, dead-letter replay, and direct publish by
+channel name); **9 of the 12 pass on this machine**, and the three that fail (`valid event`,
+`poison message`, `reclaim after failure`, all reporting `pending=1`) fail identically on the commit before
+the latest release, so they are not from it. `npm run verify:omp` in `packages/ace-omp` covers 5 scenarios
+inside a real `omp --mode rpc` session (the two start-up assertions, the system-prompt policy reaching the
+provider request, a `next_turn` event reaching the conversation and settling, and a `manual` event being
+retained without starting a turn); 4 of 5 pass, and the one that fails needs a working model turn — the
+provider configured on this machine does not answer (`stopReason=error`).
 
 A session's channel is its address: a live session registers the channel named by its sender and can be found
 by its peers in the **agent directory** on Redis (RFC §22 item 1). `ace_agents` lists the channels that are
@@ -71,6 +80,9 @@ cat > /tmp/ace-demo/.ace.json <<'JSON'
 JSON
 
 # 2. run Pi with the extension (needs a broker; `brew services start redis` gives one on 6379)
+#    If the plugin is already installed or linked, start the host plainly instead — passing
+#    `--extension` for the same file loads it twice, and the duplicate copy is inert, so `/ace`
+#    commands would land on the copy that never started the runtime.
 cd /tmp/ace-demo && pi --extension /path/to/ace-protocol/packages/ace-omp/extensions/ace.ts
 
 # 3. publish from anywhere; the channel name derives the stream <namespace>:ch:<channel>
@@ -78,8 +90,10 @@ redis-cli XADD ace:ch:ace:alice:ci-failures '*' message \
   '{"aceVersion":"0.1","id":"e1","sender":"ci","activation":"next_turn","body":"Build failed."}'
 ```
 
-Inside the session, `/ace` shows the runtime status, and `ace_publish` sends events to peers addressed by
-their channel name. [ace-omp's README](packages/ace-omp/README.md) documents `.ace.json` and the activation
+Inside the session, bare `/ace` opens the channel manager (a framed view you step through with the arrow
+keys and `esc`), and `/ace list`, `agents`, `stats`, `pending` and `help` write their report **into the
+session record** — nothing is held while you read them, they scroll back like any other output, and a report
+stays visible across turns. `ace_publish` sends events to peers addressed by their channel name. [ace-omp's README](packages/ace-omp/README.md) documents `.ace.json` and the activation
 semantics on Pi; the [runtime README](packages/ace-runtime/README.md) documents the transports,
 delivery guarantees, and the current limitations.
 
