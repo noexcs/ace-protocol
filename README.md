@@ -152,6 +152,7 @@ that speaks ACE joins the same Server as an equal peer.
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | The engineering guide for the first implementation |
 | [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, Server key layout, tool parameters, delivery semantics, flows, invariants |
 | [`docs/ace-file-transfer.md`](docs/ace-file-transfer.md) | File transfer by token: store, fetch, and what the token is |
+| [`docs/ace-durable-channels.md`](docs/ace-durable-channels.md) | Durable channels: an address declared in the config file that outlives every session, with a 24h catch-up window (a topic is one use of that substrate). Semantics agreed, not implemented yet |
 
 ## Repository layout
 

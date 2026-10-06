@@ -142,6 +142,7 @@ worker 自己还能再开 worker（`open_session` 也在它的工具表里），
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | 第一版实现的工程指南 |
 | [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | 实现契约：配置键、Server 键布局、工具参数、投递语义、流程、不变量 |
 | [`docs/ace-file-transfer.md`](docs/ace-file-transfer.md) | 按 token 的文件传输：存、取，以及 token 是什么 |
+| [`docs/ace-durable-channels.md`](docs/ace-durable-channels.md) | 持久型通道：由配置声明、比任何会话活得都久的地址，带 24h 追补窗口（topic 是它的一种用法）。语义已定、尚未实现 |
 
 ## 仓库结构
 
