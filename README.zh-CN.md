@@ -9,7 +9,9 @@
              (MQ 适配层)    parse → validate → resolve activation → dispatch
 ```
 
-本仓库包含：协议草案、运行时实现，以及用来端到端验证这套设计的 Pi 集成。
+本仓库包含：协议草案、运行时实现，以及用来端到端验证这套设计的两个宿主插件。协议与宿主无关：一个很小的核心拥有协议本身，每个宿主各得一个插件。
+
+一个会话的 **channel** 就是它的地址：活着的会话注册以它 sender 命名的 channel，对端在 broker 的 **agent directory** 里找到它，发到该 channel 的事件按发送方要求的 activation 落进那个会话的上下文 —— `immediate`、`next_turn`，或 `manual`（保留到有人激活它）。文件按 token 在会话之间传递，不经过任何模型的上下文，而 **token 本身就是能力**。两者都在[实现契约](docs/ace-runtime-contracts.md)里规定。
 
 | 路径 | 是什么 |
 |---|---|
@@ -19,48 +21,14 @@
 | [`packages/ace-runtime/`](packages/ace-runtime) | 运行时：协议、transport、agent engine、Pi 扩展 |
 | [`packages/ace-omp/`](packages/ace-omp) | oh-my-pi / Pi 宿主插件（参考宿主） |
 | [`packages/ace-dsh/`](packages/ace-dsh) | DeepSeek Harness 宿主插件：同一套协议跑在第二个宿主上，核心一行未改 |
+| [`docs/development.md`](docs/development.md) | 构建、测试与验证这个仓库 —— 以及当前结果说明了什么 |
 | [`oh-my-pi/`](oh-my-pi) | oh-my-pi 上游检出（已被 gitignore），用于对着源码做集成测试 |
 
 ## 现状
 
-以 **Pi** 作为 agent engine 的可行性实验：一个外部事件抵达正在运行的 Pi 会话，驱动它跑一个回合（或按
-`activation` 排队/延后），并且两个 Pi agent 能通过真实 broker 互相通信。**oh-my-pi / Pi 是经过验证的参考宿主** ——
-插件是 [ace-omp](packages/ace-omp/README.md)；宿主边界见[运行时 README](packages/ace-runtime/README.md)。
+**oh-my-pi / Pi 是经过验证的参考宿主** —— 插件是 [ace-omp](packages/ace-omp/README.md)；宿主边界见[运行时 README](packages/ace-runtime/README.md)。现在有了第二个宿主 [`ace-dsh`](packages/ace-dsh/README.md)，它把同一套协议跑进 **DeepSeek Harness**，核心一行未改：每个 agent 一个运行时、channel 随 agent 自己的生命周期注册与撤销、工具注册在 agent 作用域而不是全局。DSH 只读 live channel，所以 `.ace.json` 的 `subscribe`（持久化 channel）在那边只被报告、不被读取。
 
-现在有了第二个宿主：[`ace-dsh`](packages/ace-dsh/README.md) 把同一套协议跑进 **DeepSeek Harness**。它的进程同时承载多个会话，
-所以运行时是**每个 agent 一个**、channel 随 agent 自己的生命周期注册与撤销、工具注册在 agent 作用域而不是全局。
-核心一行未改：host-neutral 的模块本来就有这个缝（`AgentEngine`、`AgentRegistry`、`shutdownAce`），
-它自己的测试覆盖了这层绑定（61 个测试、6 个构建产物场景、6 个浏览器半场景，外加 7 个对着真实 broker 的实盘场景）。
-它已在一个 desktop profile 里运行，并做过**跨宿主**验证：一个 DSH 会话和一个 oh-my-pi 会话双向交换过事件、
-各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。DSH 只读 live channel，所以 `.ace.json` 的
-`subscribe`（持久化 channel）在那边只被报告、不被读取。
-
-2026-10-06 验证：520 个测试通过、0 失败 —— 其中 481 个在 host-neutral 核心里（31 个测试文件），
-39 个在 ace-omp 宿主插件里（3 个测试文件）。
-
-`packages/ace-runtime` 的 `npm run verify:live` 覆盖 12 个对着真实 Redis Streams broker 的场景
-（投递、poison 消息、投递失败后的 reclaim、去重、open inbound、manual 激活、突发缓冲、
-agent 目录生命周期及其崩溃清扫、死信重放、按 channel 名直接发布）；**本机 9/12 通过**，
-失败的三个（`valid event`、`poison message`、`reclaim after failure`，都报 `pending=1`）在
-上一个 release 之前的提交上表现完全一致，所以不是这次引入的。`packages/ace-omp` 的 `npm run verify:omp`
-覆盖真实 `omp --mode rpc` 会话里的 5 个场景（两个启动断言、系统提示里的策略抵达 provider 请求、
-一个 `next_turn` 事件抵达对话并 settle、一个 `manual` 事件被保留而不启动回合）；4/5 通过，
-失败的那个需要一个能正常作答的模型回合 —— 本机配置的 provider 不返回结果（`stopReason=error`）。
-
-一个会话的 channel 就是它的地址：活着的会话注册以它 sender 命名的 channel，对端可以在 Redis 上的
-**agent directory** 里找到它（RFC §22 第 1 条）。`ace_agents` 列出当前在线的 channel（它的 `agent` 过滤
-匹配会话运行的 coding agent，来源是会话的自述），而 `ace_publish` 的 `channel` 接受一个 channel 名 ——
-配置了多个服务器时，`<server>:<channel>` 前缀用来选定服务器，前缀按**配置中的名字**匹配，
-即使那台服务器已经宕机也会因此失败、而不是往别处发 —— 也接受一个 channel 列表，把同一条事件一次发给多个对端
-（每个名字必须是非空字符串）。发到本会话自己也读的 channel 上的事件会回到自己的上下文里，标记为 `self: yes`
-—— 除非 activation 是 `manual`，那种情况它被存下来而不注入，也就是说回显遵循与任何投递相同的 activation 规则。
-见[实现契约](docs/ace-runtime-contracts.md)。
-
-文件在会话之间传递时**不进入任何模型的上下文**：`ace_store_file` 把本地文件存到本会话所在的每一台服务器上，
-用一个随机 token 和 TTL，只报告副本落在哪里（`stored_on=`）以及实际的 `name=`、请求的 `ttl=` 和
-`stored_at=`/`expires_at=` 时刻；`ace_get_file` 用那个 token 从自己有副本的第一台服务器取回，返回
-`name=` 以及与 blob 元数据一致的 `stored_at=`/`expires_at=`，并写入隔离目录。**token 本身就是能力** ——
-存储不发布任何事件，所以这行文本由模型自己转达。见[文件传输设计](docs/ace-file-transfer.md)。
+两个插件都对着真实 broker 跑过，而且两个宿主彼此通过话：双向事件、各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。测试数量、实盘场景结果（包括本机失败的那几个及其原因）与历史沿革都在 [docs/development.md](docs/development.md)（英文）。
 
 ## 快速开始
 
@@ -159,20 +127,9 @@ dsh plugin --profile <profile> add \
 ## 开发
 
 ```bash
-cd packages/ace-runtime      # host-neutral 的核心
-npm test                     # 单元 + 集成测试；不需要 broker，也不需要凭据
-npm run check                # biome + tsc --noEmit + 共享契约
-npm run verify:live          # 对着真实 broker（redis-server）跑运行时；不需要模型
-npm run build
-
-cd ../ace-omp                # Pi / oh-my-pi 宿主插件
-npm test                     # 插件自己的测试，对着构建好的核心
-npm run check                # biome + tsc --noEmit + 共享契约
-npm run verify:omp           # 在真实 oh-my-pi 会话里跑插件（需要 omp 和一个模型）
+cd packages/ace-runtime && npm test && npm run check   # host-neutral 核心
+cd ../ace-omp && npm test && npm run check             # Pi / oh-my-pi 宿主插件
+cd ../ace-dsh && npm test && npm run check             # DeepSeek Harness 宿主插件
 ```
 
-`pi/` 是上游 Pi 仓库的检出。测试跑在已发布的 `@earendil-works/*` 包（用户实际安装的那些构建）上；
-这个检出的用途是阅读 Pi 的源码，以及跑 `docs/ace-v0.1.md` 里的双 agent 实盘实验。
-
-ACE 最初是在 Pi 的 fork [`noexcs/pi`](https://github.com/noexcs/pi) 里开发的，分支 `ace-0.1-runtime`；
-那个分支保留了开发历史，而代码现在住在这个仓库里（为什么从 fork 搬出来，见 `28fcff8` 提交）。
+完整命令、实盘验证、当前结果与历史沿革：[docs/development.md](docs/development.md)（英文）。
