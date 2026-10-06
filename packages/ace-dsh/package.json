@@ -1,0 +1,99 @@
+{
+	"name": "ace-dsh",
+	"version": "0.1.0",
+	"description": "ACE (Agent Context Event Protocol) 0.1 host plugin for DeepSeek Harness: external events (CI results, alerts, peer agents) as an active input to a running session.",
+	"private": false,
+	"type": "module",
+	"main": "lib/index.js",
+	"types": "lib/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./lib/index.d.ts",
+			"default": "./lib/index.js"
+		},
+		"./client": "./lib/client.js",
+		"./package.json": "./package.json",
+		"./cordis.patch.yml": "./cordis.patch.yml"
+	},
+	"dsh": {
+		"bundle": {
+			"patch": "./cordis.patch.yml"
+		},
+		"client": {
+			"platform": "web",
+			"inject": [
+				"@deepseek-ai/dsh-client-ui-conversation"
+			],
+			"immediately": true
+		}
+	},
+	"files": [
+		"lib",
+		"cordis.patch.yml",
+		"README.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json && node scripts/bundle.mjs",
+		"sync:vendor": "node scripts/sync-vendor.mjs",
+		"test": "vitest --run",
+		"check": "biome check --error-on-warnings . && tsc --noEmit && npm run check:contracts",
+		"check:contracts": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions ../../ace-contracts.ts ../../runtime-contracts.ts",
+		"verify:live": "node scripts/verify-live.ts",
+		"bundle": "node scripts/bundle.mjs",
+		"verify:bundle": "node scripts/verify-bundle.mjs",
+		"verify:client": "node scripts/verify-client.mjs",
+		"verify:all": "node scripts/verify-client.mjs && node scripts/verify-bundle.mjs && node scripts/verify-live.ts"
+	},
+	"dependencies": {
+		"redis": "6.3.0",
+		"typebox": "1.3.27"
+	},
+	"peerDependencies": {
+		"@deepseek-ai/cordis": "~4.0.4",
+		"@deepseek-ai/dsh-agent": ">=0.1.7-rc.2 <0.3.0",
+		"@deepseek-ai/dsh-commands": ">=0.1.7-rc.2 <0.3.0",
+		"@deepseek-ai/dsh-llm": ">=0.1.7-rc.2 <0.3.0",
+		"@deepseek-ai/dsh-session": ">=0.1.7-rc.2 <0.3.0",
+		"@deepseek-ai/dsh-system-prompt": ">=0.1.7-rc.2 <0.3.0",
+		"@deepseek-ai/dsh-tools": ">=0.1.7-rc.2 <0.3.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@deepseek-ai/cordis": "~4.0.4",
+		"@deepseek-ai/dsh-agent": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-agent-default-model": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-agent-preset-registry": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-client-ui-workspace": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-commands": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-scope": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-session": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-session-query-sqlite": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-session-title": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-session-title-first-prompt-llm": "^0.2.0-rc.2",
+		"@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+		"@deepseek-ai/dsh-workspace": "^0.2.0-rc.2",
+		"@types/node": "22.19.19",
+		"esbuild": "^0.25.10",
+		"typescript": "5.9.3",
+		"vitest": "4.1.11"
+	},
+	"keywords": [
+		"ace",
+		"agent",
+		"events",
+		"coding-agent",
+		"deepseek-harness",
+		"dsh-plugin",
+		"redis-streams"
+	],
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}
