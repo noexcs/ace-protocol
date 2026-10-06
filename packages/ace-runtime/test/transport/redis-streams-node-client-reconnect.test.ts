@@ -10,10 +10,24 @@ const hoisted = vi.hoisted(() => ({ created: [] as Array<Record<string, unknown>
 vi.mock("redis", () => ({
 	createClient: () => {
 		const handlers = new Map<string, Array<(error: unknown) => void>>();
+		const onceHandlers = new Map<string, Array<() => void>>();
 		const client = {
 			isOpen: false,
 			isReady: false,
 			destroyed: false,
+			destroyCalls: 0,
+			/** Stand in for the connection a dead socket had already scheduled completing later. */
+			revive() {
+				client.isOpen = true;
+				client.isReady = true;
+				for (const handler of onceHandlers.get("ready") ?? []) handler();
+			},
+			once(event: string, handler: () => void) {
+				const list = onceHandlers.get(event) ?? [];
+				list.push(handler);
+				onceHandlers.set(event, list);
+				return client;
+			},
 			on(event: string, handler: (error: unknown) => void) {
 				const list = handlers.get(event) ?? [];
 				list.push(handler);
@@ -28,6 +42,7 @@ vi.mock("redis", () => ({
 				client.isOpen = false;
 				client.isReady = false;
 				client.destroyed = true;
+				client.destroyCalls += 1;
 			},
 			async quit() {
 				client.isOpen = false;
@@ -69,6 +84,22 @@ describe("RedisStreamsClient recovery from a spent reconnect budget (audit B')",
 		await expect(client.read("s", "g", "c", 1, 10)).resolves.toEqual([]);
 		expect(hoisted.created).toHaveLength(2);
 		expect(first.destroyed).toBe(true);
+	});
+
+	it("retires the replaced client again when its in-flight connection completes", async () => {
+		const client = createRedisStreamsClient("redis://127.0.0.1:1", "message", () => {});
+		await client.connect();
+		const first = hoisted.created[0] as unknown as Fake & { destroyCalls: number; revive: () => void };
+
+		first.isOpen = false;
+		first.isReady = false;
+		await client.read("s", "g", "c", 1, 10); // replaces it once
+		expect(first.destroyCalls).toBe(1);
+
+		// The socket the client had already scheduled finishes connecting: node-redis assigns it to
+		// the retired client, which would now sit there open with nobody referencing it.
+		first.revive();
+		expect(first.destroyCalls).toBe(2);
 	});
 
 	it("retries a command once on a fresh client when the socket dies mid-command", async () => {

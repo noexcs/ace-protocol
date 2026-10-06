@@ -65,6 +65,18 @@ export function createRedisStreamsClient(url, field, onError, clientOptions = {}
         catch {
             // Already gone; nothing to release.
         }
+        // A socket that died mid-reconnect may still complete a connection the client had already
+        // scheduled: that in-flight creation assigns the fresh socket unconditionally, so the retired
+        // client revives as ready with nobody referencing it any more — one leaked connection per flap.
+        // If it revives, retire it again: the second destroy does see that socket.
+        stale.once("ready", () => {
+            try {
+                stale.destroy();
+            }
+            catch {
+                // Already gone.
+            }
+        });
         outageReported = false;
         await client.connect();
         connected = true;

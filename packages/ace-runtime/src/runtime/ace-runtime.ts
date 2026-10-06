@@ -17,6 +17,35 @@ import { AceMetrics } from "./metrics.ts";
 import { PendingEventStore } from "./pending-event-store.ts";
 import { SeenMessageIds } from "./seen-message-ids.ts";
 
+/** How long a failed start waits for each transport it already started to unwind. */
+const FAILED_START_STOP_TIMEOUT_MS = 1_000;
+
+/**
+ * Stop `transport`, giving up after `ms` so a stalled host cannot hang a failed start.
+ *
+ * Returns whether the stop finished inside the bound. The timer is unref'd, so a pending bound never
+ * keeps a process alive on its own.
+ */
+async function stopWithin(transport: Transport, ms: number): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let finished = false;
+	const stopped = transport.stop().then(() => {
+		finished = true;
+	});
+	try {
+		await Promise.race([
+			stopped,
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, ms);
+				timer.unref?.();
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+	return finished;
+}
+
 export interface AceRuntimeOptions {
 	/** Agent engine that receives ACE events (RFC-facing §15). */
 	engine: AgentEngine;
@@ -182,7 +211,15 @@ export class AceRuntime {
 			this.started = false;
 			for (const transport of started) {
 				try {
-					await transport.stop();
+					// Bounded on purpose: `stop()` waits for whatever the host still has in flight, and a
+					// stalled host is exactly what this path may be staring at — waiting forever would turn
+					// a failed start into a hung one. A stop that outlives the bound keeps unwinding in the
+					// background; the caller still gets its error.
+					if (!(await stopWithin(transport, FAILED_START_STOP_TIMEOUT_MS))) {
+						this.logger.warn?.(
+							`[ACE] a transport from the failed start is still unwinding after ${FAILED_START_STOP_TIMEOUT_MS}ms`,
+						);
+					}
 				} catch (stopError) {
 					this.logger.warn?.(
 						`[ACE] stopping a half-started transport failed: ${

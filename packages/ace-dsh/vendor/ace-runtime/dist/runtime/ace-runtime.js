@@ -7,6 +7,35 @@ import { DEFAULT_SPOOL_RULE, EventSpool, } from "./event-spool.js";
 import { AceMetrics } from "./metrics.js";
 import { PendingEventStore } from "./pending-event-store.js";
 import { SeenMessageIds } from "./seen-message-ids.js";
+/** How long a failed start waits for each transport it already started to unwind. */
+const FAILED_START_STOP_TIMEOUT_MS = 1_000;
+/**
+ * Stop `transport`, giving up after `ms` so a stalled host cannot hang a failed start.
+ *
+ * Returns whether the stop finished inside the bound. The timer is unref'd, so a pending bound never
+ * keeps a process alive on its own.
+ */
+async function stopWithin(transport, ms) {
+    let timer;
+    let finished = false;
+    const stopped = transport.stop().then(() => {
+        finished = true;
+    });
+    try {
+        await Promise.race([
+            stopped,
+            new Promise((resolve) => {
+                timer = setTimeout(resolve, ms);
+                timer.unref?.();
+            }),
+        ]);
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
+    return finished;
+}
 /**
  * ACE 0.1 runtime: receive → validate → resolve activation → dispatch (RFC §9,
  * design doc §20).
@@ -116,7 +145,13 @@ export class AceRuntime {
             this.started = false;
             for (const transport of started) {
                 try {
-                    await transport.stop();
+                    // Bounded on purpose: `stop()` waits for whatever the host still has in flight, and a
+                    // stalled host is exactly what this path may be staring at — waiting forever would turn
+                    // a failed start into a hung one. A stop that outlives the bound keeps unwinding in the
+                    // background; the caller still gets its error.
+                    if (!(await stopWithin(transport, FAILED_START_STOP_TIMEOUT_MS))) {
+                        this.logger.warn?.(`[ACE] a transport from the failed start is still unwinding after ${FAILED_START_STOP_TIMEOUT_MS}ms`);
+                    }
                 }
                 catch (stopError) {
                     this.logger.warn?.(`[ACE] stopping a half-started transport failed: ${stopError instanceof Error ? stopError.message : String(stopError)}`);

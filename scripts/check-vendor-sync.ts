@@ -25,7 +25,12 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RUNTIME = join(ROOT, "packages/ace-runtime");
-const VENDORS = ["packages/ace-omp/vendor/ace-runtime"];
+const VENDORS = [
+	// omp's extension loader refuses a bare `ace-runtime` specifier, so that plugin ships the build.
+	"packages/ace-omp/vendor/ace-runtime",
+	// The DSH bundle inlines the same build; without this entry only omp's copy was guarded.
+	"packages/ace-dsh/vendor/ace-runtime",
+];
 const IGNORED = /(^|\/)(node_modules|\.git)(\/|$)|\.tsbuildinfo$/;
 const WRITE = process.argv.includes("--write");
 

@@ -121,7 +121,9 @@ export const TOOL_TEXT = {
 			"first), so write plain text that stands on its own: the body is opaque to ACE. Every event also carries " +
 			"a generated `sender description:` line — `agent`, `session`, `cwd`, `host`, `ip`, `platform`, `pid` — " +
 			"which the sender cannot turn off and every subscriber sees, and it stays on the broker with the body, " +
-			"so never put a token or other secret in a body.\n\n" +
+			"so never put a token or other secret in a body. The body is capped at 64 Ki characters " +
+			"(UTF-16 code units): for anything larger, store it as a file with `ace_store_file` and publish " +
+			"the token instead.\n\n" +
 			"The result is a field list, not prose. Its header is `ace 0.1 publish id=… sender=… activation=… " +
 			"targets=N stored=D failed=F duplicates=K` (a call that stored nothing has no event, so its header reads " +
 			"`event=none` in place of `id=`/`sender=`). Field meanings, one per line: `id` the generated event id, " +

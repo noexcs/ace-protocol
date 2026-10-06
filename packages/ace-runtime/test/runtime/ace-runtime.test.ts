@@ -418,4 +418,37 @@ describe("AceRuntime start failure leaves nothing running (audit C)", () => {
 		// The transport that connected is stopped; the one that failed never gets a stop it does not need.
 		expect(events).toEqual(["first:start", "second:start", "first:stop"]);
 	});
+
+	it("still rejects when a started transport will not finish stopping", async () => {
+		const events: string[] = [];
+		const first: Transport = {
+			async start() {
+				events.push("first:start");
+			},
+			// A stalled host holds the drain open forever; the cleanup must not wait for it.
+			stop() {
+				events.push("first:stop");
+				return new Promise<void>(() => {});
+			},
+		};
+		const second: Transport = {
+			async start() {
+				throw new Error("redis://127.0.0.1:1 is unreachable");
+			},
+			async stop() {},
+		};
+		const a: EndpointConfig = { name: "a", transport: "memory", config: {}, options: {} };
+		const b: EndpointConfig = { name: "b", transport: "memory", config: {}, options: {} };
+		const logger = collectLogs();
+		const runtime = new AceRuntime({
+			engine: new FakeAgentEngine(),
+			subscribe: [a, b],
+			transports: { a: first, b: second },
+			logger,
+		});
+
+		await expect(runtime.start()).rejects.toThrow(/unreachable/);
+		expect(events).toEqual(["first:start", "first:stop"]);
+		expect(logger.lines.some((line) => line.includes("still unwinding"))).toBe(true);
+	}, 10_000);
 });

@@ -281,13 +281,15 @@ export class RedisStreamsTransport {
                 if (!outage) {
                     outage = true;
                     this.report(error);
+                    // Once per outage: a stream that keeps being swept away would otherwise notify the
+                    // host on every rebuild.
+                    if (recovered)
+                        this.reportNotice(`redis stream ${this.config.stream}: consumer group recreated`);
                 }
                 await this.delay(delay);
                 // Recovery retries at the base delay and never escalates to the cap, so a group swept
                 // again mid-rebuild is retried promptly without turning into a hot loop.
                 delay = recovered ? this.config.retryDelayMs : Math.min(delay * 2, this.config.maxRetryDelayMs);
-                if (recovered)
-                    this.reportNotice(`redis stream ${this.config.stream}: consumer group recreated`);
             }
         }
         // The loop ended because we are stopping: an entry already read is delivered and acked (or
