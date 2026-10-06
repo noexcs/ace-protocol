@@ -158,16 +158,6 @@ dsh plugin --profile <profile> add \
 install there through the app's plugin manager, or by hand: add the URL to the profile's `package.json`
 `dependencies` and the package name to `dsh.profile.bundles`, then restart.
 
-### From a checkout
-
-```bash
-cd packages/ace-dsh
-npm run sync:vendor      # copy the built core into vendor/ (after any core change)
-npm run build            # → lib/ + dist-package/
-
-dsh plugin --profile <profile> add file:$PWD/dist-package
-```
-
 A profile composes `dsh` bundles; the package's `dsh.bundle.patch` inserts one entry:
 
 ```yaml

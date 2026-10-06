@@ -29,34 +29,25 @@ omp plugin list                        # → ace-omp, enabled, manifest ./extens
 
 The release tarball carries the vendored core (`vendor/ace-runtime/dist`), so nothing is built here.
 
-### From a checkout
-
-```bash
-cd packages/ace-omp
-bun install                            # installs the vendored core as well
-omp plugin link "$PWD"                 # registers it under ~/.omp/plugins
-```
-
-An updated plugin takes effect in a **new session**: the extension is loaded at session start, so a session
-that is already running keeps the code it was started with — install or update, then restart.
+An updated plugin takes effect in a **new session**: the extension is loaded at session start, so a session that
+is already running keeps the code it was started with — install or update, then restart.
 
 **Link once — do not also pass `-e/--extension` for the same file.** Both routes load this same module, so two
 instances register the same `/ace` command and the same five tools in one session. The host keeps the *last*
-definition registered under a name, so the second copy — the one that refuses to start a second runtime — used
-to end up owning `/ace`: measured against omp 18.5.0, `/ace agents` answered
+definition registered under a name, so the second copy — the one that refuses to start a second runtime — used to
+end up owning `/ace`: measured against omp 18.5.0, `/ace agents` answered
 `not running: another ACE runtime already runs in this process` even though ACE was running. The extension now
-keeps that from happening: only one copy in a process runs ACE, and the other copy's `/ace` delegates to it
-(the delegate checks both copies are looking at the same session first — same working directory, same session id —
-and otherwise answers for itself), while the duplicate still warns about itself at session start. The flag is
-still a pointless second load — link once and restart.
+keeps that from happening: only one copy in a process runs ACE, and the other copy's `/ace` delegates to it (the
+delegate checks both copies are looking at the same session first — same working directory, same session id — and
+otherwise answers for itself), while the duplicate still warns about itself at session start. The flag is still a
+pointless second load — install once and restart.
 
 **Why the core is vendored.** The host's extension loader resolves relative imports and the plugin's own
-`node_modules`, but *not* a bare `ace-runtime` specifier that points at a linked sibling package: the
-extension then fails to load with `Cannot find package 'ace-runtime'` (probed against omp 18.5.0 — the
-same probe shows `redis` and `typebox` resolving fine, so it is the sibling package, not bare imports in
-general). This package therefore carries the core's build in `vendor/ace-runtime` and the extension
-imports it by relative path — `../vendor/ace-runtime/dist/index.js`. After changing the core, refresh the
-copy: `node scripts/check-vendor-sync.ts --write` at the repository root.
+`node_modules`, but *not* a bare `ace-runtime` specifier that points at a linked sibling package: the extension
+then fails to load with `Cannot find package 'ace-runtime'` (probed against omp 18.5.0 — the same probe shows
+`redis` and `typebox` resolving fine, so it is the sibling package, not bare imports in general). The release
+tarball therefore carries the core's build in `vendor/ace-runtime`, and the extension imports it by relative path
+— `../vendor/ace-runtime/dist/index.js`.
 
 Upstream **Pi** (not oh-my-pi) has no plugin registry and resolves relative to the package anyway, so
 `pi --extension /path/to/ace-omp/extensions/ace.ts` is enough there — and, exactly as above, that flag is the
@@ -69,7 +60,7 @@ install still pointing at it loads **nothing at all** — no plugin, and no erro
 `omp plugin list --json` shows it as `"manifest": null`. Move the install over:
 
 ```bash
-omp plugin link /path/to/ace-protocol/packages/ace-omp
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
 omp plugin uninstall ace-runtime
 ```
 
