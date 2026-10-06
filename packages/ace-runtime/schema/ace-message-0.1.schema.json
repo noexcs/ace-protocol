@@ -16,11 +16,17 @@
 		},
 		"id": {
 			"type": "string",
-			"minLength": 1
+			"minLength": 1,
+			"maxLength": 128,
+			"pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+			"description": "Event identity, unique per (subscription, sender): 1..128 characters, no control characters. It is rendered verbatim into the injected block and joined into the dedup key, so a NUL would let two events collide."
 		},
 		"sender": {
 			"type": "string",
-			"minLength": 1
+			"minLength": 1,
+			"maxLength": 512,
+			"pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+			"description": "The channel a reply goes to: 1..512 characters, no control characters. Rendered verbatim into the injected block header, so a newline would forge a header line; never an authorization credential."
 		},
 		"sessionId": {
 			"type": "string",
@@ -44,7 +50,9 @@
 			]
 		},
 		"body": {
-			"type": "string"
+			"type": "string",
+			"maxLength": 65536,
+			"description": "The event body, injected into the agent context whole: at most 64 KiB (the validator counts JS string length). Large payloads belong in a stored file (ace_store_file), with the token sent as the event."
 		}
 	},
 	"additionalProperties": true

@@ -408,7 +408,8 @@ export function aceCompletions(
  * loads the extensions, so a later `registerCommand` does not reach `/ace` — with the plugin discovered *and*
  * an explicit `--extension` of the same file, `/ace` stays bound to the copy that lost the runtime claim and
  * answers "not running". The owner therefore publishes this handle, and the other copy delegates to it, after
- * checking that both are looking at the same session (`cwd` and session id), which is the only case in which
+ * checking that both are looking at the same working directory (`cwd`; not the session id — the two copies
+ * report different ids for one session, measured to stop the delegation firing at all), which is the only case in which
  * delegating cannot mix two sessions' identities.
  */
 const LIVE_ACE_MARKER = Symbol.for("ace-runtime.extension.live");
