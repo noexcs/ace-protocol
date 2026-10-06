@@ -1,19 +1,22 @@
 /**
- * The `/ace` views: the interactive channel manager and the read-only report panels.
+ * The `/ace` views: the interactive channel manager, and the read-only reports.
  *
- * Both are drawn in the visual grammar of the built-in `/mcp` manager — a full-width rule, an accent bold
- * title, a muted context line, an accent name column, a coloured state tag and dim notes — but the furniture
- * is local. `/mcp` builds its block out of modules an extension cannot reach (`TranscriptBlock`,
- * `DynamicBorder`, `showCommandMessage`); an extension has the public `ctx.ui.custom` surface plus
- * `@earendil-works/pi-tui`, so the frame, the rules and the key hints are drawn here.
+ * The **reports** (`list`, `agents`, `stats`, `pending`, `help`) are built here as data and rendered as text
+ * in the `/mcp` manager's grammar — an accent bold title, a muted context line, a group header, one row per
+ * entry (accent name, a coloured state tag, dim notes) — and the caller sends that text into the session
+ * through `ctx.ui.notify`, the only extension API that lands in the session record. `/mcp` itself writes into
+ * the transcript through a host-internal `presentCommandOutput` (`TranscriptBlock` + `DynamicBorder`), which
+ * an extension cannot reach; the frame, the rules and the key hints of that internal block are therefore not
+ * reproduced, because a report in the record has nothing to close.
  *
- * The panels are read-only (there is nothing to act on, so nothing pretends to be selectable) and the manager
- * keeps its `SelectList` because a channel has a detail view to open.
+ * The **manager** (bare `/ace`) is the one modal view, because it is inherently interactive: `SelectList`
+ * rows, enter for a channel's detail, esc to go back. It is drawn from the public `ctx.ui.custom` surface
+ * plus `@earendil-works/pi-tui`, since the host's own furniture is internal.
  *
- * Modes other than `tui` never reach this file: measured on omp 18.5.0 in `--mode rpc --no-ui`,
+ * Modes other than `tui` never reach the report renderers: measured on omp 18.5.0 in `--mode rpc --no-ui`,
  * `ctx.mode === "rpc"` and `ctx.hasUI === false`, `ctx.ui.theme.fg` returns real ANSI, and
- * `ctx.ui.custom(factory)` resolves `undefined` without ever calling the factory — a panel opened there would
- * silently show nothing, so every caller gates on `ctx.mode === "tui"` and prints the text report otherwise.
+ * `ctx.ui.custom(factory)` resolves `undefined` without ever calling the factory. Every caller therefore
+ * gates on `ctx.mode === "tui"` and prints the text report it has always printed otherwise, byte for byte.
  */
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -87,14 +90,12 @@ export type AcePanelLine =
 	| { kind: "row"; row: AcePanelRow }
 	| { kind: "note"; text: string };
 
-/** A read-only panel: what the content builders return and {@link showAcePanel} draws. */
+/** A read-only report: what the content builders return and {@link renderAcePanel} turns into session text. */
 export interface AcePanel {
 	title: string;
 	/** The muted line under the title: who this session is, or where the listing came from. */
 	context?: string;
 	lines: readonly AcePanelLine[];
-	/** The dim key hint under the panel; `esc close` when a caller has nothing more specific to say. */
-	footer?: string;
 }
 
 /**
@@ -598,26 +599,20 @@ export async function showAceManager(
 }
 
 /**
- * Show a read-only ACE panel until the user closes it, and report whether it was shown.
+ * A panel as the text a session's record can hold: the title, the context line, then the rows — and no key
+ * hint, because there is nothing to close.
  *
- * `false` means "this host cannot draw one, print the report instead": either the mode is not `tui` (measured
- * above) or the host has no `ctx.ui.custom`. A failure throws, so the caller decides; the `false` path never
- * swallows a report.
+ * This is the shape a read-only report takes in a session (see `showPanel` in `extensions/ace.ts` for the
+ * measurement that put it there): `/mcp` renders its reports into the transcript through a host-internal
+ * `presentCommandOutput`, which extensions cannot reach, so ACE's read-only reports are the same grammar as
+ * `notify` text — which is what the session record shows and what the host styles dim around the coloured
+ * spans this renderer emits.
  */
-export async function showAcePanel(ctx: ExtensionCommandContext, panel: AcePanel): Promise<boolean> {
-	if (typeof ctx.ui.custom !== "function") return false;
-	await ctx.ui.custom((tui, theme, keybindings, done) => {
-		const view = new AceManagerComponent(tui, theme);
-		const body: Component[] = [];
-		if (panel.context !== undefined) {
-			body.push(new Text(theme.fg("muted", panel.context), 1, 0));
-			body.push(new Spacer(1));
-		}
-		body.push(new Text(renderAcePanelLines(theme, panel.lines).join("\n"), 1, 0));
-		view.setContent(view.frame(panel.title, body, panel.footer ?? "esc close"), (data) => {
-			if ((keybindings as AceKeybindings).matches(data, "tui.select.cancel")) done(undefined);
-		});
-		return view;
-	});
-	return true;
+export function renderAcePanel(theme: AceTheme, panel: AcePanel): string {
+	return [
+		theme.fg("accent", theme.bold(panel.title)),
+		...(panel.context === undefined ? [] : [theme.fg("muted", panel.context)]),
+		"",
+		...renderAcePanelLines(theme, panel.lines),
+	].join("\n");
 }

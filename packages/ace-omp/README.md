@@ -293,17 +293,27 @@ exactly like any `sender`).
 | `/ace stats` | `dead letters: M`, `transport: ok\|down`, per-channel counters and the open spool windows |
 | `/ace help` (or `/ace ?`) | the command list |
 
-In a TUI each of those opens a **panel** in the shape the built-in `/mcp` manager draws: a full-width rule, the
-title, a muted context line, one row per entry — an accent name, a coloured state tag (`● connected`, `● live`,
-`◌ pending`, `◌ expires soon`, `◌ inactive`) and dim notes — then a dim key hint and the closing rule. `esc`
-closes it. The panels are read-only: ACE keeps no channel policy, so nothing pretends to be selectable. The bare
-`/ace` is the exception, because a channel has a detail view worth selecting.
+Each of those puts its report **into the session's record**, in the `/mcp` manager's shape: an accent title
+line, a muted context line, a group header, then one row per entry — an accent name, a coloured state tag
+(`● connected`, `● live`, `◌ pending`, `◌ expires soon`, `◌ inactive`) and dim notes. It is an ordinary session
+block: nothing is held, the next prompt or command runs past it, and it stays where it was written. Only bare
+`/ace` opens a modal view (the manager), and only because that one is interactive.
+
+The report goes out through `ctx.ui.notify`, the one extension API that lands in a session. `/mcp` writes into
+the transcript through a host-internal `presentCommandOutput`, which extensions cannot reach, so the frame, the
+rules and the key hint of that internal block are not reproduced — a report in the record has nothing to close.
+Measured on omp 18.5.0 with a pty probe: one `notify` keeps its newlines, keeps the colours `theme.fg` put in
+it (the host wraps the message in its own dim style, and the coloured spans override it), a second command
+executes while the block is on screen, and a turn leaves the block in the record. One caveat comes from the same
+host code path (`UiHelpers.showStatus`): it rewrites the previous status block when that was the immediately
+preceding chat entry — its anti-spam rule for back-to-back status lines — so two `/ace` reports with no chat
+activity in between show the newer one, while any turn in between pins each report as its own block.
 
 Every other mode — `print`, `json`, `rpc` — prints the text report instead, exactly the bytes it always printed.
-That is the `ctx.mode === "tui"` gate, and it is load-bearing: measured on omp 18.5.0 in `--mode rpc --no-ui`,
-`ctx.ui.custom(factory)` resolves `undefined` **without ever calling the factory**, so a panel opened there would
-have swallowed the report in silence. The same mode hands out a working `ctx.ui.theme.fg` (real ANSI), so what is
-missing is the component surface, not the theme.
+That is the `ctx.mode === "tui"` gate, and it stays necessary: measured on omp 18.5.0 in `--mode rpc --no-ui`,
+`ctx.ui.custom(factory)` resolves `undefined` **without ever calling the factory**, so a view opened there would
+have swallowed the report in silence (the same mode still hands out a working `ctx.ui.theme.fg`, so what is
+missing is the component surface, not the theme).
 
 Completions follow `/mcp`'s shape: the action words come with a hint while the argument is empty, `activate`
 suggests the retained events themselves, and a subcommand that takes no argument answers with a hint instead of

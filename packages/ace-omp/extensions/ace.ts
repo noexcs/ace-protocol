@@ -147,8 +147,8 @@ import {
 	helpPanel,
 	type PendingRow,
 	pendingPanel,
+	renderAcePanel,
 	showAceManager,
-	showAcePanel,
 	statsPanel,
 } from "./ace-manager.ts";
 
@@ -1244,11 +1244,11 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * `/ace agents [filter]`: the same directory `ace_agents` reads, in a TUI as a panel and everywhere else
-	 * as the lines this host has always printed.
+	 * `/ace agents [filter]`: the same directory `ace_agents` reads, in a TUI as the panel grammar in the
+	 * session's record and everywhere else as the lines this host has always printed.
 	 *
-	 * The rows are built once and rendered twice, so the panel and the report cannot disagree about who is
-	 * live or how long a peer's lease has left.
+	 * The rows are built once and rendered twice, so the panel text and the report cannot disagree about who
+	 * is live or how long a peer's lease has left.
 	 */
 	async function agentsCommand(filter: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
 		const { live, servers, many } = await discoverLiveSessions(filter);
@@ -1264,11 +1264,11 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		const mine = activeServers.map((active) =>
 			many ? `${active.server.name}:${shortSender(active.sender)}` : shortSender(active.sender),
 		);
-		if (await showPanel(ctx, () => agentsPanel({ rows, servers, mine, filter }))) return;
+		if (showPanel(ctx, () => agentsPanel({ rows, servers, mine, filter }))) return;
 		report(ctx, agentsReport({ rows, servers, mine, filter }));
 	}
 
-	/** The printed `/ace agents` report, from the same rows the panel draws. */
+	/** The printed `/ace agents` report, from the same rows the panel text carries. */
 	function agentsReport(input: AgentsPanelInput): string {
 		const where = `(servers: ${input.servers.join(", ")})`;
 		// Two empty directories, two different pieces of news: a filter that matched nothing blames the filter,
@@ -1289,13 +1289,13 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * `/ace pending`: the retained `manual` events, as a panel in a TUI and as lines everywhere else.
+	 * `/ace pending`: the retained `manual` events, as the panel text in a TUI and as lines everywhere else.
 	 *
-	 * The rows are built once, so the panel and the report cannot disagree about what is waiting.
+	 * The rows are built once, so the panel text and the report cannot disagree about what is waiting.
 	 */
-	async function pendingCommand(ctx: ExtensionCommandContext, events: readonly PendingManualEvent[]): Promise<void> {
+	function pendingCommand(ctx: ExtensionCommandContext, events: readonly PendingManualEvent[]): void {
 		const rows = pendingRows(events);
-		if (await showPanel(ctx, () => pendingPanel(rows))) return;
+		if (showPanel(ctx, () => pendingPanel(rows))) return;
 		report(ctx, pendingReport(rows));
 	}
 
@@ -1403,19 +1403,19 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * `/ace stats`: the counters, the spool windows, and whether the transport is still up — as a panel in a
-	 * TUI and as lines everywhere else.
+	 * `/ace stats`: the counters, the spool windows, and whether the transport is still up — as the panel text
+	 * in a TUI and as lines everywhere else.
 	 *
 	 * The counters are read once, through the runtime's own `snapshot()` and `render()`, so the panel's rows
 	 * and the printed lines report the same moment.
 	 */
-	async function statsCommand(ctx: ExtensionCommandContext): Promise<void> {
+	function statsCommand(ctx: ExtensionCommandContext): void {
 		// The two states a reader asks about: a configured server that never came up, and a broker that died
 		// after it did. Both are already reported once (a warning, an error); this is where they are summarised.
 		const transport = transportErrorReported || unavailableServers.length > 0 ? "down" : "ok";
 		const deadLettersSummary: { count: number; directory?: string } = deadLetters ?? { count: 0 };
 		if (
-			await showPanel(ctx, () =>
+			showPanel(ctx, () =>
 				statsPanel({
 					counters: runtime?.metrics.snapshot() ?? {},
 					windows: runtime?.openSpoolWindows() ?? [],
@@ -1458,23 +1458,25 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * Show a report as a panel where the host can draw one, and say whether it was shown.
+	 * Put a read-only report into the session's record, and say whether it went there.
 	 *
-	 * `ctx.mode === "tui"` is the gate, and it is the only one the host documents ("Use `tui` to guard
-	 * terminal-only UI such as custom components"); everywhere else this returns `false` immediately, so the
-	 * caller prints the report it has always printed. That matters in RPC mode, where the surface exists but
-	 * silently shows nothing: measured on omp 18.5.0 in `--mode rpc --no-ui`, `ctx.mode` is `"rpc"`,
-	 * `ctx.hasUI` is `false`, `ctx.ui.theme.fg` returns real ANSI, and `ctx.ui.custom(factory)` resolves
-	 * `undefined` without ever calling the factory — a panel there would have swallowed the report.
+	 * `false` means "print the report instead", which is every mode that is not the TUI: `report()` would send
+	 * the *print* text there, and the printed report is what those modes read.
+	 *
+	 * Why `notify` and not a view: a report is something the user reads while continuing to work, and a modal
+	 * view holds the session until esc and takes its content with it when closed. Measured on omp 18.5.0 in a
+	 * real TUI (pty, raw ANSI): one `ctx.ui.notify` keeps its newlines, keeps the colours `theme.fg` put in it
+	 * (the host wraps the message in its dim style, and the coloured spans override it), a second command
+	 * executes while the block is on screen, and a turn after it leaves the block in the record. The same host
+	 * source (`UiHelpers.showStatus`) shows the one caveat: it appends `[Spacer, Text]` to the chat container
+	 * and *rewrites* that block when it is the immediately preceding chat entry — its anti-spam rule for
+	 * back-to-back status lines — so two `/ace` reports with no chat activity in between show the newer one,
+	 * while any turn pins each report as its own block.
 	 */
-	async function showPanel(ctx: ExtensionCommandContext, panel: () => AcePanel): Promise<boolean> {
+	function showPanel(ctx: ExtensionCommandContext, panel: () => AcePanel): boolean {
 		if (ctx.mode !== "tui") return false;
-		try {
-			return await showAcePanel(ctx, panel());
-		} catch (error) {
-			console.error(`[ace] panel view failed, printing the report instead: ${describeError(error)}`);
-			return false;
-		}
+		report(ctx, renderAcePanel(ctx.ui.theme, panel()));
+		return true;
 	}
 
 	/**
@@ -1526,11 +1528,12 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * `/ace list`, and bare `/ace` where the host has a TUI: the manager view, the channel panel, or the
-	 * printed report.
+	 * `/ace list`, and bare `/ace` where the host has a TUI: the manager view, the channel report in the
+	 * session, or the printed report.
 	 *
-	 * One function for all three so the manager's rows, its detail view, the panel and the printed report can
-	 * never disagree about what this session is wired to: they read one listing and one {@link ChannelReport}.
+	 * One function for all three so the manager's rows, its detail view, the report in the session and the
+	 * printed report can never disagree about what this session is wired to: they read one listing and one
+	 * {@link ChannelReport}.
 	 */
 	async function listCommand(
 		args: string,
@@ -1571,8 +1574,9 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		const header = `${identity} (agent ${adapter.isRunning() ? "running" : "idle"})${
 			resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
 		}`;
-		// `/ace` with no arguments opens the manager where the host has a TUI. `/ace list` opens the read-only
-		// panel there, and every other mode prints the report — a host that cannot draw a panel never loses it.
+		// `/ace` with no arguments opens the manager where the host has a TUI. `/ace list` puts the channel
+		// report into the session there, and every other mode prints it — a host that takes no panel text never
+		// loses the report.
 		if (args.trim().length === 0 && ctx.mode === "tui") {
 			try {
 				await showAceManager(
@@ -1636,7 +1640,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
 			},
 		};
-		if (await showPanel(ctx, () => channelPanel(channelReport))) return;
+		if (showPanel(ctx, () => channelPanel(channelReport))) return;
 		report(ctx, formatChannelReport(channelReport));
 	}
 
@@ -1678,7 +1682,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 
 			// `help` answers with or without a runtime: it describes the command, not this session's wiring.
 			if (subcommand === "help" || subcommand === "?") {
-				if (await showPanel(ctx, () => helpPanel(ACE_COMMANDS))) return;
+				if (showPanel(ctx, () => helpPanel(ACE_COMMANDS))) return;
 				report(ctx, aceHelpText());
 				return;
 			}
@@ -1698,11 +1702,11 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 					return;
 				}
 				if (subcommand === "pending") {
-					await pendingCommand(ctx, runtime.pendingEvents);
+					pendingCommand(ctx, runtime.pendingEvents);
 					return;
 				}
 				if (subcommand === "stats") {
-					await statsCommand(ctx);
+					statsCommand(ctx);
 					return;
 				}
 				if (subcommand === "list") {

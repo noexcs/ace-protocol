@@ -12,6 +12,7 @@ import {
 	channelPanel,
 	helpPanel,
 	pendingPanel,
+	renderAcePanel,
 	renderAcePanelLines,
 	statsPanel,
 } from "../../extensions/ace-manager.ts";
@@ -333,6 +334,25 @@ describe("panels", () => {
 			"  /ace list channels this session reads; publish to any channel name",
 			"  /ace stats per-channel counters, spool windows, dead letters",
 		]);
+	});
+
+	it("renders the report a session receives: title, context, rows — and nothing to close", () => {
+		const { theme } = testTheme();
+		const text = renderAcePanel(
+			theme,
+			pendingPanel([
+				{ sender: "ci", idLabel: "evt_1", ageSeconds: 60, subscription: "inbox", expiring: false, body: "x" },
+			]),
+		);
+
+		expect(text.split("\n")).toEqual([
+			"ACE pending manual events (1)",
+			"activate with: /ace activate <sender> <id>",
+			"",
+			'  ci ◌ pending id evt_1 · 1m ago · manual: inbox · "x"',
+		]);
+		// A report in the record has nothing to close, so no key hint is part of it.
+		expect(text).not.toContain("esc");
 	});
 });
 
