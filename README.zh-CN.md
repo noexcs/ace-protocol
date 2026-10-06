@@ -21,14 +21,13 @@
 | [`packages/ace-runtime/`](packages/ace-runtime) | 运行时：协议、transport、agent engine、Pi 扩展 |
 | [`packages/ace-omp/`](packages/ace-omp) | oh-my-pi / Pi 宿主插件（参考宿主） |
 | [`packages/ace-dsh/`](packages/ace-dsh) | DeepSeek Harness 宿主插件：同一套协议跑在第二个宿主上，核心一行未改 |
-| [`docs/development.md`](docs/development.md) | 构建、测试与验证这个仓库 —— 以及当前结果说明了什么 |
 | [`oh-my-pi/`](oh-my-pi) | oh-my-pi 上游检出（已被 gitignore），用于对着源码做集成测试 |
 
 ## 现状
 
 **oh-my-pi / Pi 是经过验证的参考宿主** —— 插件是 [ace-omp](packages/ace-omp/README.md)；宿主边界见[运行时 README](packages/ace-runtime/README.md)。现在有了第二个宿主 [`ace-dsh`](packages/ace-dsh/README.md)，它把同一套协议跑进 **DeepSeek Harness**，核心一行未改：每个 agent 一个运行时、channel 随 agent 自己的生命周期注册与撤销、工具注册在 agent 作用域而不是全局。DSH 只读 live channel，所以 `.ace.json` 的 `subscribe`（持久化 channel）在那边只被报告、不被读取。
 
-两个插件都对着真实 broker 跑过，而且两个宿主彼此通过话：双向事件、各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。测试数量、实盘场景结果（包括本机失败的那几个及其原因）与历史沿革都在 [docs/development.md](docs/development.md)（英文）。
+两个插件都对着真实 broker 跑过，而且两个宿主彼此通过话：双向事件、各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。
 
 ## 快速开始
 
@@ -123,13 +122,3 @@ dsh plugin --profile <profile> add \
 `open_session` —— 一个宿主能力：打开一个新的 root 会话，可以带第一句话和标题 —— 有自己的仓库
 [noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session)。它不依赖 ACE 的任何部分：
 它是一个普通的 DSH 宿主插件，禁用 ACE 也照样工作。
-
-## 开发
-
-```bash
-cd packages/ace-runtime && npm test && npm run check   # host-neutral 核心
-cd ../ace-omp && npm test && npm run check             # Pi / oh-my-pi 宿主插件
-cd ../ace-dsh && npm test && npm run check             # DeepSeek Harness 宿主插件
-```
-
-完整命令、实盘验证、当前结果与历史沿革：[docs/development.md](docs/development.md)（英文）。

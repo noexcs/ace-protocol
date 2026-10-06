@@ -27,7 +27,6 @@ Both are specified in [the contracts](docs/ace-runtime-contracts.md).
 | [`packages/ace-runtime/`](packages/ace-runtime) | The runtime: protocol, transports, agent engines, Pi extension |
 | [`packages/ace-omp/`](packages/ace-omp) | The oh-my-pi / Pi host plugin — the verified reference host, and the five tools plus `/ace` command surface |
 | [`packages/ace-dsh/`](packages/ace-dsh) | The DeepSeek Harness host plugin: the same protocol on a second host, which needed no change to the core |
-| [`docs/development.md`](docs/development.md) | Building, testing and verifying this repository — and what the current results show |
 | [`oh-my-pi/`](oh-my-pi) | Upstream oh-my-pi checkout (gitignored) used for integration testing against its sources |
 
 ## Status
@@ -41,8 +40,7 @@ registered on the agent's scope rather than globally. DSH reads live channels on
 
 Both plugins have been exercised against a real broker, and the two hosts have talked to each other: events in
 both directions, each naming the other's channel, and a file stored on one host fetched and hash-verified on the
-other. Test counts, the live-scenario results — including the few that fail on this machine and why — and the
-history are in [docs/development.md](docs/development.md).
+other.
 
 ## Quick start
 
@@ -142,14 +140,3 @@ registered, and honest `off` / `!` / `?` states otherwise — reading the host h
 `open_session` — a host capability that opens a new root session, with an optional first message and title —
 has its own repository, [noexcs/dsh-open-session](https://github.com/noexcs/dsh-open-session). It depends on
 nothing in ACE: it is a plain DSH host plugin, and it keeps working with ACE disabled.
-
-## Development
-
-```bash
-cd packages/ace-runtime && npm test && npm run check   # the host-neutral core
-cd ../ace-omp && npm test && npm run check             # the Pi / oh-my-pi host plugin
-cd ../ace-dsh && npm test && npm run check             # the DeepSeek Harness host plugin
-```
-
-Full command list, the live verifications, the current results and the history:
-[docs/development.md](docs/development.md).
