@@ -1,5 +1,7 @@
 # ACE — Agent Context Event Protocol
 
+> English | [中文](README.zh-CN.md)
+
 External events — CI results, alerts, other agents — as an *active* input to an agent's context,
 instead of something the agent has to poll for.
 
@@ -17,6 +19,7 @@ verify the design end to end.
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | The engineering guide for the first implementation |
 | [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, Redis key layout, tool parameters, delivery semantics, flows, invariants |
 | [`packages/ace-runtime/`](packages/ace-runtime) | The runtime: protocol, transports, agent engines, Pi extension |
+| [`packages/ace-omp/`](packages/ace-omp) | The oh-my-pi / Pi host plugin — the verified reference host, and the five tools plus `/ace` command surface |
 | [`packages/ace-dsh/`](packages/ace-dsh) | The DeepSeek Harness host plugin: the same protocol on a second host, which needed no change to the core |
 | [`oh-my-pi/`](oh-my-pi) | Upstream oh-my-pi checkout (gitignored) used for integration testing against its sources |
 
