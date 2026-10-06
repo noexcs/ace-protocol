@@ -114,13 +114,13 @@ and a session on DeepSeek Harness can talk to each other with no translation.
 ### Pi / oh-my-pi — [`ace-omp`](packages/ace-omp/README.md)
 
 ```bash
-cd packages/ace-runtime && npm install && npm run build   # the core the plugin vendors
-cd ../ace-omp && bun install
-node ../../scripts/check-vendor-sync.ts --write          # refresh vendor/ace-runtime from the core build
-
-omp plugin link "$PWD"        # registers it under ~/.omp/plugins
-omp plugin list               # → ace-omp, enabled, manifest ./extensions/ace.ts
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
+
+The tarball carries the vendored core, so nothing is built on the installing machine. From a checkout instead:
+`cd packages/ace-runtime && npm install && npm run build`, then in `packages/ace-omp`
+`node ../../scripts/check-vendor-sync.ts --write && omp plugin link "$PWD"`.
 
 - The extension is loaded **at session start**, so installing or updating it takes effect in a **new session**.
 - **Link once.** Do not also pass `-e/--extension` for the same file: two copies of one module register the
@@ -142,17 +142,20 @@ reads them alongside its own inbox. Activation is `immediate`, `next_turn` or `m
 ### DeepSeek Harness — [`ace-dsh`](packages/ace-dsh/README.md)
 
 ```bash
-cd packages/ace-dsh
-npm run sync:vendor           # copy the current core build into vendor/ (needed after any core change)
-npm run build                 # → lib/ + dist-package/
-
-dsh plugin --profile desktop add file:$PWD/dist-package
-# restart the app so the profile recomposes
+# any profile the CLI manages:
+dsh plugin --profile <profile> add \
+  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+# then restart the host so the profile recomposes
 ```
 
-If the plugin manager refuses the install (a profile linked from a different pnpm store version, for one), the
-same result comes from copying `dist-package/` into the profile's `node_modules/` and adding the package name
-to `dsh.profile.bundles`: the package declares `dsh.bundle.patch`, so one entry is all a profile needs.
+`lib/index.js` is bundled — the vendored core is inlined — so the tarball is self-contained. The package
+declares `dsh.bundle.patch`, so one entry is all a profile needs.
+
+**The desktop application's own profile is managed by the app** (`dsh plugin --profile desktop` is refused), so
+install there through the app's plugin manager, or by hand: add the tarball URL to
+`~/.dsh/profiles/<profile>/package.json` under `dependencies` and the package name to `dsh.profile.bundles`,
+then restart. From a checkout instead: `npm run sync:vendor && npm run build` in `packages/ace-dsh`, then
+`dsh plugin --profile <profile> add file:$PWD/dist-package`.
 
 **Use.** One runtime per agent. A session registers the channel named by its sender while it is live and
 withdraws it when it ends, so a session with no `.ace.json` anywhere is completely inert — no connection, no

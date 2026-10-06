@@ -19,14 +19,22 @@ the two were split.
 
 ## Install
 
-oh-my-pi discovers plugins through the `omp.extensions` field of an installed package, and this package
-is the plugin: link it once and the host finds the extension by itself.
+oh-my-pi discovers plugins through the `omp.extensions` field of an installed package, and this package is the
+plugin — installing it is all the host needs.
+
+```bash
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin list                        # → ace-omp, enabled, manifest ./extensions/ace.ts
+```
+
+The release tarball carries the vendored core (`vendor/ace-runtime/dist`), so nothing is built here.
+
+### From a checkout
 
 ```bash
 cd packages/ace-omp
 bun install                            # installs the vendored core as well
 omp plugin link "$PWD"                 # registers it under ~/.omp/plugins
-omp plugin list                        # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
 An updated plugin takes effect in a **new session**: the extension is loaded at session start, so a session
