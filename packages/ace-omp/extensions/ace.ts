@@ -69,6 +69,7 @@ import {
 	AgentRegistry,
 	buildPublishToolText,
 	CHANNELS_PARAMETERS,
+	type ChannelReport,
 	channelListingInput,
 	channelStreamKey,
 	channelsToolText,
@@ -134,7 +135,22 @@ import {
 	withTrustPolicy,
 	type XferTarget,
 } from "../vendor/ace-runtime/dist/index.js";
-import { channelForMenuValue, channelMenuItems, showAceManager } from "./ace-manager.ts";
+import {
+	type AcePanel,
+	type AgentRow,
+	type AgentsPanelInput,
+	agentsPanel,
+	type ChannelDetails,
+	channelForMenuValue,
+	channelMenuItems,
+	channelPanel,
+	helpPanel,
+	type PendingRow,
+	pendingPanel,
+	showAceManager,
+	showAcePanel,
+	statsPanel,
+} from "./ace-manager.ts";
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -1227,60 +1243,101 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		};
 	}
 
-	/** `/ace agents [filter]`: the same directory `ace_agents` reads, as lines a person reads. */
-	async function agentsReport(filter: string | undefined): Promise<string> {
+	/**
+	 * `/ace agents [filter]`: the same directory `ace_agents` reads, in a TUI as a panel and everywhere else
+	 * as the lines this host has always printed.
+	 *
+	 * The rows are built once and rendered twice, so the panel and the report cannot disagree about who is
+	 * live or how long a peer's lease has left.
+	 */
+	async function agentsCommand(filter: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
 		const { live, servers, many } = await discoverLiveSessions(filter);
-		const where = `(servers: ${servers.join(", ")})`;
-		// Two empty directories, two different pieces of news: a filter that matched nothing blames the filter,
-		// an empty directory says nobody is registered at all.
-		if (live.length === 0) {
-			return filter === undefined
-				? `[ace] no other live sessions ${where}`
-				: `[ace] no live session matches agent filter ${JSON.stringify(filter)} ${where}`;
-		}
-		const rows = live.map(({ server, entry }) => {
-			const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
+		const rows: AgentRow[] = live.map(({ server, entry }) => ({
 			// The name is the publish-ready target: with several servers it already carries the `<server>:`
 			// prefix, so the row needs no second copy of the server name.
-			const target = many ? `${server}:${entry.channel}` : entry.channel;
-			return `  ${target} — renews in ${formatDurationHuman(renewsIn)} — ${JSON.stringify(compactDescription(entry.description))}`;
-		});
+			target: many ? `${server}:${entry.channel}` : entry.channel,
+			renewsIn: Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000)),
+			description: JSON.stringify(compactDescription(entry.description)),
+		}));
 		// What this session is itself registered as: the directory lists these too, and the rows above exclude
 		// them, so the count and the rows stay reconcilable.
 		const mine = activeServers.map((active) =>
 			many ? `${active.server.name}:${shortSender(active.sender)}` : shortSender(active.sender),
 		);
+		if (await showPanel(ctx, () => agentsPanel({ rows, servers, mine, filter }))) return;
+		report(ctx, agentsReport({ rows, servers, mine, filter }));
+	}
+
+	/** The printed `/ace agents` report, from the same rows the panel draws. */
+	function agentsReport(input: AgentsPanelInput): string {
+		const where = `(servers: ${input.servers.join(", ")})`;
+		// Two empty directories, two different pieces of news: a filter that matched nothing blames the filter,
+		// an empty directory says nobody is registered at all.
+		if (input.rows.length === 0) {
+			return input.filter === undefined
+				? `[ace] no other live sessions ${where}`
+				: `[ace] no live session matches agent filter ${JSON.stringify(input.filter)} ${where}`;
+		}
+		const rows = input.rows.map(
+			(row) => `  ${row.target} — renews in ${formatDurationHuman(row.renewsIn)} — ${row.description}`,
+		);
 		return [
-			`[ace] live agents (${live.length}) — servers ${servers.join(", ")}`,
+			`[ace] live agents (${input.rows.length}) — servers ${input.servers.join(", ")}`,
 			...rows,
-			`  (this session: ${mine.join(", ")} — not listed)`,
+			`  (this session: ${input.mine.join(", ")} — not listed)`,
 		].join("\n");
 	}
 
-	/** `/ace pending`: the retained `manual` events, short enough to scan in one screen. */
-	function pendingReport(events: readonly PendingManualEvent[]): string {
-		if (events.length === 0) return "[ace] no pending manual events";
+	/**
+	 * `/ace pending`: the retained `manual` events, as a panel in a TUI and as lines everywhere else.
+	 *
+	 * The rows are built once, so the panel and the report cannot disagree about what is waiting.
+	 */
+	async function pendingCommand(ctx: ExtensionCommandContext, events: readonly PendingManualEvent[]): Promise<void> {
+		const rows = pendingRows(events);
+		if (await showPanel(ctx, () => pendingPanel(rows))) return;
+		report(ctx, pendingReport(rows));
+	}
+
+	/** The retained events as rows: the full id stays in `/ace activate`'s own listing, never as a value to type. */
+	function pendingRows(events: readonly PendingManualEvent[]): PendingRow[] {
 		const now = Date.now();
-		const rows = events.map((event) => {
+		return events.map((event) => {
 			const ageMs = Math.max(0, now - event.storedAt);
 			const short = formatSessionLabel(event.message.id);
-			const fields = [
-				event.message.sender,
-				...(event.message.sessionId === undefined
-					? []
-					: [`session ${formatSessionLabel(event.message.sessionId)}`]),
+			return {
+				sender: event.message.sender,
 				// A label, not a value to type: the full id is what `/ace activate` lists and takes, and the row
 				// only needs to tell two retained events apart while someone reads the list.
-				short === event.message.id ? short : `…${short}`,
-				`${formatDurationHuman(ageMs / 1000)} ago`,
-				event.subscriptionName,
-				...(ageMs >= PENDING_EXPIRES_SOON_MS ? ["(expires soon)"] : []),
-			];
-			return `  ${fields.join(" · ")} — ${JSON.stringify(truncate(event.message.body))}`;
+				idLabel: short === event.message.id ? short : `…${short}`,
+				...(event.message.sessionId === undefined
+					? {}
+					: { sessionLabel: formatSessionLabel(event.message.sessionId) }),
+				ageSeconds: ageMs / 1000,
+				subscription: event.subscriptionName,
+				expiring: ageMs >= PENDING_EXPIRES_SOON_MS,
+				body: truncate(event.message.body),
+			};
 		});
+	}
+
+	/** The printed `/ace pending` report, short enough to scan in one screen. */
+	function pendingReport(rows: readonly PendingRow[]): string {
+		if (rows.length === 0) return "[ace] no pending manual events";
+		const lines = rows.map(
+			(row) =>
+				`  ${[
+					row.sender,
+					...(row.sessionLabel === undefined ? [] : [`session ${row.sessionLabel}`]),
+					row.idLabel,
+					`${formatDurationHuman(row.ageSeconds)} ago`,
+					row.subscription,
+					...(row.expiring ? ["(expires soon)"] : []),
+				].join(" · ")} — ${JSON.stringify(row.body)}`,
+		);
 		return [
-			`[ace] pending manual events (${events.length}):`,
-			...rows,
+			`[ace] pending manual events (${rows.length}):`,
+			...lines,
 			"activate with: /ace activate <sender> <id>",
 		].join("\n");
 	}
@@ -1345,21 +1402,45 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 			: [`[ace] nothing pending for ${why} — pending events:`, ...pending.map(runnable)].join("\n");
 	}
 
-	/** `/ace stats`: the counters, the spool windows, and whether the transport is still up. */
-	function statsReport(): string {
+	/**
+	 * `/ace stats`: the counters, the spool windows, and whether the transport is still up — as a panel in a
+	 * TUI and as lines everywhere else.
+	 *
+	 * The counters are read once, through the runtime's own `snapshot()` and `render()`, so the panel's rows
+	 * and the printed lines report the same moment.
+	 */
+	async function statsCommand(ctx: ExtensionCommandContext): Promise<void> {
+		// The two states a reader asks about: a configured server that never came up, and a broker that died
+		// after it did. Both are already reported once (a warning, an error); this is where they are summarised.
+		const transport = transportErrorReported || unavailableServers.length > 0 ? "down" : "ok";
+		const deadLettersSummary: { count: number; directory?: string } = deadLetters ?? { count: 0 };
+		if (
+			await showPanel(ctx, () =>
+				statsPanel({
+					counters: runtime?.metrics.snapshot() ?? {},
+					windows: runtime?.openSpoolWindows() ?? [],
+					deadLetters: deadLettersSummary,
+					transport,
+				}),
+			)
+		) {
+			return;
+		}
+		report(ctx, statsReport(transport, deadLettersSummary));
+	}
+
+	/** The printed `/ace stats` report: the counters as the runtime renders them. */
+	function statsReport(transport: "ok" | "down", letters: { count: number; directory?: string }): string {
 		const lines = runtime?.metrics.render() ?? [];
 		const windows = (runtime?.openSpoolWindows() ?? []).map(
 			(window) => `  spooling ${window.subscription}: ${window.buffered} buffered → ${window.path}`,
 		);
-		const count = deadLetters?.count ?? 0;
-		const directory = deadLetters?.directory;
 		// `→ <dir>` is a path, and a path with zero letters is a line about nothing.
-		const letters = `dead letters: ${count}${count > 0 && directory !== undefined ? ` → ${directory}` : ""}`;
-		// The two states a reader asks about: a configured server that never came up, and a broker that died
-		// after it did. Both are already reported once (a warning, an error); this is where they are summarised.
-		const transport = transportErrorReported || unavailableServers.length > 0 ? "down" : "ok";
+		const lettersLine = `dead letters: ${letters.count}${
+			letters.count > 0 && letters.directory !== undefined ? ` → ${letters.directory}` : ""
+		}`;
 		return [
-			`[ace] stats — ${letters}`,
+			`[ace] stats — ${lettersLine}`,
 			`  transport: ${transport}`,
 			...(lines.length > 0
 				? lines.map((line) => `  ${line}`)
@@ -1374,6 +1455,26 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	/** Why `/ace` cannot act, in the words the start-up failure left behind. */
 	function notRunningMessage(cwd: string): string {
 		return `[ace] not running: ${startupFailure ?? `add ${ACE_CONFIG_FILENAME} to ${cwd} and restart Pi`}`;
+	}
+
+	/**
+	 * Show a report as a panel where the host can draw one, and say whether it was shown.
+	 *
+	 * `ctx.mode === "tui"` is the gate, and it is the only one the host documents ("Use `tui` to guard
+	 * terminal-only UI such as custom components"); everywhere else this returns `false` immediately, so the
+	 * caller prints the report it has always printed. That matters in RPC mode, where the surface exists but
+	 * silently shows nothing: measured on omp 18.5.0 in `--mode rpc --no-ui`, `ctx.mode` is `"rpc"`,
+	 * `ctx.hasUI` is `false`, `ctx.ui.theme.fg` returns real ANSI, and `ctx.ui.custom(factory)` resolves
+	 * `undefined` without ever calling the factory — a panel there would have swallowed the report.
+	 */
+	async function showPanel(ctx: ExtensionCommandContext, panel: () => AcePanel): Promise<boolean> {
+		if (ctx.mode !== "tui") return false;
+		try {
+			return await showAcePanel(ctx, panel());
+		} catch (error) {
+			console.error(`[ace] panel view failed, printing the report instead: ${describeError(error)}`);
+			return false;
+		}
 	}
 
 	/**
@@ -1425,10 +1526,11 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	}
 
 	/**
-	 * `/ace list`, and bare `/ace` where the host has a TUI: the human channel report, or the manager view.
+	 * `/ace list`, and bare `/ace` where the host has a TUI: the manager view, the channel panel, or the
+	 * printed report.
 	 *
-	 * One function for both so the manager's rows, its detail view and the printed report can never disagree
-	 * about what this session is wired to.
+	 * One function for all three so the manager's rows, its detail view, the panel and the printed report can
+	 * never disagree about what this session is wired to: they read one listing and one {@link ChannelReport}.
 	 */
 	async function listCommand(
 		args: string,
@@ -1437,44 +1539,48 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	): Promise<void> {
 		const listing = humanListing(channelListingInput(subscriptions, sessionInboxes));
 		const identity = [...new Set(activeServers.map((active) => shortSender(active.sender)))].join(", ");
-		const describeChannel = (value: string): string[] | undefined => {
+		const describeChannel = (value: string): ChannelDetails | undefined => {
 			// The row's value addresses the channel (`in:<channel>`), never the row's local label — see
 			// `channelForMenuValue`, which is the same lookup the row was built with.
 			const endpoint = channelForMenuValue(listing.subscriptions, value);
-			if (endpoint === undefined) return [`${value} is not a channel this session reads`];
+			if (endpoint === undefined) return { title: value, lines: [`${value} is not a channel this session reads`] };
 			const target = endpoint.channel ?? endpoint.name;
 			const inbox = sessionInboxes.some((candidate) => (candidate.channel ?? candidate.name) === target);
-			return [
-				// `name:` and `address:` stay verbatim: this is where the exact address is still discoverable after
-				// the header and the rows above have shortened this session's own session-id segment.
-				`name: ${endpoint.name}`,
-				`transport: ${endpoint.transport}`,
-				`address: ${endpointAddress(endpoint) ?? "(none)"}`,
-				...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
-				...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
-				// Every row says where it came from: a configured subscription names the file it was configured
-				// in, and an inbox says it is named by this session's own sender, which is auto-registered.
-				inbox
-					? "origin: named by this session's sender on the agent directory"
-					: `origin: configured in ${basename(resolvedConfig?.source ?? ACE_CONFIG_FILENAME)}`,
-				...(resolvedConfig?.shadowed === undefined
-					? []
-					: [`config: ${resolvedConfig.source} (project file shadows ${resolvedConfig.shadowed})`]),
-			];
+			return {
+				// The title is the address itself, plain: the manager's rows are styled for the terminal.
+				title: target,
+				lines: [
+					// `name:` and `address:` stay verbatim: this is where the exact address is still discoverable after
+					// the header and the rows above have shortened this session's own session-id segment.
+					`name: ${endpoint.name}`,
+					`transport: ${endpoint.transport}`,
+					`address: ${endpointAddress(endpoint) ?? "(none)"}`,
+					...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
+					...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
+					// Every row says where it came from: a configured subscription names the file it was configured
+					// in, and an inbox says it is named by this session's own sender, which is auto-registered.
+					inbox
+						? "origin: named by this session's sender on the agent directory"
+						: `origin: configured in ${basename(resolvedConfig?.source ?? ACE_CONFIG_FILENAME)}`,
+					...(resolvedConfig?.shadowed === undefined
+						? []
+						: [`config: ${resolvedConfig.source} (project file shadows ${resolvedConfig.shadowed})`]),
+				],
+			};
 		};
 		const header = `${identity} (agent ${adapter.isRunning() ? "running" : "idle"})${
 			resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
 		}`;
-		// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
-		// scripts and non-TUI modes keep the text report.
+		// `/ace` with no arguments opens the manager where the host has a TUI. `/ace list` opens the read-only
+		// panel there, and every other mode prints the report — a host that cannot draw a panel never loses it.
 		if (args.trim().length === 0 && ctx.mode === "tui") {
 			try {
 				await showAceManager(
 					ctx,
-					() => ({
+					(theme) => ({
 						title: "ACE channels",
 						details: header,
-						items: channelMenuItems(listing),
+						items: channelMenuItems({ ...listing, theme }),
 						empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
 					}),
 					describeChannel,
@@ -1506,33 +1612,32 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 						env: process.env,
 						globalConfigPaths: [ompGlobalConfigPath(process.env)],
 					});
-		report(
-			ctx,
-			formatChannelReport({
-				identity,
-				agentState: adapter.isRunning() ? "running" : "idle",
-				...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
-				subscriptions: listing.subscriptions,
-				...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
-				...(resolvedConfig?.shadowed === undefined ? {} : { shadowed: resolvedConfig.shadowed }),
-				...(servers === undefined ? {} : { servers }),
-				...(unavailableServers.length === 0
-					? {}
-					: {
-							unavailableServers: unavailableServers.map((server) => ({
-								name: server.server,
-								address: server.address,
-							})),
-						}),
-				...(unavailableSubscriptions.length === 0 ? {} : { unavailableSubscriptions }),
-				...(removed.length === 0 ? {} : { configRemoved: removed }),
-				pendingManual: pending.length,
-				deadLetters: {
-					count: deadLetters?.count ?? 0,
-					...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
-				},
-			}),
-		);
+		const channelReport: ChannelReport = {
+			identity,
+			agentState: adapter.isRunning() ? "running" : "idle",
+			...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
+			subscriptions: listing.subscriptions,
+			...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
+			...(resolvedConfig?.shadowed === undefined ? {} : { shadowed: resolvedConfig.shadowed }),
+			...(servers === undefined ? {} : { servers }),
+			...(unavailableServers.length === 0
+				? {}
+				: {
+						unavailableServers: unavailableServers.map((server) => ({
+							name: server.server,
+							address: server.address,
+						})),
+					}),
+			...(unavailableSubscriptions.length === 0 ? {} : { unavailableSubscriptions }),
+			...(removed.length === 0 ? {} : { configRemoved: removed }),
+			pendingManual: pending.length,
+			deadLetters: {
+				count: deadLetters?.count ?? 0,
+				...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
+			},
+		};
+		if (await showPanel(ctx, () => channelPanel(channelReport))) return;
+		report(ctx, formatChannelReport(channelReport));
 	}
 
 	/** The `/ace` command definition: registered at the end of this factory, and again by the surface owner. */
@@ -1573,6 +1678,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 
 			// `help` answers with or without a runtime: it describes the command, not this session's wiring.
 			if (subcommand === "help" || subcommand === "?") {
+				if (await showPanel(ctx, () => helpPanel(ACE_COMMANDS))) return;
 				report(ctx, aceHelpText());
 				return;
 			}
@@ -1588,15 +1694,15 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 					return;
 				}
 				if (subcommand === "agents") {
-					report(ctx, await agentsReport(rest[0]));
+					await agentsCommand(rest[0], ctx);
 					return;
 				}
 				if (subcommand === "pending") {
-					report(ctx, pendingReport(runtime.pendingEvents));
+					await pendingCommand(ctx, runtime.pendingEvents);
 					return;
 				}
 				if (subcommand === "stats") {
-					report(ctx, statsReport());
+					await statsCommand(ctx);
 					return;
 				}
 				if (subcommand === "list") {

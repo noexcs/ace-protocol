@@ -4,8 +4,18 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import aceExtension, { aceCompletions, compactDescription } from "../../extensions/ace.ts";
-import { channelForMenuValue, channelMenuItems } from "../../extensions/ace-manager.ts";
-import { AceDeliveryObserver, renderAceEvent } from "../../vendor/ace-runtime/dist/index.js";
+import {
+	type AceTheme,
+	agentsPanel,
+	channelForMenuValue,
+	channelMenuItems,
+	channelPanel,
+	helpPanel,
+	pendingPanel,
+	renderAcePanelLines,
+	statsPanel,
+} from "../../extensions/ace-manager.ts";
+import { AceDeliveryObserver, type ChannelReport, renderAceEvent } from "../../vendor/ace-runtime/dist/index.js";
 
 // The extension reads the host-global config from `$XDG_CONFIG_HOME/omp/ace.json` (falling back to
 // `~/.omp/agent/ace.json`). Point it at an empty directory: a developer's own configuration must
@@ -84,8 +94,27 @@ describe("argument completions", () => {
 	});
 });
 
+/**
+ * A theme that shows the panel text unchanged and records what each piece was coloured as — the panel
+ * renderer is pure, so the exact strings and the exact colours are both assertable without a terminal.
+ */
+function testTheme(): { theme: AceTheme; calls: Array<{ color: string; text: string }> } {
+	const calls: Array<{ color: string; text: string }> = [];
+	return {
+		calls,
+		theme: {
+			fg: (color: string, text: string) => {
+				calls.push({ color, text });
+				return text;
+			},
+			bold: (text: string) => text,
+		},
+	};
+}
+
 describe("manager rows", () => {
 	it("names each channel's address and state", () => {
+		const { theme } = testTheme();
 		const items = channelMenuItems({
 			subscriptions: [
 				{
@@ -104,11 +133,15 @@ describe("manager rows", () => {
 				},
 			],
 			selfChannels: ["session-inbox"],
+			theme,
 		});
 
-		expect(items.map((item) => `${item.label} → ${item.description}`)).toEqual([
-			'● from-wsl → redis-streams ace:lan:in.mac · [in] · [next_turn] · "the WSL agent"',
-			"● session-inbox → redis-streams ace:lan:events:x · [in] · (self — peers reply here)",
+		// The name is the accent column `SelectList` lays out and truncates; the state tag leads the
+		// description column, where it is never the part that gets cut (see `channelMenuItems`). The tag
+		// carries its own leading space, which is what aligns the state column across rows.
+		expect(items.map((item) => `${item.label} →${item.description}`)).toEqual([
+			'from-wsl → ● connected [redis-streams] · ace:lan:in.mac · [next_turn] · "the WSL agent"',
+			"session-inbox → ● connected [redis-streams] · ace:lan:events:x · self — peers reply here",
 		]);
 	});
 
@@ -129,6 +162,177 @@ describe("manager rows", () => {
 		// A value that names no channel of this session is `undefined`, never a neighbouring row.
 		expect(channelForMenuValue(subscriptions, "in:from-wsl")).toBeUndefined();
 		expect(channelForMenuValue(subscriptions, "out:ace:lan:in.mac")).toBeUndefined();
+	});
+});
+
+describe("panels", () => {
+	it("draws `/ace list` from the same report the printer gets, one row per channel", () => {
+		const { theme, calls } = testTheme();
+		const report: ChannelReport = {
+			identity: "ace:ana:from-wsl",
+			agentState: "running",
+			source: "/work/.ace.json",
+			shadowed: "/home/ana/.omp/agent/ace.json",
+			subscriptions: [
+				{
+					name: "from-wsl",
+					channel: "ace:ch:ace:ana:from-wsl",
+					transport: "redis-streams",
+					description: "the WSL agent",
+					activation: "next_turn",
+					config: { stream: "ace:ch:ace:ana:from-wsl" },
+					options: {},
+				},
+				{
+					name: "inbox",
+					channel: "ace:ch:ace:ana:inbox",
+					transport: "redis-streams",
+					config: { stream: "ace:ch:ace:ana:inbox" },
+					options: {},
+				},
+			],
+			selfChannels: ["ace:ch:ace:ana:inbox"],
+			// Same order and length as `subscriptions`: the report's contract, and what makes the prefix a
+			// publish-ready target.
+			servers: ["lan", "home"],
+			unavailableServers: [{ name: "ghost", address: "ghost:6379" }],
+			unavailableSubscriptions: [{ channel: "ace:ana:noop", server: "ghost" }],
+			configRemoved: ["ace:ch:ace:ana:inbox"],
+			pendingManual: 2,
+			deadLetters: { count: 1, directory: "/work/.ace" },
+		};
+		const panel = channelPanel(report);
+
+		expect(panel.title).toBe("ACE channels");
+		expect(panel.context).toBe("ace:ana:from-wsl (agent running) — /work/.ace.json");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			"config: /work/.ace.json (project file shadows /home/ana/.omp/agent/ace.json)",
+			"subscribe (2 channels):",
+			'  lan:ace:ch:ace:ana:from-wsl ● connected [redis-streams] · [next_turn] · as "from-wsl" · "the WSL agent"',
+			'  home:ace:ch:ace:ana:inbox ● connected [redis-streams] · as "inbox" · self — peers reply here · config-removed',
+			"unavailable:",
+			"  ghost ◌ inactive did not come up · ghost:6379",
+			'  ace:ana:noop ◌ inactive server "ghost" did not come up',
+			"manual: 2 pending, dead letters: 1 at /work/.ace",
+		]);
+		// The states are coloured, not just glyphs: `/mcp`'s own tags.
+		expect(calls).toContainEqual({ color: "success", text: " ● connected" });
+		expect(calls).toContainEqual({ color: "warning", text: " ◌ inactive" });
+	});
+
+	it("says what to do when there is nothing to read yet", () => {
+		const { theme } = testTheme();
+		const panel = channelPanel({
+			identity: "ace:ana:from-wsl",
+			agentState: "idle",
+			subscriptions: [],
+			pendingManual: 0,
+			deadLetters: { count: 0 },
+		});
+
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			"subscribe:",
+			'(none) add channels under a server\'s "subscribe" in .ace.json to read them.',
+			"manual: 0 pending, dead letters: 0",
+		]);
+	});
+
+	it("draws live agents with the lease each one has left", () => {
+		const { theme, calls } = testTheme();
+		const panel = agentsPanel({
+			rows: [{ target: "ace:ana:from-wsl", renewsIn: 69, description: '"agent=codex | cwd=/work"' }],
+			servers: ["lan"],
+			mine: ["ace:ana:omp:…1325bb"],
+		});
+
+		expect(panel.title).toBe("ACE live agents (1)");
+		expect(panel.context).toBe("servers: lan");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			'  ace:ana:from-wsl ● live renews in 1m 9s · "agent=codex | cwd=/work"',
+			"this session: ace:ana:omp:…1325bb — not listed",
+		]);
+		expect(calls).toContainEqual({ color: "success", text: " ● live" });
+	});
+
+	it("keeps a filter visible in an empty agent listing", () => {
+		const { theme } = testTheme();
+		const panel = agentsPanel({ rows: [], servers: ["lan"], mine: [], filter: "codex" });
+
+		expect(panel.title).toBe("ACE live agents");
+		expect(panel.context).toBe('servers: lan · filter "codex"');
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual(['no live session matches agent filter "codex"']);
+	});
+
+	it("draws retained manual events, warning once the retention window is closing", () => {
+		const { theme, calls } = testTheme();
+		const panel = pendingPanel([
+			{
+				sender: "ci",
+				idLabel: "…456789",
+				sessionLabel: "58e914",
+				ageSeconds: 300,
+				subscription: "ci-results",
+				expiring: false,
+				body: "Build failed",
+			},
+			{ sender: "deploy", idLabel: "evt_2", ageSeconds: 86_400, subscription: "deploys", expiring: true, body: "x" },
+		]);
+
+		expect(panel.title).toBe("ACE pending manual events (2)");
+		expect(panel.context).toBe("activate with: /ace activate <sender> <id>");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			'  ci ◌ pending id …456789 · session 58e914 · 5m ago · manual: ci-results · "Build failed"',
+			'  deploy ◌ expires soon id evt_2 · 1d ago · manual: deploys · "x"',
+		]);
+		expect(calls).toContainEqual({ color: "warning", text: " ◌ expires soon" });
+	});
+
+	it("draws `/ace stats` with the transport as a state and one row per counter scope", () => {
+		const { theme, calls } = testTheme();
+		const panel = statsPanel({
+			counters: { inbox: { received: 12, injected: 11 }, runtime: { dropped: 1 } },
+			windows: [{ subscription: "ci-results", buffered: 3, path: "/work/.ace/spool/ci.jsonl" }],
+			deadLetters: { count: 1, directory: "/work/.ace" },
+			transport: "ok",
+		});
+
+		expect(panel.title).toBe("ACE stats");
+		expect(panel.context).toBe("dead letters: 1 → /work/.ace");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			"  transport ● connected",
+			"  inbox received=12 injected=11",
+			"  runtime dropped=1",
+			"spooling:",
+			"  ci-results ◌ pending 3 buffered · /work/.ace/spool/ci.jsonl",
+		]);
+		expect(calls).toContainEqual({ color: "success", text: " ● connected" });
+	});
+
+	it("reports a down transport as inactive and an empty counter set as an explanation", () => {
+		const { theme, calls } = testTheme();
+		const panel = statsPanel({ counters: {}, windows: [], deadLetters: { count: 0 }, transport: "down" });
+
+		expect(panel.context).toBe("dead letters: 0");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			"  transport ◌ inactive",
+			"no counters yet — one line per channel appears here as events arrive, counting received, " +
+				"injected, deduped, spooled, reclaimed and dropped",
+		]);
+		expect(calls).toContainEqual({ color: "warning", text: " ◌ inactive" });
+	});
+
+	it("lists every command as an accent row in `/ace help`", () => {
+		const { theme } = testTheme();
+		const panel = helpPanel([
+			{ name: "list", description: "channels this session reads; publish to any channel name" },
+			{ name: "stats", description: "per-channel counters, spool windows, dead letters" },
+		]);
+
+		expect(panel.title).toBe("ACE commands");
+		expect(renderAcePanelLines(theme, panel.lines)).toEqual([
+			"  /ace list channels this session reads; publish to any channel name",
+			"  /ace stats per-channel counters, spool windows, dead letters",
+		]);
 	});
 });
 
