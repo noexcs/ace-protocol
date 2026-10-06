@@ -2,17 +2,26 @@
 
 > English | [中文](README.zh-CN.md)
 
-Two agents — in the same tool or in different ones — can send each other **events** that drive a turn, and hand
-each other files, over one broker. A session does not poll for work: a CI failure, an alert, or a peer's request
-arrives in its context as input, and the agent acts on it.
+Any agent session that connects to the same **Redis Server** can talk to any other one — on this machine, on
+another machine, on the other side of the world — by sending it an **event** that drives a turn, and by handing it
+a file. That shared Server is the whole meeting point: no relay of ours in the middle, no per-host translation, no
+pairing step.
+
+ACE is built around **external events as input**. A CI result, an alert, a service call, or a peer agent's request
+becomes something a running session receives and acts on, instead of something it has to poll for or a human has to
+relay. Anything that can publish to the Server can drive a session; the path exercised end to end in this
+repository is agent-to-agent, across machines and across hosts.
 
 ## See it work
 
 ```bash
 # 1. install the host plugin from its release — nothing is built on your machine
 omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+#    DeepSeek Harness instead:
+#    dsh plugin --profile <profile> add \
+#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
 
-# 2. say who you are and which broker you talk to
+# 2. say who you are and which Server you talk to
 mkdir -p ~/ace-demo && cd ~/ace-demo
 cat > .ace.json <<'JSON'
 {
@@ -22,18 +31,20 @@ cat > .ace.json <<'JSON'
 }
 JSON
 
-# 3. start your host there; a new session picks the plugin up
-#    (needs a broker — `brew services start redis` gives one on 6379)
+# 3. start your host there — the session is addressable from that moment
+#    (needs a Server; `brew services start redis` gives one on 6379)
 omp
-
-# 4. from anywhere, send that session an event — the channel name derives the broker stream
-redis-cli XADD ace:ch:ace:alice:ci-failures '*' message \
-  '{"aceVersion":"0.1","id":"e1","sender":"ci","activation":"next_turn","body":"Build failed."}'
 ```
 
-The event lands in the session's transcript, marked as coming from `ci`, and the agent answers it in a turn.
-From inside a session, `ace_publish` sends events to peers by channel name, `ace_agents` lists who is live right
-now, and `ace_store_file` / `ace_get_file` move a file by token without the bytes entering any model's context.
+Then ask your session what is out there, and talk:
+
+```text
+> who else is on the Server?            → calls ace_agents
+> ask <that session> to run the tests   → calls ace_publish
+```
+
+A CI job or a service drives a session the same way, by publishing to its channel. Channel naming and the message
+envelope are in [the contracts](docs/ace-runtime-contracts.md).
 
 ## Install
 
@@ -46,8 +57,8 @@ omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2
 omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
-The extension is loaded **at session start**, so installing or updating takes effect in a new session. Do not
-also pass `-e/--extension` for the same file: that loads a second copy of one module. Plain **Pi** has no plugin
+The extension is loaded **at session start**, so installing or updating takes effect in a new session. Do not also
+pass `-e/--extension` for the same file: that loads a second copy of one module. Plain **Pi** has no plugin
 registry and loads the extension file directly — [the plugin README](packages/ace-omp/README.md) shows how.
 
 **DeepSeek Harness** — [`ace-dsh`](packages/ace-dsh/README.md)
@@ -66,12 +77,20 @@ install there through the app's plugin manager — or by hand: add that URL to t
 
 | | |
 |---|---|
-| **An address** | Its own **channel**, `<namespace>:<username>:<agent>:<sessionId>` — the agent segment is the host's own name (`pi`, `oh-my-pi`, `dsh`), registered in the broker's agent **directory** while the session is live and withdrawn when it ends. `ace_agents` lists what is live; `ace_publish` addresses it. |
-| **Its own inbox** | That channel, read in a consumer group named after it — two sessions are two readers, never one queue split between them. |
-| **Events as input** | An event published to the channel arrives in the session's context under the activation its sender asked for: `immediate` (cut in now), `next_turn` (queue and wake), or `manual` (retain until someone activates it). |
-| **Files by token** | `ace_store_file` stores a local file on the broker under a random token; `ace_get_file` fetches it and writes it into a quarantine directory. The token *is* the capability, and the bytes never enter a model's context. |
-| **Tools on the session's scope** | `ace_publish`, `ace_agents`, `ace_store_file`, `ace_get_file`, plus per host: `ace_channels` (Pi — a read-only view of what this session reads) or `ace_pending` + `ace_activate` (DSH, whose client sessions have no command surface). A session with no configuration sees none of them. |
-| **A command surface** (Pi) | Bare `/ace` opens the channel manager; `/ace list`, `agents`, `pending`, `activate`, `stats` and `help` write their report into the session record. |
+| **An address anyone can reach** | A channel of its own, registered on the Server while the session is live and withdrawn when it ends. `ace_agents` lists who is on; `ace_publish` sends to one channel, or to several at once. |
+| **An inbox nobody else reads** | Events addressed to it, read under its own name — two sessions are two readers, never one queue split between them. |
+| **Control over urgency** | The sender asks for `immediate` (act on it now), `next_turn` (queue it and wake the session), or `manual` (hold it until a human activates it). |
+| **Files without touching context** | `ace_store_file` leaves a file on the Server under a random token; `ace_get_file` fetches it. The token *is* the capability, and the bytes never enter a model's context. |
+| **Tools on the session's own scope** | The ACE tools, plus a couple that differ per host; a session with no configuration sees none of them. Each host's README lists its own surface. |
+| **Something a person can see** | Pi: `/ace` opens a channel manager, and `/ace list`, `agents`, `pending`, `stats` report into the session record. DeepSeek Harness: a status indicator in the composer's tool row — green with the channel tail while the session is registered, and honest `off` / `!` / `?` states otherwise. |
+
+## What you are trusting
+
+A channel name is a **claim, not a credential**: ACE 0.1 has no authentication, so a Server is a shared meeting
+point rather than a security boundary — anyone who can reach it can read the keys behind the channels and the
+directory. There is no retention and no replay either: an event nobody read is gone. What an unapproved sender may
+do is each host plugin's own policy — the DeepSeek Harness plugin asks its user before acting on a sender it has
+not been told about.
 
 ## Two halves of a team
 
@@ -94,7 +113,7 @@ ace_publish(channel="<the worker's channel>", activation="immediate", body="<the
 ```
 
 Workers can open workers of their own (`open_session` is in their tool set too), and a session on another host
-that speaks ACE joins the same directory as an equal peer.
+that speaks ACE joins the same Server as an equal peer.
 
 ## For protocol readers
 
@@ -102,7 +121,7 @@ that speaks ACE joins the same directory as an equal peer.
 |---|---|
 | [`docs/ACE-RFC-Draft-0.1.md`](docs/ACE-RFC-Draft-0.1.md) | The protocol: message envelope, activation semantics, conformance |
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | The engineering guide for the first implementation |
-| [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, broker key layout, tool parameters, delivery semantics, flows, invariants |
+| [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | The implementation contracts: configuration keys, Server key layout, tool parameters, delivery semantics, flows, invariants |
 | [`docs/ace-file-transfer.md`](docs/ace-file-transfer.md) | File transfer by token: store, fetch, and what the token is |
 
 ## Repository layout
@@ -112,14 +131,9 @@ that speaks ACE joins the same directory as an equal peer.
 | [`packages/ace-runtime/`](packages/ace-runtime) | The host-neutral core: the protocol, the transports, the agent engines — what every host plugin shares |
 | [`packages/ace-omp/`](packages/ace-omp) | The oh-my-pi / Pi host plugin — the verified reference host |
 | [`packages/ace-dsh/`](packages/ace-dsh) | The DeepSeek Harness host plugin |
-| [`oh-my-pi/`](oh-my-pi) | Upstream oh-my-pi checkout (gitignored), for integration testing against its sources |
 
 ## Status
 
-**oh-my-pi / Pi is the verified reference host**; DeepSeek Harness runs the same protocol and needed no change to
-the core — one runtime per agent there, with channels following the agent's own lifecycle. Both plugins have been
-exercised against a real broker, and the two hosts have talked to each other: events in both directions, each
-naming the other's channel, and a file stored on one host fetched and hash-verified on the other.
-
-Per-host detail — the exact tool surface, configuration, and what each host deliberately does not do — is in the
-plugin READMEs: [`ace-omp`](packages/ace-omp/README.md) and [`ace-dsh`](packages/ace-dsh/README.md).
+**oh-my-pi / Pi is the verified reference host**, and DeepSeek Harness runs the same protocol. Both plugins have
+been exercised against a real Server, and the two hosts have talked to each other: events in both directions, each
+naming the other's channel, and a file stored on one machine fetched and hash-verified on the other.

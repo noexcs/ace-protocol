@@ -15,14 +15,14 @@ host binding: which live agent a call belongs to, when a channel is registered, 
 a session's conversation on **DeepSeek Harness** rather than on Pi.
 
 Because it speaks the same wire protocol and the same channel naming, a session here and a session on
-`oh-my-pi` can talk to each other over one broker with no translation: `ace_agents` lists both, and
+`oh-my-pi` can talk to each other over one Server with no translation: `ace_agents` lists both, and
 `ace_publish` addresses either.
 
 ## Status
 
 Verified on 2026-10-06 without a model turn:
 
-- `npm test` — **61 tests, 5 files**, all passing. The core runs for real; only the broker is faked.
+- `npm test` — **61 tests, 5 files**, all passing. The core runs for real; only the Server is faked.
 - `npm run verify:live` — **7 of 7 scenarios** against a real `redis-server` on 6379: the directory, a
   published event reaching the peer's conversation, `manual` retention and activation, the self-echo, a
   non-conforming message being dropped, teardown withdrawing the address and the stream, and an
@@ -42,7 +42,7 @@ Verified on 2026-10-06 without a model turn:
 
 | | |
 |---|---|
-| **Its own channel** | `<namespace>:<username>:dsh:<sessionId>` — registered in the broker's directory while the session is live, withdrawn when it ends. That name *is* the address a peer publishes to. |
+| **Its own channel** | `<namespace>:<username>:dsh:<sessionId>` — registered in the Server's directory while the session is live, withdrawn when it ends. That name *is* the address a peer publishes to. |
 | **Its own inbox** | The same channel, read in a consumer group named after it — so two sessions are two readers, never one queue split between them. |
 | **Six tools** | ACE's four (`ace_publish`, `ace_agents`, `ace_store_file`, `ace_get_file`) plus this host's two (`ace_pending`, `ace_activate`), registered on the agent's own scope. A session with no configuration sees none of them. |
 | **A channel chip** | In the composer's tool row: a green dot with the channel's session tail while the session is registered. See [the chip](#the-channel-chip). |
@@ -109,7 +109,7 @@ entries in `.ace.json` (`"subscribe": ["ci-failures"]`) name *persistent* channe
 with no live session behind them — and this host does not read them: they are reported by `/ace` and in
 the session log, never silently dropped. Direct messages always work without any `subscribe`.
 
-A session with no configuration file anywhere is completely inert: no broker connection, no directory
+A session with no configuration file anywhere is completely inert: no Server connection, no directory
 entry, no tools, no prompt section.
 
 ## Session lifecycle
@@ -133,7 +133,7 @@ answers `no agent directory` rather than taking the agent down.
 - `agent/disposed` stops the reader first, then removes the directory entry and drops the stream, then
   closes the clients. That order is `shutdownAce`'s, from the core: dropping the stream first would leave
   the reader waking up on a deleted group. The agent's scoped registrations unwind on their own; this
-  teardown is the broker's half.
+  teardown is the Server's half.
 - A plugin unload or HMR reload stops every session it opened — otherwise a reload would leave a reader
   consuming a channel the new plugin instance knows nothing about. Sessions that were already live when
   the plugin loaded are registered at that point instead, because no `agent/created` will fire for them.
@@ -171,7 +171,7 @@ A profile composes `dsh` bundles; the package's `dsh.bundle.patch` inserts one e
 ```bash
 npm install                  # host packages pinned to the running host's exact version
 npm run sync:vendor          # the core build this package imports by relative path
-npm test                     # unit + integration tests, no broker and no model needed
+npm test                     # unit + integration tests, no Server and no model needed
 npm run verify:live          # two real sessions against a real Redis (redis-server, no model needed)
 npm run check                # biome + tsc
 ```
@@ -184,7 +184,7 @@ npm run check                # biome + tsc
 | [`src/tools.ts`](src/tools.ts) | The four tools, over the core's own validation and result text |
 | [`src/command.ts`](src/command.ts) | `/ace` |
 | [`src/dsh.ts`](src/dsh.ts) | The host seam, as structure rather than an import |
-| [`test/support/harness.ts`](test/support/harness.ts) | An in-memory broker and a fake agent: the core runs for real, the broker is faked |
+| [`test/support/harness.ts`](test/support/harness.ts) | An in-memory Server and a fake agent: the core runs for real, the Server is faked |
 | [`vendor/ace-runtime/`](vendor/ace-runtime) | The core build this package imports (regenerate with `npm run sync:vendor`) |
 
 ## Differences from the Pi host (`ace-omp`)
@@ -205,7 +205,7 @@ npm run check                # biome + tsc
 - **No connection sharing.** Each session opens its own clients, as the core's registry and transports do.
   A deployment with many live sessions pays one connection each.
 - **No dead-letter sink and no spool directory.** The core supports both; this host does not wire them, so
-  an entry the reader gives up on stays in the broker's pending list for the transport's reclaim pass.
+  an entry the reader gives up on stays in the Server's pending list for the transport's reclaim pass.
 - **Configuration is read once**, at session creation. There is no `/ace reload`.
 - **`/ace` is registered but not dispatched by the client.** The command exists in the host's catalog (and its
   reports are correct when invoked), but typing `/ace …` in the composer reaches the model as plain text

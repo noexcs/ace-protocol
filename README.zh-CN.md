@@ -2,16 +2,24 @@
 
 > [English](README.md) | 中文
 
-两个 agent —— 同一个工具里的，或不同工具里的 —— 可以经由一个 broker 互发**事件**去驱动对方的回合，也能互相递文件。
-会话不需要轮询：一条 CI 失败、一条告警、或某个对端的请求作为输入落进它的上下文，然后 agent 就去处理它。
+任何连上**同一台 Redis Server** 的 agent 会话，都能和另一个会话对话 —— 同一台机器上的、另一台机器上的、地球另一端的 ——
+方式是给它发一条**事件**去驱动它的回合，或者递给它一个文件。这台共享的 Server 就是全部的交汇点：中间没有我们的中继，
+没有按宿主做的翻译，也不需要配对。
+
+ACE 围绕**外部事件作为输入**而设计。一条 CI 结果、一条告警、一次服务调用、或者另一个 agent 的请求，会成为**正在运行的会话
+接收并处理**的东西，而不是它去轮询、或者由人转述的东西。**任何能向 Server 发布消息的东西都能驱动一个会话**；
+本仓库端到端验证过的路径是 agent 与 agent 之间 —— 跨机器，也跨宿主。
 
 ## 看一眼它怎么工作
 
 ```bash
 # 1. 从 Release 安装宿主插件 —— 你的机器上什么都不用构建
 omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+#    改用 DeepSeek Harness 的话：
+#    dsh plugin --profile <profile> add \
+#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
 
-# 2. 说清楚你是谁、要连哪个 broker
+# 2. 说清楚你是谁、要连哪台 Server
 mkdir -p ~/ace-demo && cd ~/ace-demo
 cat > .ace.json <<'JSON'
 {
@@ -21,18 +29,19 @@ cat > .ace.json <<'JSON'
 }
 JSON
 
-# 3. 在这个目录里启动你的宿主；新会话会自动加载插件
-#    （需要一个 broker —— `brew services start redis` 会在 6379 给一个）
+# 3. 在这个目录里启动你的宿主 —— 从这一刻起，这个会话就有了地址
+#    （需要一台 Server；`brew services start redis` 会在 6379 给一台）
 omp
-
-# 4. 从任何地方给那个会话发一条事件 —— channel 名决定了 broker 上的 stream
-redis-cli XADD ace:ch:ace:alice:ci-failures '*' message \
-  '{"aceVersion":"0.1","id":"e1","sender":"ci","activation":"next_turn","body":"Build failed."}'
 ```
 
-这条事件会落进会话的转录里、标明来自 `ci`，agent 会在一个回合里回应它。在会话内部，`ace_publish` 按 channel 名
-把事件发给对端，`ace_agents` 列出此刻谁在线，而 `ace_store_file` / `ace_get_file` 按 token 搬运文件 ——
-字节不经过任何模型的上下文。
+然后问你的会话外面有谁，并开始对话：
+
+```text
+> 现在 Server 上还有谁？              → 会话调用 ace_agents
+> 让 <那个会话> 去跑一遍测试          → 会话调用 ace_publish
+```
+
+一个 CI 任务或一个服务也是同样的方式驱动会话：向它的 channel 发布消息即可。channel 命名与消息信封在[实现契约](docs/ace-runtime-contracts.md)里。
 
 ## 安装
 
@@ -63,12 +72,18 @@ dsh plugin --profile <profile> add \
 
 | | |
 |---|---|
-| **一个地址** | 它自己的 **channel**：`<namespace>:<username>:<agent>:<sessionId>`（agent 那一段是宿主自己的名字：`pi`、`oh-my-pi`、`dsh`）。会话活着时它注册在 broker 的 agent **directory** 里，结束时撤销。`ace_agents` 列出在线的，`ace_publish` 按它投递。 |
-| **自己的收件箱** | 就是那个 channel，用一个以它命名的 consumer group 来读 —— 两个会话就是两个读者，绝不是一条队列被切开。 |
-| **事件即输入** | 发到该 channel 的事件，按发送方要求的 activation 落进会话上下文：`immediate`（立刻插入）、`next_turn`（排队并唤醒）、`manual`（保留，直到有人激活它）。 |
-| **文件按 token** | `ace_store_file` 把本地文件以随机 token 存到 broker，`ace_get_file` 取回并写进隔离目录。**token 本身就是能力**，而字节从不进入模型的上下文。 |
-| **工具挂在会话作用域上** | `ace_publish`、`ace_agents`、`ace_store_file`、`ace_get_file`，外加各宿主自己的：`ace_channels`（Pi —— 只读地看本会话读什么）或 `ace_pending` + `ace_activate`（DSH，因为它的客户端会话没有命令面）。没有任何配置的会话一个都看不到。 |
-| **命令面**（Pi） | 光敲 `/ace` 打开 channel 管理器；`/ace list`、`agents`、`pending`、`activate`、`stats`、`help` 把报告写进会话记录。 |
+| **一个谁都能找到的地址** | 它自己的 channel，会话活着时注册在 Server 上、结束时撤销。`ace_agents` 列出谁在线；`ace_publish` 可以发给一个 channel，也可以一次发给多个。 |
+| **一个别人读不到的收件箱** | 发给它的事件只有它读 —— 两个会话就是两个读者，绝不是一条队列被切开。 |
+| **对紧急程度的控制权** | 发送方指定 `immediate`（立刻处理）、`next_turn`（排队并唤醒）、或 `manual`（扣住，直到有人激活它）。 |
+| **不碰上下文的文件传递** | `ace_store_file` 把文件以随机 token 留在 Server 上，`ace_get_file` 取回。**token 本身就是能力**，字节从不进入模型的上下文。 |
+| **挂在会话自己作用域上的工具** | ACE 的工具，外加各宿主略有差异的几个；没有任何配置的会话一个都看不到。各宿主 README 列出自己那套。 |
+| **人眼能看见的状态** | Pi：光敲 `/ace` 打开 channel 管理器，`/ace list`、`agents`、`pending`、`stats` 把报告写进会话。DeepSeek Harness：输入框工具行里有一个状态指示 —— 注册中时是绿点加 channel 尾段，其余情况如实显示 `off` / `!` / `?`。 |
+
+## 你在信任什么
+
+channel 名是一**声明，不是凭证**：ACE 0.1 没有鉴权，所以一台 Server 是共享的交汇点，而不是安全边界 ——
+任何能触达它的人都能直读 channel 和目录背后的键。同样没有留存与回放：没人读走的事件就没了。
+未被批准的发送方能做什么，是各宿主插件自己的策略 —— DeepSeek Harness 插件在遇到没被告知过的发送方时会先问它的用户。
 
 ## 一个团队的两半
 
@@ -88,7 +103,7 @@ ace_publish(channel="<worker 的 channel>", activation="immediate", body="<任�
 # worker 完成后在 orchestrator 自己的 channel 上回信
 ```
 
-worker 自己还能再开 worker（`open_session` 也在它的工具表里），而另一个宿主上会说 ACE 的会话，会作为平等成员加入同一个目录。
+worker 自己还能再开 worker（`open_session` 也在它的工具表里），而另一个宿主上会说 ACE 的会话，会作为平等成员加入同一台 Server。
 
 ## 给协议读者
 
@@ -96,7 +111,7 @@ worker 自己还能再开 worker（`open_session` 也在它的工具表里），
 |---|---|
 | [`docs/ACE-RFC-Draft-0.1.md`](docs/ACE-RFC-Draft-0.1.md) | 协议本身：消息信封、activation 语义、一致性要求 |
 | [`docs/ace-v0.1.md`](docs/ace-v0.1.md) | 第一版实现的工程指南 |
-| [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | 实现契约：配置键、broker 键布局、工具参数、投递语义、流程、不变量 |
+| [`docs/ace-runtime-contracts.md`](docs/ace-runtime-contracts.md) | 实现契约：配置键、Server 键布局、工具参数、投递语义、流程、不变量 |
 | [`docs/ace-file-transfer.md`](docs/ace-file-transfer.md) | 按 token 的文件传输：存、取，以及 token 是什么 |
 
 ## 仓库结构
@@ -106,13 +121,8 @@ worker 自己还能再开 worker（`open_session` 也在它的工具表里），
 | [`packages/ace-runtime/`](packages/ace-runtime) | host-neutral 的核心：协议、transport、agent engine —— 每个宿主插件共享的就是它 |
 | [`packages/ace-omp/`](packages/ace-omp) | oh-my-pi / Pi 宿主插件 —— 经过验证的参考宿主 |
 | [`packages/ace-dsh/`](packages/ace-dsh) | DeepSeek Harness 宿主插件 |
-| [`oh-my-pi/`](oh-my-pi) | oh-my-pi 上游检出（已被 gitignore），用于对着源码做集成测试 |
 
 ## 现状
 
-**oh-my-pi / Pi 是经过验证的参考宿主**；DeepSeek Harness 跑同一套协议、核心一行未改 —— 在那边是每个 agent 一个运行时，
-channel 跟随 agent 自己的生命周期。两个插件都对着真实 broker 跑过，而且两个宿主彼此通过话：双向事件、
-各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。
-
-各宿主的具体细节 —— 确切的工具面、配置、以及它刻意不做什么 —— 都在插件自己的 README 里：
-[`ace-omp`](packages/ace-omp/README.md) 和 [`ace-dsh`](packages/ace-dsh/README.md)。
+**oh-my-pi / Pi 是经过验证的参考宿主**，DeepSeek Harness 跑同一套协议。两个插件都对着真实的 Server 跑过，
+而且两个宿主彼此通过话：双向事件、各自指出对方的 channel，一端存储的文件在另一端取回并校验了 sha256。

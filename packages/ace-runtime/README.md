@@ -112,7 +112,7 @@ published before the subscription exists is skipped.
 
 ### Two agents, two machines (LAN)
 
-One machine can host the broker for both sessions: expose Redis on that machine and point every
+One machine can host the Server for both sessions: expose Redis on that machine and point every
 `.ace.json` at its LAN address. Each side names the channel it reads, and a peer is reached by
 publishing to the channel that peer's own sender names:
 
@@ -239,7 +239,7 @@ for `ace_publish`, `ace_agents`, `ace_channels`, `ace_store_file` and `ace_get_f
 
 ## Transports
 
-`Transport` is the only seam between a broker and ACE: `start(handler)` / `stop()`. Broker metadata
+`Transport` is the only seam between a Server and ACE: `start(handler)` / `stop()`. Server metadata
 (topic, subject, stream, group, entry ID, offset, consumer) stays inside the adapter and never becomes an
 ACE field (RFC §4). Two adapters ship today.
 
@@ -257,7 +257,7 @@ const subscription: EndpointConfig = {
 	name: "build-events",
 	transport: "redis-streams",
 	activation: "default",
-	// every broker-specific setting lives in `config`; raw client options go to `options`
+	// every Server-specific setting lives in `config`; raw client options go to `options`
 	config: { stream: "ace:build-events", group: "coding-agent" },
 	options: {},
 };
@@ -271,13 +271,13 @@ const runtime = new AceRuntime({ engine: adapter, subscribe: [subscription], tra
 |---|---|---|
 | `stream` | required | Stream the consumer group reads |
 | `group` | required | Consumer group; created at the stream tail (`$`) if missing |
-| `url` | `redis://127.0.0.1:6379` | Broker URL |
+| `url` | `redis://127.0.0.1:6379` | Server URL |
 | `consumer` | `ace-<pid>` | Consumer name inside the group |
 | `field` | `message` | Stream entry field carrying the ACE message JSON |
 | `count` | `16` | Entries per `XREADGROUP` |
 | `blockMs` | `1000` | `XREADGROUP` block window; also bounds how fast `stop()` returns |
 
-Delivery model — what `group` selects (measured against a real broker):
+Delivery model — what `group` selects (measured against a real Server):
 
 | Configuration | Every entry goes to | Use it for |
 |---|---|---|
@@ -315,7 +315,7 @@ redis-cli XADD ace:build-events '*' \
   message '{"aceVersion":"0.1","id":"evt_1","sender":"ci","activation":"next_turn","body":"Build failed."}'
 ```
 
-`examples/redis-streams.ts` runs this consumer against a real broker:
+`examples/redis-streams.ts` runs this consumer against a real Server:
 
 ```bash
 redis-server --port 6399 --daemonize yes --save '' --dir /tmp/ace-redis
@@ -323,7 +323,7 @@ ACE_MODEL=tailscale-zcs/Qwen3.8-27B ACE_REDIS_URL=redis://127.0.0.1:6399 ACE_EXI
   npm run example:redis
 ```
 
-Tests never need a broker: the adapter is split into a narrow `RedisStreamsClient` interface, a `redis`-backed
+Tests never need a Server: the adapter is split into a narrow `RedisStreamsClient` interface, a `redis`-backed
 client, and the transport, so the test suite drives a fake client.
 
 ## Layout
@@ -337,7 +337,7 @@ client, and the transport, so the test suite drives a fake client.
 | `src/logger.ts` | log lines that never carry a message body |
 | `extensions/` | `ace.ts`: Pi extension that injects events into the session it runs in |
 | `test/` | protocol, runtime, adapter and transport unit tests, plus real-Pi-session integration tests |
-| `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real broker (reclaim, dedup, open inbound, burst spooling, manual, shutdown order) |
+| `scripts/verify-live.ts` | `npm run verify:live`: the runtime against a real Server (reclaim, dedup, open inbound, burst spooling, manual, shutdown order) |
 | `scripts/verify-omp.ts` | `npm run verify:omp`: the extension inside a real `omp --mode rpc` session (event reaches the conversation, turn settles, entry acknowledged) |
 | `schema/` | normative ACE 0.1 JSON Schema |
 
@@ -383,7 +383,7 @@ mode means, so the adapter owns that mapping instead of trusting the host:
 | `immediate` | running | `steer` | `steer` |
 
 oh-my-pi queues `steer`/`followUp` **without starting a turn**, so an event injected into an idle session
-waits in a queue that nothing drains — while the broker entry is acknowledged. That is silent loss, measured on
+waits in a queue that nothing drains — while the Server entry is acknowledged. That is silent loss, measured on
 omp 18.5.0, which is why the adapter never passes those modes to an idle agent, and why on oh-my-pi it waits
 until the injected text appears in the conversation before the transport may acknowledge the entry
 (`AceDeliveryObserver`). `ACE_DELIVERY=aside|portable` overrides host detection when a host changes its surface.
@@ -397,7 +397,7 @@ so the entry stays pending for reclaim.
 
 Injection is **idempotent** by `(subscription, sender, id)`: the adapter records an event as handed to the host
 the moment `sendUserMessage` returns, and never rolls that back — it says the host received the message, not
-that the agent saw it. A broker redelivery of an identity already handed over re-attaches to the observation and
+that the agent saw it. A Server redelivery of an identity already handed over re-attaches to the observation and
 waits again; it never calls `sendUserMessage` a second time, so one stored entry cannot become several copies in
 the conversation. The record is a bounded FIFO (1024), and a suppressed duplicate is logged so a host can tell
 adapter-level duplication from render-level duplication.
@@ -425,7 +425,7 @@ Build failed for project foo.
 `<ace_event>` is what tells a model the block came from another agent rather than the human; `arrived via` names
 the channel the event arrived on (a display label, not an address to publish to) and a reply goes to the
 `sender` channel. `activation` and `received at` are display-only too: the first is the value the sender asked
-for, never a delivery confirmation, and the second is the broker arrival time. The header is only the lines
+for, never a delivery confirmation, and the second is the Server arrival time. The header is only the lines
 before the first `<ace_body>`, and the body after it is verbatim: a body line shaped like `sender:` or
 `arrived via:` is body text, so the header is read positionally, never by line prefix.
 Nothing inside the block is repeated per event beyond that header; the provenance and trust rule is stated once
@@ -452,7 +452,7 @@ Pass `renderEvent` to `PiExtensionAdapter` to change the format.
 |---|---|
 | Non-conforming message | rejected; through a transport it is logged and dropped, `handleRawMessage` throws `AceValidationError` |
 | Transport or injection failure | propagated, so the transport can retry or dead-letter (RFC §17, design doc §30) |
-| Unreachable broker | the start fails once with the URL; reconnection is bounded and an outage after the start is reported at most once until commands succeed again |
+| Unreachable Server | the start fails once with the URL; reconnection is bounded and an outage after the start is reported at most once until commands succeed again |
 | Agent turn failure | reported through the engine's `onRunError` listener, since Pi records it on the assistant message rather than rejecting a send |
 | Injected but never surfaced (queued path) | the injection waits for the observation without a wall clock; the transport's `reclaimAttempts`/`reclaimIdleMs` is the backstop, so a host that never surfaces the event terminates rather than hangs (RFC §17) |
 | Injected but never surfaced (prompt path, `steer`) | the injection fails after `deliveryTimeoutMs`; the entry stays pending so reclaim can redeliver it (RFC §17). The redelivery of an identity the host already received re-waits only — it does not send a second copy |
@@ -470,7 +470,7 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
   capability (RFC §17); the runtime consumes from now on.
 - The agent directory is not part of ACE 0.1 (RFC §22 item 1) and carries no authentication: an entry
   states its own identity, and a peer's registration only decides where *that peer* is reached — this
-  session still publishes to the broker it was configured with. An entry's identity **is** its channel
+  session still publishes to the Server it was configured with. An entry's identity **is** its channel
   name, so a peer discovered through the directory is addressed by publishing to that channel.
 - Dedup and metrics are per process and per subscription: two runtimes reading one group each keep their own window,
   and identities are not shared across processes.
@@ -479,8 +479,8 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 - Spool files are written, never read back: retention is by `maxFiles` / `retentionMs`, and opening the file is the
   agent's job (the summary names it).
 - Reconnection is bounded: a failed read retries with `retryDelayMs` doubling up to `maxRetryDelayMs` and reports the
-  outage once, but a broker that is down at start fails the start rather than waiting for it.
-- `sender` and `sessionId` are claims: the broker's own permissions decide who may write a channel (see the security
+  outage once, but a Server that is down at start fails the start rather than waiting for it.
+- `sender` and `sessionId` are claims: the Server's own permissions decide who may write a channel (see the security
   notes), but the runtime cannot verify that a peer is who it says it is.
 - `AceRuntime` registers transports by subscription name and rejects a transport instance shared by two subscriptions,
   because every message would then be dispatched twice. Two subscriptions may use the same transport kind with different settings.
@@ -507,7 +507,7 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 
 ```bash
 npm test           # unit + integration tests (faux model, fake Redis client, no network)
-npm run verify:live   # the same runtime against a real broker (needs redis-server; no model needed)
+npm run verify:live   # the same runtime against a real Server (needs redis-server; no model needed)
 npm run verify:omp    # the extension inside a real oh-my-pi session (needs omp + a model; one small turn)
 npm run replay:dead-letters   # put dead-lettered events back on their streams (--dry-run to look first)
 ```
@@ -519,5 +519,5 @@ push and pull request; `verify:omp` runs locally because it needs an `omp` binar
 npm run check      # biome + tsc
 npm run build
 npm run example:basic   # in-memory transport, needs ACE_MODEL
-npm run example:redis   # Redis Streams consumer, needs ACE_MODEL + a broker
+npm run example:redis   # Redis Streams consumer, needs ACE_MODEL + a Server
 ```

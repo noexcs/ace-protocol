@@ -9,7 +9,7 @@ peer agents — become an active input to a running coding session.
 - **Host registration:** the host discovers the plugin through this package's `package.json` —
   `"omp": { "extensions": ["./extensions/ace.ts"] }`. Nothing is patched into the host.
 - **Layout:** `extensions/ace.ts` (the plugin), `extensions/ace-manager.ts` (the `/ace` manager view),
-  `test/extensions/*` (its tests), `scripts/verify-omp.ts` (end-to-end against a real host and broker),
+  `test/extensions/*` (its tests), `scripts/verify-omp.ts` (end-to-end against a real host and Server),
   `scripts/probe-system-prompt.ts` (a probe the verification loads beside the plugin).
 - **Gates:** `npm run check` (biome + tsc + the shared contracts), `npm test` (vitest), and
   `npm run verify:omp` (needs an `omp` binary and a model; it skips with a printed reason otherwise).
@@ -78,7 +78,7 @@ Resolution order, **first hit wins, no merging**: `$ACE_CONFIG` → `<cwd>/.ace.
 The one field that may still come from a file that lost is `username`: a project file can omit it and inherit
 the host-global file's value (or `$USER`). The file that actually won is always visible: the startup line
 prints it, `/ace list` shows it as the source, and when a project file shadows the global one a warning names
-the file it shadowed — silent precedence is how "why is my broker not used" bugs are born.
+the file it shadowed — silent precedence is how "why is my Server not used" bugs are born.
 
 A global file may also pin itself:
 
@@ -87,7 +87,7 @@ A global file may also pin itself:
 ```
 
 With that key the global file wins over any project `.ace.json`, so a cloned repository cannot point
-your session at its own broker. Absent it, the project file wins as it always has.
+your session at its own Server. Absent it, the project file wins as it always has.
 
 ## Inject events into a live Pi session
 
@@ -144,7 +144,7 @@ Two things that used to be configuration are deliberately built in and absent fr
 its `sender`; the user's trust decision in the conversation is what gates action.
 
 Secrets stay out of the file: `${VAR}` in any string is resolved from the environment when the file is read
-(`"url": "redis://:${REDIS_PASSWORD}@broker:6379"`), `$$` writes a literal `${`, and an unset variable fails the
+(`"url": "redis://:${REDIS_PASSWORD}@redis-host:6379"`), `$$` writes a literal `${`, and an unset variable fails the
 load instead of silently becoming an empty string.
 
 ### Bursts and redelivery
@@ -162,7 +162,7 @@ Deduplication is identity-based: `(sender, id)` is remembered for `dedupCapacity
 are remembered** — a redelivery after a failure is retried, never mistaken for a duplicate.
 
 When an entry is dropped after `reclaimAttempts`, the transport hands its last copy to the dead-letter sink first:
-one JSONL line per event (raw payload, broker id, attempts, reason) in `dead-letter.<timestamp>.jsonl`, in the same
+one JSONL line per event (raw payload, Server id, attempts, reason) in `dead-letter.<timestamp>.jsonl`, in the same
 directory as the burst files and with the same built-in retention (24h / 50 files). The entry is acknowledged
 **only once that line is fsynced**; a sink that cannot write leaves the entry pending — visible in the group's PEL —
 and reports the write error once. No summary event is injected: the agent already failed to receive it
@@ -251,7 +251,7 @@ down (RFC §22 item 1).
   died without one (measured: `SIGTERM` does not run `session_shutdown`, so the read path is what
   keeps the directory clean);
 - `ace_channels` lists what this session reads — the derived inboxes first, one per live server — read-only,
-  straight from `.ace.json`, without broker settings; a channel is a shared broadcast topic, not a private
+  straight from `.ace.json`, without Server settings; a channel is a shared broadcast topic, not a private
   mailbox;
 - `ace_agents` lists what is live right now; `ace_publish` accepts a channel name as `channel`, and a list of
   channels to publish one event to several peers at once. With several servers configured, prefix the name
@@ -409,7 +409,7 @@ Prompt guideline: call it before `ace_publish` when you do not already know the 
 > mailbox, so `inbox` names a topic every subscriber reads; a configured server that did not come up, and any
 > subscription it carried, is listed after the rows as an `unavailable:` line naming the server (or channel)
 > and why; `.ace.json` is read once at session start, so a channel removed from the file afterwards keeps
-> running until restart and carries `config-removed` in its row's note; broker settings are left out — address any
+> running until restart and carries `config-removed` in its row's note; Server settings are left out — address any
 > channel by name with ace_publish.
 
 **`ace_store_file {path, ttl?, name?}`** — store a local file on every live server and return the
