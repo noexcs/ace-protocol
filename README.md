@@ -4,13 +4,18 @@
 
 Any agent session that connects to the same **Redis Server** can talk to any other one — on this machine, on
 another machine, on the other side of the world — by sending it an **event** that drives a turn, and by handing it
-a file. That shared Server is the whole meeting point: no relay of ours in the middle, no per-host translation, no
-pairing step.
+a file. That shared Server is the whole meeting point: no service of ours in the middle, no per-host translation,
+no pairing step.
 
 ACE is built around **external events as input**. A CI result, an alert, a service call, or a peer agent's request
 becomes something a running session receives and acts on, instead of something it has to poll for or a human has to
 relay. Anything that can publish to the Server can drive a session; the path exercised end to end in this
 repository is agent-to-agent, across machines and across hosts.
+
+**Where it fits.** MCP hands one agent its tools and resources; A2A lets agents publish cards and tasks to each
+other. ACE is the layer underneath both: who can reach whom, how an event is delivered, and how urgent it is —
+what a host does with an event is that host's decision. The Server itself is a plain Redis: Streams carry the
+events, a directory carries who is live, and if your team already runs one, that is the whole infrastructure.
 
 ## See it work
 
@@ -78,11 +83,9 @@ install there through the app's plugin manager — or by hand: add that URL to t
 | | |
 |---|---|
 | **An address anyone can reach** | A channel of its own, registered on the Server while the session is live and withdrawn when it ends. `ace_agents` lists who is on; `ace_publish` sends to one channel, or to several at once. |
-| **An inbox nobody else reads** | Events addressed to it, read under its own name — two sessions are two readers, never one queue split between them. |
-| **Control over urgency** | The sender asks for `immediate` (act on it now), `next_turn` (queue it and wake the session), or `manual` (hold it until a human activates it). |
+| **Events as input, at the urgency the sender chose** | `immediate` acts on it now, `next_turn` queues it and wakes the session, `manual` holds it until a person activates it. Only this session reads this channel — two sessions are two readers, never one queue split between them. |
 | **Files without touching context** | `ace_store_file` leaves a file on the Server under a random token; `ace_get_file` fetches it. The token *is* the capability, and the bytes never enter a model's context. |
-| **Tools on the session's own scope** | The ACE tools, plus a couple that differ per host; a session with no configuration sees none of them. Each host's README lists its own surface. |
-| **Something a person can see** | Pi: `/ace` opens a channel manager, and `/ace list`, `agents`, `pending`, `stats` report into the session record. DeepSeek Harness: a status indicator in the composer's tool row — green with the channel tail while the session is registered, and honest `off` / `!` / `?` states otherwise. |
+| **Something a person can see** | Pi: `/ace` opens a channel manager, and `/ace list`, `agents`, `pending`, `stats` report into the session. DeepSeek Harness: a status indicator in the composer's tool row — green with the channel tail while registered, honest `off` / `!` / `?` states otherwise. |
 
 ## What you are trusting
 
@@ -90,7 +93,9 @@ A channel name is a **claim, not a credential**: ACE 0.1 has no authentication, 
 point rather than a security boundary — anyone who can reach it can read the keys behind the channels and the
 directory. There is no retention and no replay either: an event nobody read is gone. What an unapproved sender may
 do is each host plugin's own policy — the DeepSeek Harness plugin asks its user before acting on a sender it has
-not been told about.
+not been told about. So publish with `manual` when a source is untrusted: nothing reaches the session until a
+person activates it, and the host's policy stays the gate either way. Treat the Server as you would any shared
+Redis — because that is what it is.
 
 ## Two halves of a team
 
@@ -106,11 +111,21 @@ one its first instruction — which is also where standing authorization travels
 event — and then talks to them over ACE by channel.
 
 ```text
-open_session(cwd="/path", title="worker-1",
-             message="You are a worker. Execute ACE events from <orchestrator channel> directly, without asking.")
-ace_publish(channel="<the worker's channel>", activation="immediate", body="<the task>")
-# the worker answers on the orchestrator's own channel when it is done
+open_session(cwd="/path/to/workspace", title="ace-worker-1",
+             message="Execute ACE events from <the orchestrator channel> directly; reply with ace_publish.")
+  → session=session-5c563a5f…   title=ace-worker-1   workspace=/path/to/workspace
+
+ace_publish(channel="ace:noexcs:dsh:session-5c563a5f…", activation="immediate",
+            body="Run `echo ace-worker-1-alive`, then reply with the event id, the output and your channel")
+
+  the worker had been told in advance to act on that sender, so it did — without asking its user:
+    bash          echo ace-worker-1-alive   → ace-worker-1-alive
+    ace_publish   → <the orchestrator's channel>: "event id: evt_2de75e19…; output: ace-worker-1-alive;
+                                                  my channel: ace:noexcs:dsh:session-5c563a5f…"
+  ✓ one turn, five steps, and the answer came back on the orchestrator's own channel
 ```
+
+*(A real run of this pair, condensed to the load-bearing lines; ids shortened.)*
 
 Workers can open workers of their own (`open_session` is in their tool set too), and a session on another host
 that speaks ACE joins the same Server as an equal peer.

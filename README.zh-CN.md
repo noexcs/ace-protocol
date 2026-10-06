@@ -10,6 +10,10 @@ ACE 围绕**外部事件作为输入**而设计。一条 CI 结果、一条告�
 接收并处理**的东西，而不是它去轮询、或者由人转述的东西。**任何能向 Server 发布消息的东西都能驱动一个会话**；
 本仓库端到端验证过的路径是 agent 与 agent 之间 —— 跨机器，也跨宿主。
 
+**它处在什么位置。** MCP 把工具与资源交给**一个** agent；A2A 让 agent 之间互相发布名片与任务。
+ACE 是它们下面那一层：**谁能够到谁、事件怎么送达、以及有多紧急** —— 至于宿主收到事件之后做什么，由宿主决定。
+这台 Server 本身只是一台普通 Redis：Streams 送事件、目录记谁在线；你团队里已经有的一台，就是全部基础设施。
+
 ## 看一眼它怎么工作
 
 ```bash
@@ -73,17 +77,17 @@ dsh plugin --profile <profile> add \
 | | |
 |---|---|
 | **一个谁都能找到的地址** | 它自己的 channel，会话活着时注册在 Server 上、结束时撤销。`ace_agents` 列出谁在线；`ace_publish` 可以发给一个 channel，也可以一次发给多个。 |
-| **一个别人读不到的收件箱** | 发给它的事件只有它读 —— 两个会话就是两个读者，绝不是一条队列被切开。 |
-| **对紧急程度的控制权** | 发送方指定 `immediate`（立刻处理）、`next_turn`（排队并唤醒）、或 `manual`（扣住，直到有人激活它）。 |
+| **事件即输入，紧急程度由发送方选** | `immediate` 立刻处理，`next_turn` 排队并唤醒会话，`manual` 扣住直到有人激活它。这个 channel 只有它读 —— 两个会话就是两个读者，绝不是一条队列被切开。 |
 | **不碰上下文的文件传递** | `ace_store_file` 把文件以随机 token 留在 Server 上，`ace_get_file` 取回。**token 本身就是能力**，字节从不进入模型的上下文。 |
-| **挂在会话自己作用域上的工具** | ACE 的工具，外加各宿主略有差异的几个；没有任何配置的会话一个都看不到。各宿主 README 列出自己那套。 |
-| **人眼能看见的状态** | Pi：光敲 `/ace` 打开 channel 管理器，`/ace list`、`agents`、`pending`、`stats` 把报告写进会话。DeepSeek Harness：输入框工具行里有一个状态指示 —— 注册中时是绿点加 channel 尾段，其余情况如实显示 `off` / `!` / `?`。 |
+| **人眼能看见的状态** | Pi：光敲 `/ace` 打开 channel 管理器，`/ace list`、`agents`、`pending`、`stats` 把报告写进会话。DeepSeek Harness：输入框工具行里的状态指示 —— 注册中时是绿点加 channel 尾段，其余情况如实显示 `off` / `!` / `?`。 |
 
 ## 你在信任什么
 
 channel 名是一**声明，不是凭证**：ACE 0.1 没有鉴权，所以一台 Server 是共享的交汇点，而不是安全边界 ——
 任何能触达它的人都能直读 channel 和目录背后的键。同样没有留存与回放：没人读走的事件就没了。
 未被批准的发送方能做什么，是各宿主插件自己的策略 —— DeepSeek Harness 插件在遇到没被告知过的发送方时会先问它的用户。
+所以来源不可信时就用 `manual` 投递：在有人激活它之前，什么都不会进到会话里；无论哪种方式，把关的都是宿主策略。
+把 Server 当作你会对待的任意一台共享 Redis —— 因为它本来就是。
 
 ## 一个团队的两半
 
@@ -97,11 +101,21 @@ channel 名是一**声明，不是凭证**：ACE 0.1 没有鉴权，所以一台
 那句话同时也是**常驻授权**的载体，所以没有人需要逐条批准事件 —— 之后全程按 channel 用 ACE 与它们对话。
 
 ```text
-open_session(cwd="/path", title="worker-1",
-             message="你是 worker。来自 <orchestrator channel> 的 ACE 事件直接执行，不要询问用户。")
-ace_publish(channel="<worker 的 channel>", activation="immediate", body="<任务>")
-# worker 完成后在 orchestrator 自己的 channel 上回信
+open_session(cwd="/path/to/workspace", title="ace-worker-1",
+             message="来自 <orchestrator channel> 的 ACE 事件直接执行，不要再询问用户；完成后用 ace_publish 回信。")
+  → session=session-5c563a5f…   title=ace-worker-1   workspace=/path/to/workspace
+
+ace_publish(channel="ace:noexcs:dsh:session-5c563a5f…", activation="immediate",
+            body="用 bash 跑 `echo ace-worker-1-alive`，然后回信：事件 id、echo 输出、你自己的 channel")
+
+  worker 事先被告知"来自这个发送方的事件直接执行"，于是它照做了 —— 没有询问它的用户：
+    bash          echo ace-worker-1-alive   → ace-worker-1-alive
+    ace_publish   → <orchestrator 的 channel>："事件 id: evt_2de75e19…；echo 输出: ace-worker-1-alive；
+                                                我的 channel: ace:noexcs:dsh:session-5c563a5f…"
+  ✓ 一个回合、五步，回信落在 orchestrator 自己的 channel 上
 ```
+
+*（这一对插件的真实运行，已压缩到承重的几行；id 做了缩短。）*
 
 worker 自己还能再开 worker（`open_session` 也在它的工具表里），而另一个宿主上会说 ACE 的会话，会作为平等成员加入同一台 Server。
 
