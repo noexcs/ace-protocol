@@ -171,12 +171,14 @@ async function scenario(
 await scenario("valid", async ({ engine, publish, stream, group }) => {
 	await publish(message("evt_ok"));
 	await waitFor(() => engine.injections.length === 1);
-	const outstanding = await pending(stream, group);
+	// The ack is its own step, taken after the handler resolves — so wait for the state this
+	// scenario asserts instead of sampling the PEL the moment the injection shows up.
+	const acked = await waitFor(async () => (await pending(stream, group)) === 0);
 	check(
 		"valid event",
 		"injected + acked",
-		`injections=${engine.injections.length} pending=${outstanding}`,
-		engine.injections.length === 1 && outstanding === 0,
+		`injections=${engine.injections.length} pending=${await pending(stream, group)}`,
+		engine.injections.length === 1 && acked,
 	);
 });
 
@@ -185,12 +187,12 @@ await scenario("poison", async ({ engine, publish, stream, group }) => {
 	await admin.xAdd(stream, "*", { message: "not-json" });
 	await publish(message("evt_after_poison"));
 	await waitFor(() => engine.injections.length === 1);
-	const outstanding = await pending(stream, group);
+	const acked = await waitFor(async () => (await pending(stream, group)) === 0);
 	check(
 		"poison message",
 		"rejected + acked, stream continues",
-		`injections=${engine.injections.length} pending=${outstanding}`,
-		engine.injections.length === 1 && outstanding === 0,
+		`injections=${engine.injections.length} pending=${await pending(stream, group)}`,
+		engine.injections.length === 1 && acked,
 	);
 });
 
@@ -202,12 +204,13 @@ await scenario(
 		await publish(message("evt_reclaim"));
 		const stranded = await waitFor(async () => (await pending(stream, group)) === 1);
 		const redelivered = await waitFor(() => engine.injections.length === 1, 15_000);
-		const outstanding = await pending(stream, group);
+		// ... and the redelivery's own ack, which lands after its handler resolves.
+		const acked = await waitFor(async () => (await pending(stream, group)) === 0);
 		check(
 			"reclaim after failure",
 			"pending, then redelivered + acked",
-			`stranded=${stranded} redelivered=${redelivered} pending=${outstanding}`,
-			stranded && redelivered && outstanding === 0,
+			`stranded=${stranded} redelivered=${redelivered} pending=${await pending(stream, group)}`,
+			stranded && redelivered && acked,
 		);
 	},
 	{ config: { reclaimIdleMs: 300, count: 1, blockMs: 50 } },
