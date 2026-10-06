@@ -2,11 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# ace-claude-code and ace-omp depend on a *committed* copy of the runtime build (file:./vendor/ace-runtime):
-# a published plugin installs from this repo, and the omp extension loader needs the copy inside the
-# package, so the vendored dist must be tracked. Keep these negations after `dist/` so they win.
-!packages/ace-claude-code/vendor/ace-runtime/dist/
-!packages/ace-claude-code/vendor/ace-runtime/dist/**
+# ace-omp depends on a *committed* copy of the runtime build (file:./vendor/ace-runtime): the omp
+# extension loader needs the copy inside the package, so the vendored dist must be tracked. Keep these
+# negations after `dist/` so they win.
 !packages/ace-omp/vendor/ace-runtime/dist/
 !packages/ace-omp/vendor/ace-runtime/dist/**
 

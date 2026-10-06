@@ -66,7 +66,7 @@
 
 - **顺序（首命中胜、不合并）**：`$ACE_CONFIG` → `<cwd>/.ace.json` → **宿主提供的全局候选**。
 - **宿主提供位置，核心提供机制**：核心不知道自己在哪个宿主里跑，`globalConfigPaths` 由宿主算（omp 用
-  `omp config path` 的目录：`~/.omp/agent/ace.json`，XDG 时 `$XDG_CONFIG_HOME/omp/ace.json`；claude/codex 将来各自定）。
+  `omp config path` 的目录：`~/.omp/agent/ace.json`，XDG 时 `$XDG_CONFIG_HOME/omp/ace.json`；claude/codex 两个宿主**不做**，见 §4）。
   核心的 host-neutral 边界测试新增一条：**中性模块里不得出现宿主的状态路径/环境变量**（宿主的名字作为字段取值如
   `codingAgent: "oh-my-pi"` 是允许的，位置不行）。
 - **可见性**：实际生效的文件始终打印（启动行 + `/ace list` 的 `source`）；项目文件覆盖全局时，`warnings` 里明确写出被覆盖的文件 ✗→✓。
@@ -86,12 +86,9 @@
 
 ## 3. 实施批次（依赖顺序）
 
-1. ~~**两个宿主收口**~~ —— **已完成（2026-10-05）**：两个宿主都接上了 agent directory 自注册；各过一轮
-   独立评审（Codex 2 major + 5 minor、Claude 2 major + 3 minor），缺陷全修并带回归测试；门禁与 live smoke
-   全绿，已提交。**各自的现状与缺口记在包内文档**（本轮追加）：
-   `packages/ace-claude-code/README.md`、`packages/ace-codex/README.md` 的
-   **"Current state and open gaps"** 两节 —— Claude：清单缺 `mcpServers` 声明（channel 不注册时工具可能一起消失）；
-   Codex：无工具面，且 app-server 协议形状待与官方文档对齐。
+1. ~~**两个宿主收口**~~ —— **不做（2026-10-06）**：**只支持 oh-my-pi / Pi**，`ace-claude-code` 与
+   `ace-codex` 两个包已整包删除。历史留档（曾记一次）：两个宿主都接上过 agent directory 自注册并各过一轮独立评审；
+   本轮起不再推进，理由见 §4。
 2. ~~**拆包**~~ —— **已完成（2026-10-05）**：Pi / oh-my-pi 宿主插件拆成 `packages/ace-omp`（`extensions/ace.ts` +
    `extensions/ace-manager.ts` + 宿主侧测试与 `scripts/verify-omp.ts`），核心 `packages/ace-runtime` 保持
    host-neutral（边界测试守着"核心 src 里不得出现任何 Pi import"；原 `src/agent/pi-adapter.ts` 已删除——
@@ -106,37 +103,28 @@
    以及所有面向模型的列表/报告格式化（`src/tools/listing.ts`：`describeDiscovered` / `describeEndpoint` /
    `formatChannelListing` / `channelListingInput` / `formatChannelReport`）都搬进了核心，并纳入 host-neutral
    边界测试；ace-omp 只剩**绑定**（展开核心 spec + `execute` + `pi.registerTool`），依赖因此清掉了
-   `typebox` 与 `@earendil-works/pi-ai`。**剩余**：`ace-claude-code/src/tools.ts` 仍抄着一份文本 ✗ → 改为
-   引用核心 spec（它经 vendor dist 消费；本次 `--write` 已把统一后的 dist 同步过去），并补跨宿主文本一致性测试。
-   **绑定的硬事实（已取证）**：`oh-my-pi`/pi 有**原生工具 API**（`pi.registerTool`）；**Claude Code 与 Codex
-   都没有原生工具扩展点** —— Claude 插件的组件全集（skills / commands / agents / hooks / mcpServers /
-   lspServers / outputStyles / workflows / themes·monitors·evals / settings / channels）里只有 `mcpServers`
-   能加"模型可调用的工具"；Codex 插件 = skills / app integrations / MCP servers（hooks 可拦 MCP 工具调用）。
-   因此这两个宿主的工具面**只能**是 MCP。另需始终分清：**工具（出站）与 Channel（入站）是两条正交的轴** ——
-   Claude 上两者恰好同源（同一个 MCP server），Codex 上则是 MCP 工具 + app-server 两套。
+   `typebox` 与 `@earendil-works/pi-ai`。**收尾项已作废**：原先的剩余项是让 `ace-claude-code` 改引核心 spec
+   并补跨宿主文本一致性测试 —— 该宿主已删除，此收尾项随之取消。
+   **其他宿主的接线不做**：`oh-my-pi`/pi 有**原生工具 API**（`pi.registerTool`），而 Claude Code / Codex 没有
+   同样的原生工具扩展点 —— 它们的能力只能经 MCP，工具（出站）与 Channel（入站）也因此分成两条轴。这是另一个
+   宿主的接线工程，**本仓库不做**（2026-10-06：两个包已删除）。
 5. **迁移项**（`runtime-contracts.ts` §五）：删 `sessionId`、`ace_agents` → `ace_participants`、
    `config` → `dispatch`/`consume`、`body` 不透明化。
-   ~~**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、工具文本、docs、两个宿主 README 一次改齐）~~
+   ~~**`Transport` → `Broker` 改名**（代码、`.ace.json` 的键、工具文本、docs、宿主 README 一次改齐）~~
    —— **撤回（2026-10-05）**：见 §1.2。`Transport` 保留原名与"线路接缝"职责（它已在用：每订阅一个实例，
    `RedisStreamsTransport` + 测试用 `InMemoryTransport`），`server` 保留为配置域的词，不做这次改名。
 
-## 4. 宿主侧工作（**暂停，只记录，不动手**）
+## 4. 宿主侧工作（**不做：只支持 oh-my-pi / Pi**）
 
-> 决定（2026-10-05）：**当前只做 omp 插件**。下面这些留给以后，届时按序取用。
-
-| 宿主 | 剩余事项 | 状态 |
-|---|---|---|
-| `ace-claude-code` | **工具 spec 引用**：已改为从 `ace-runtime` 取名字/描述/schema（`src/tools.ts` 只剩 `ace_pending`/`ace_activate` 的宿主专属文本）✓；跨宿主一致性测试 `test/tool-text-unity.test.ts`（含"源码里不得出现共享文本的字面量"）✓ | **已完成** |
-| `ace-claude-code` | **解绑核心入口里的 Pi 适配器**：~~核心 `index` 仍 `export * from "./agent/pi-adapter.js"` → 消费者（claude/codex）被迫安装 Pi SDK~~ —— **已解决（2026-10-06）**：死掉的 `PiAdapter` 与 `QueuedEvent` 已删除，核心入口不再导出任何 Pi 适配器；承重的渲染/策略助手移到 `src/agent/event-rendering.ts`，`PiExtensionAdapter` 结构化地只依赖 `sendUserMessage` | **已完成** |
-| `ace-claude-code` | 工具**结果与错误**的文案也归核心（`TOOL_ERROR_TEXT`、`formatPublishResult`、`deliveredChannel`/`deliveredMember`/`failedTarget`、`formatDiscoveredSessions`）；claude 侧的 `ace_pending`/`ace_activate`/`ace_channels`/`ace_publish` 结果文案仍是自己一份 ✗ → 改为引用 | 待做 |
-| `ace-claude-code` | 清单加 `mcpServers` 条目（channel 不注册时工具仍可用）+ 真机验证同名 server 同时出现在两处 | 待做 |
-| `ace-codex` | 补 **MCP 工具面**（现在无工具面，只能入站）；并**按官方参考对齐 app-server envelope**（我们记的形状与公开文档的 JSON-RPC 2.0 有出入） | 待做 |
+> 决定（2026-10-06）：**唯一宿主是 oh-my-pi / Pi，插件是 `ace-omp`**。`ace-claude-code` 与 `ace-codex`
+> 两个扩展已整包删除，下面这些历史待办随之取消。留档（不再推进）：Claude 侧清单曾缺 `mcpServers` 声明、
+> 工具结果/错误文案仍自带一份；Codex 侧无工具面、app-server envelope 待对齐 —— 都属于已放弃的宿主。
 
 **文本归属规则（本轮的判据）**：**模型能读到的文本 → 核心**（工具名/描述/指引/参数说明/工具结果/工具错误 —— 已全部下沉 ✓，这样机制一变只改一处 ✓）；**只有人看得到的输出**（`/ace` 命令的回显、用法行、补全候选、TUI 管理器）留在宿主 ✓。
 
 **vendor 机制注意（已踩过）**：核心改一行 → 必须 `npm run build` → `node scripts/check-vendor-sync.ts --write`
-（现在同时同步 `ace-claude-code` 与 `ace-omp` 两份拷贝，缺目录时会 bootstrap ✓）。两个消费方都是**自包含**的：
-`ace-claude-code` 一直如此，`ace-omp` 在 2026-10-05 补上——因为 **omp 的扩展加载器解析不了指向"同级链接包"的 bare
+（现在只同步 `ace-omp` 一份拷贝，缺目录时会 bootstrap ✓）。唯一的消费方 `ace-omp` 是**自包含**的——
+它在 2026-10-05 补上，因为 **omp 的扩展加载器解析不了指向"同级链接包"的 bare
 `ace-runtime`**（同一探针显示 `redis`/`typebox` 能解析 ✓，所以问题出在"被链接的同级包"而不是 bare import 本身），
 扩展于是改为经包内 `vendor/ace-runtime/dist/index.js` 相对导入；消费包还要自己声明 vendored 运行时的依赖
 （`typebox`、`@earendil-works/pi-coding-agent`），`file:` 依赖不会替它装 ✗。
@@ -145,21 +133,21 @@
 
 | # | 缺口 | 证据 | 影响 |
 |---|---|---|---|
-| A | **CI 只覆盖 `ace-runtime`** | `.github/workflows/ci.yml` 只有一个 job；`ace-claude-code` / `ace-codex` 的 `check` / `test` 无人执行 | 宿主包里的坏测试（如 `this.calls`）能静默存活 |
+| A | **CI 只覆盖 `ace-runtime`** | `.github/workflows/ci.yml` 只有一个 job；宿主包的 `check` / `test` 无人执行（当时是 `ace-claude-code` / `ace-codex`，两包已在 2026-10-06 删除） | 宿主包里的坏测试（如 `this.calls`）能静默存活 |
 | B | **根目录两份契约文件无门禁** | 仓库根部没有 `package.json`/工作区，`ace-contracts.ts` / `runtime-contracts.ts` 只能手工 `tsc` | 契约改动不会被拦住 |
-| C | **runtime 的 vendor 快照无同步/校验** | `ace-claude-code` 依赖 `file:./vendor/ace-runtime`（只有 `dist`+`package.json`，**手工拷贝、无同步脚本、无标记**）；`ace-codex` 依赖 `file:../ace-runtime`（链工作区） | 一边手工、一边链接，改 runtime 后两边行为会静默分叉 |
-| D | **Codex 桥评审缺失** | `CodexBridgeReview` aborted | 出口在无人复核的状态下被人重写 |
+| C | **runtime 的 vendor 快照无同步/校验** | `ace-omp` 依赖 `file:./vendor/ace-runtime`（只有 `dist`+`package.json`，**手工拷贝、无同步脚本、无标记**） | 改 runtime 后 vendor 与当前构建静默分叉（历史：`ace-claude-code` 手工拷贝、`ace-codex` 链工作区，两包已删） |
+| D | **Codex 桥评审缺失** | `CodexBridgeReview` aborted | 历史记录；该桥已随 `ace-codex` 删除，相关代码不再存在 |
 
 | E | **仓库根部没有工作区** | 根目录无 `package.json` / 锁文件，根部 `biome.json`、两份契约只能靠各包转调 | 新工具的落脚点不明确（本次用 `ace-runtime` 转调解决 B） |
-| F | **没有 `ace-runtime` 导出面摘要** | 两个宿主各自为接线重读 6~8 次 `src` / vendor `.d.ts`（`.d.ts` 还被 read 工具截断，只能 `cat` 拿全文） | 每次都从 vendored 编译产物里考古 —— 两个子代理一半以上的耗时都在这里 |
+| F | **没有 `ace-runtime` 导出面摘要** | 宿主为接线重读 6~8 次 `src` / vendor `.d.ts`（`.d.ts` 还被 read 工具截断，只能 `cat` 拿全文） | 每次都从 vendored 编译产物里考古 —— 子代理一半以上的耗时都在这里 |
 
-**A、B 已在本次改动中修掉**：CI 新增 `hosts` job（bun + 两个宿主包矩阵，跑各自的 `check` / `test`）；
+**A、B 已在本次改动中修掉**：CI 新增 `hosts` job（bun + 宿主包矩阵，跑各自的 `check` / `test`；2026-10-06 起矩阵只剩 `ace-omp`）；
 `ace-runtime` 的 `check` 链上新增 `check:contracts`（对根部两份契约跑 `tsc --strict`，CI 无需再加步骤）。
 **C 完成**（`scripts/check-vendor-sync.ts`）：默认纯检查 —— 按 sha256 逐文件比 `packages/ace-runtime/dist` 与
 vendor 的 `dist`、并比版本；`--write` 就地刷新（只拷贝不同的文件、删掉构建里已不存在的、同步版本字段）；
 已接入 CI（`ace-runtime` job 的 `Build` 之后）。实测：基线 in sync ✓ → 人为造漂移被杀掉（exit 1）✓ →
 `--write` 修回 ✓ → 再检查 in sync ✓ → 两侧 sha256 一致 ✓。
-注意：`hosts` job 的实际结果要等两个子代理收口后才有意义 —— 它们正在改这两个包的代码与测试。
+注意：`hosts` job 现在只跑 `ace-omp`。
 
 ## 5. 派活前置件（本次已建）
 

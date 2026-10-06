@@ -394,7 +394,8 @@ export function aceCompletions(
 		{
 			value: prefix,
 			label: action,
-			description: action === "agents" ? "optional coding-agent filter, e.g. codex" : `${action} takes no arguments`,
+			description:
+				action === "agents" ? "optional coding-agent filter, e.g. oh-my-pi" : `${action} takes no arguments`,
 		},
 	];
 }

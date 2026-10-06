@@ -336,7 +336,7 @@ export interface ChannelDraft {
 // ─────────────────────────── 四、工具契约 ───────────────────────────
 
 /**
- * 核心三件是跨宿主一致的工具面；宿主可以再加自己的：Claude 插件额外提供 `ace_pending` /
+ * 核心三件是跨宿主一致的工具面；宿主可以再加自己的：omp 插件额外提供 `ace_pending` /
  * `ace_activate` 来管理 `manual` 事件（实测该插件暴露的就是这四件）。
  *
  * **待迁移**：运行时当前叫 `ace_agents`，契约改为 `ace_participants`。
@@ -417,14 +417,12 @@ export interface AceChannelTool {
  *    `publish`/`consume` 策略与元数据）住进 server，本地文件只剩 `username` + `servers{}`
  *    （`ServerConfigFile`）。
  * 5. **出站接缝**：`WireAdapter.inbound()` / `InboundEvent.ack()` 是目标形状，现状见上文。
- * 6. **Codex 宿主**：桥实现了入站驱动（ACE → 回合、忙时 steer、FIFO 持有），但**未注册 ACE 工具面**
- *    （Codex 会话目前不能 `ace_publish`）——见 `docs/ace-plan.md` §4（宿主侧工作暂停）。
- * 7. **配置退化**：`.ace.json` 只保留 `username` + server 列表；Channel 与订阅关系改由 server 承载，
+ * 6. **配置退化**：`.ace.json` 只保留 `username` + server 列表；Channel 与订阅关系改由 server 承载，
  *    同时承载层要从"启动时按配置建好"变成**可热插拔**（按订阅动态 start/stop，去重窗口、指标、pending、
  *    派生视图跟着订阅生命周期走）。
- * 8. **词汇统一（一次改齐，别留两套词）**：`Transport` → **`Server`**、`transport` 键 → server 概念、
+ * 7. **词汇统一（一次改齐，别留两套词）**：`Transport` → **`Server`**、`transport` 键 → server 概念、
  *    `prefix` → **`namespace`**、本地实例名 → **`ServerName`**；涉及 `src/transport/*`、`.ace.json` 的键、
- *    工具文本、`docs/`、两个宿主 README —— 与 §三 的"改名与迁移"清单合并执行。
+ *    工具文本、`docs/`、宿主 README —— 与 §三 的"改名与迁移"清单合并执行。
  */
 
 // ─────────────── 六、Server 承载的内容（模型） ───────────────

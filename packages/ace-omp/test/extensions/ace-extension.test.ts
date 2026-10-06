@@ -79,7 +79,7 @@ describe("argument completions", () => {
 			{ value: "list ", label: "list", description: "list takes no arguments" },
 		]);
 		expect(aceCompletions("agents co", pending)).toEqual([
-			{ value: "agents co", label: "agents", description: "optional coding-agent filter, e.g. codex" },
+			{ value: "agents co", label: "agents", description: "optional coding-agent filter, e.g. oh-my-pi" },
 		]);
 		expect(aceCompletions("nope ", pending)).toBeNull();
 	});

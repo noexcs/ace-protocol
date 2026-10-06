@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 /**
- * Vendor drift guard for the host packages that ship a **copy** of ace-runtime's build:
+ * Vendor drift guard for the host package that ships a **copy** of ace-runtime's build:
  *
- *   - `packages/ace-claude-code/vendor/ace-runtime` — the Claude plugin installs from this repo, so the
- *     copy is tracked and the host's `file:` dependency points at it.
  *   - `packages/ace-omp/vendor/ace-runtime` — the omp extension loader refuses a bare `ace-runtime`
  *     specifier from a linked sibling package, so the plugin imports the core through this copy,
  *     relative to its own file. See `docs/ace-plan.md`.
- *
- * `ace-codex` needs none of this: it depends on `file:../ace-runtime` and is launched by us, not by a
- * host loader.
  *
  * What it does:
  *   - compares `packages/ace-runtime/dist` (built) against each vendored `dist`, file by file, by
@@ -30,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RUNTIME = join(ROOT, "packages/ace-runtime");
-const VENDORS = ["packages/ace-claude-code/vendor/ace-runtime", "packages/ace-omp/vendor/ace-runtime"];
+const VENDORS = ["packages/ace-omp/vendor/ace-runtime"];
 const IGNORED = /(^|\/)(node_modules|\.git)(\/|$)|\.tsbuildinfo$/;
 const WRITE = process.argv.includes("--write");
 

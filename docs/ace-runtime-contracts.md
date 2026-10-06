@@ -204,7 +204,7 @@ agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | pl
 ace 0.1 publish id=evt_<uuid> sender=ace:noexcs:oh-my-pi:01a1 activation=next_turn targets=3 stored=2 failed=1 duplicates=0
 target=ace:noexcs:to-b status=stored peer_named=yes self_reads=no
 target=ace2:noexcs:tools-prefix status=stored peer_named=no self_reads=no
-target=codex status=failed error="no live channel matches \"codex\" (live session channels: local:ace:noexcs:oh-my-pi:01a1…)"
+target=ghost status=failed error="no live channel matches \"ghost\" (live session channels: local:ace:noexcs:oh-my-pi:01a1…)"
 ```
 
 ```text

@@ -224,7 +224,7 @@ export interface AgentRegistryOptions {
 
 export interface AgentRegistration {
 	sender: string;                      // 本会话的 sender 名 = 它注册的 channel（宿主算出后交给它）
-	codingAgent: string;                 // "oh-my-pi" | "pi" | "codex"
+	codingAgent: string;                 // "oh-my-pi" | "pi"（对端自述，任意名）
 	agentVersion?: string;
 	sessionId: string;                   // 只进自述文本（尾 6 位）
 	cwd: string;

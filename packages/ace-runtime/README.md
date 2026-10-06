@@ -162,7 +162,7 @@ Bump both to the same version, pack both, and attach both to one release:
 for p in ace-runtime ace-omp; do (cd packages/$p && npm version minor --no-git-tag-version); done   # or patch
 cd packages/ace-runtime && npm run build && cd ../..
 node scripts/check-vendor-sync.ts --write      # the plugin's vendor/ must carry the new build
-for p in ace-runtime ace-omp ace-claude-code ace-codex; do (cd packages/$p && bun run check && bun run test); done
+for p in ace-runtime ace-omp; do (cd packages/$p && bun run check && bun run test); done
 cd packages/ace-runtime && npm pack && cd ../ace-omp && npm pack && cd ../..
 git commit -am "chore(release): <version>" && git tag -a v<version> -m "ace <version>"
 git push && git push origin v<version>
@@ -227,14 +227,15 @@ ACE_EVENT='{"aceVersion":"0.1","id":"e1","sender":"ci","activation":"immediate",
 
 ## Host plugins
 
-The Pi / oh-my-pi plugin — install, `.ace.json`, injection semantics, bursts and redelivery, the
-agent directory, `/ace` commands and the tool surface — now ships as its own package:
-[`packages/ace-omp`](../ace-omp), documented in [`ace-omp/README.md`](../ace-omp/README.md).
+**oh-my-pi / Pi is the only host this repository supports**: the plugin is
+[`packages/ace-omp`](../ace-omp), documented in [`ace-omp/README.md`](../ace-omp/README.md) — install,
+`.ace.json`, injection semantics, bursts and redelivery, the agent directory, `/ace` commands and the
+tool surface.
 
 This package is the host-neutral core: protocol and validation, activation, the event dispatcher,
 spools and pending stores, the transports, the agent directory, the tool text and parameter schemas
 for `ace_publish`, `ace_agents`, `ace_channels`, `ace_store_file` and `ace_get_file`, and the
-`AgentEngine` contract the hosts implement.
+`AgentEngine` contract the host implements.
 
 ## Transports
 

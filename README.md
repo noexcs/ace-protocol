@@ -23,15 +23,12 @@ verify the design end to end.
 
 Feasibility experiment on **Pi** as the agent engine: an external event reaches a running Pi session,
 drives a turn (or is queued/deferred per `activation`), and two Pi agents can talk to each other over
-a real broker. Other agent hosts are planned, not started — see
-[the runtime README](packages/ace-runtime/README.md) for the host boundary, and
-[ace-omp](packages/ace-omp/README.md) for the Pi / oh-my-pi plugin.
+a real broker. **oh-my-pi / Pi is the only host this repository supports** — the plugin is
+[ace-omp](packages/ace-omp/README.md); see [the runtime README](packages/ace-runtime/README.md) for
+the host boundary.
 
-Verified on 2026-10-06: 618 tests pass and 6 fail — 481 in the host-neutral core across 31 test files,
-39 in the ace-omp host plugin across 3, 65 in the ace-codex bridge across 4, and in the ace-claude-code
-plugin 59 pass while 6 fail: its publish path still imports `isStreamKeyShaped`, a core helper the
-stream-free surface removed, so `ace_publish` there errors out (`isStreamKeyShaped is not a function`).
-That breakage predates this repository's latest release — the same 6 fail on the commit before it.
+Verified on 2026-10-06: 520 tests pass and 0 fail — 481 in the host-neutral core across 31 test files,
+and 39 in the ace-omp host plugin across 3.
 
 `npm run verify:live` in `packages/ace-runtime` covers 12 scenarios against a real Redis Streams broker
 (delivery, poison messages, reclaim after a failed delivery, dedup, open inbound, manual activation, burst

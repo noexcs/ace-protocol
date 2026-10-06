@@ -79,7 +79,7 @@ export interface AgentRegistryStore {
 export interface AgentRegistration {
     /** This session's sender name, which is also the channel it registers. */
     sender: string;
-    /** Coding agent this session runs in, e.g. `oh-my-pi`, `pi`, `codex`. */
+    /** Coding agent this session runs in, e.g. `oh-my-pi`, `pi` — any name the peer self-describes with. */
     codingAgent: string;
     agentVersion?: string;
     /** Session the description belongs to; shown as a short label. */

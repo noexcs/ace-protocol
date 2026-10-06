@@ -80,9 +80,9 @@ export declare const TOOL_TEXT: {
     readonly channels: {
         readonly description: string;
         /**
-         * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
-         * has no directory tool), so it is a separate piece a host appends or drops. Compose with
-         * {@link channelsToolText} rather than concatenating by hand.
+         * The tail about `ace_agents` only makes sense on a host that registers that tool, so it is a
+         * separate piece a host appends or drops. Compose with {@link channelsToolText} rather than
+         * concatenating by hand.
          */
         readonly agentsPointer: "— address live peers with ace_agents.";
         readonly guidelines: readonly ["Use a channel this session reads, or a live channel from ace_agents, as the ace_publish `channel`."];

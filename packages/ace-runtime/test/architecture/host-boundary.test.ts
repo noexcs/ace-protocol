@@ -15,9 +15,9 @@ const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const HOST_NEUTRAL_DIRECTORIES = ["src/protocol", "src/runtime", "src/transport", "src/tools"];
 const HOST_NEUTRAL_FILES = ["src/agent/agent-engine.ts"];
 const PI_IMPORT = "@earendil-works/";
-/** A host's own *state paths* and environment: naming one here would leak that host into every other.
+/** A host's own *state paths* and environment: naming one here would leak that host into the core.
  *  A host's name as a field *value* (`codingAgent: "oh-my-pi"`) is legitimate — only locations are not. */
-const HOST_SPECIFIC = /CLAUDE_|ACE_CODEX|"\.(omp|claude|codex)"|\.(omp|claude|codex)\//;
+const HOST_SPECIFIC = /"\.omp"|\.omp\//;
 
 /** Every TypeScript file under `dir`, relative to the package root. */
 function typescriptFiles(directory: string): string[] {
@@ -51,8 +51,8 @@ describe("host boundary", () => {
 	});
 
 	it("keeps every host's own paths and environment variables out", () => {
-		// The runtime is shared by three hosts now; a hardcoded `~/.omp`, `CLAUDE_*` or `ACE_CODEX_*` here
-		// would quietly become every host's default. Hosts pass their candidates in, they are not guessed.
+		// The core is host-neutral; a hardcoded `~/.omp` here would quietly become the host's default.
+		// The host passes its candidates in, they are not guessed.
 		const offenders = [...HOST_NEUTRAL_DIRECTORIES.flatMap(typescriptFiles), ...HOST_NEUTRAL_FILES].filter((file) =>
 			HOST_SPECIFIC.test(readFileSync(join(PACKAGE_ROOT, file), "utf8")),
 		);

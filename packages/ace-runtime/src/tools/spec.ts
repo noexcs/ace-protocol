@@ -317,9 +317,9 @@ export const TOOL_TEXT = {
 			"`config-removed`. Server settings (url, namespace, " +
 			"credentials) are left out",
 		/**
-		 * The tail about `ace_agents` only makes sense on a host that registers that tool (Claude Code
-		 * has no directory tool), so it is a separate piece a host appends or drops. Compose with
-		 * {@link channelsToolText} rather than concatenating by hand.
+		 * The tail about `ace_agents` only makes sense on a host that registers that tool, so it is a
+		 * separate piece a host appends or drops. Compose with {@link channelsToolText} rather than
+		 * concatenating by hand.
 		 */
 		agentsPointer: "— address live peers with ace_agents.",
 		guidelines: [

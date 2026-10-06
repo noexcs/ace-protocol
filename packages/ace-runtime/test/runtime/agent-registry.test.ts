@@ -226,7 +226,7 @@ describe("resolveTarget", () => {
 	});
 
 	it("reports what is live when nothing matches", () => {
-		expect(resolveTarget(entries, "ace:noexcs:codex")).toEqual({
+		expect(resolveTarget(entries, "ace:noexcs:unknown-agent")).toEqual({
 			ok: false,
 			reason: "not-found",
 			candidates: [

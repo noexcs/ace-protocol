@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [ace-claude-code, ace-codex, ace-omp]
+        package: [ace-omp]
     defaults:
       run:
         working-directory: packages/${{ matrix.package }}
@@ -22,15 +22,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      # ace-codex and ace-omp depend on `file:../ace-runtime`, whose `main`/`types` point at dist —
-      # so the runtime must be built before any host package can typecheck or test.
+      # ace-omp depends on `file:../ace-runtime`, whose `main`/`types` point at dist — so the runtime
+      # must be built before the host package can typecheck or test.
       - name: Build ace-runtime
         working-directory: packages/ace-runtime
         run: |
           bun install --frozen-lockfile
           bun run build
-      # Both host packages lock with bun.lock (ace-claude-code has no package-lock.json), so the
-      # install path is bun for both. `check` = biome + tsc; `test` = vitest.
+      # ace-omp locks with bun.lock, so the install path is bun. `check` = biome + tsc; `test` = vitest.
       - name: Install
         run: bun install --frozen-lockfile
       - name: Lint and types
@@ -76,9 +75,9 @@ jobs:
         run: npm run check
       - name: Build
         run: npm run build
-      # ace-claude-code depends on a hand-copied vendored build (file:./vendor/ace-runtime) while
-      # ace-codex follows the live package — without this, a runtime change silently forks the two
-      # hosts. Fails when the vendor copy is not the current build.
+      # ace-omp depends on a hand-copied vendored build (file:./vendor/ace-runtime) — without this, a
+      # runtime change silently forks the copy from the live package. Fails when the vendor copy is
+      # not the current build.
       - name: Vendored runtime is current
         run: node ../../scripts/check-vendor-sync.ts
       # Seven scenarios against the Redis service above: delivery, poison messages, reclaim after a
