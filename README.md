@@ -2,20 +2,34 @@
 
 > English | [中文](README.zh-CN.md)
 
-Any agent session that connects to the same **Redis Server** can talk to any other one — on this machine, on
-another machine, on the other side of the world — by sending it an **event** that drives a turn, and by handing it
-a file. That shared Server is the whole meeting point: no service of ours in the middle, no per-host translation,
-no pairing step.
+**ACE lets running agent sessions address each other and receive external events across machines**, using a Redis
+Server you already run as the meeting point — no service of ours in the middle, no per-host translation, no pairing
+step. An event drives a turn; a file moves by token.
 
-ACE is built around **external events as input**. A CI result, an alert, a service call, or a peer agent's request
-becomes something a running session receives and acts on, instead of something it has to poll for or a human has to
-relay. Anything that can publish to the Server can drive a session; the path exercised end to end in this
-repository is agent-to-agent, across machines and across hosts.
+**Why you would want it:**
 
-**Where it fits.** MCP hands one agent its tools and resources; A2A lets agents publish cards and tasks to each
-other. ACE is the layer underneath both: who can reach whom, how an event is delivered, and how urgent it is —
-what a host does with an event is that host's decision. The Server itself is a plain Redis: Streams carry the
-events, a directory carries who is live, and if your team already runs one, that is the whole infrastructure.
+- a **CI failure**, an alert, or a webhook wakes the session that should care — nobody relays it by hand;
+- one agent **asks another** to do something, and gets the answer back on its own channel;
+- a **worker on another machine** joins the same Server as an equal peer;
+- **across hosts**: an oh-my-pi session and a DeepSeek Harness session talk to each other with no translation.
+
+What arrives is an event, not a command. The sender chooses the urgency — `immediate`, `next_turn`, or `manual`
+(held until a person activates it) — and what the session does with it is the host's decision. Anything that can
+publish to the Server can drive a session; the path exercised end to end in this repository is agent-to-agent,
+across machines and across hosts.
+
+**Where it fits.** MCP gives an agent tools; A2A connects agents at the application/task layer; ACE delivers events
+to *running sessions* and makes them addressable. The Server is a plain Redis — Streams carry the events, a
+directory carries who is live — and that is what makes the reach work:
+
+```text
+Agent A ──event──►  Redis Server  ◄──event── Agent B        any machine, any host
+                         │
+                  directory: who is live
+```
+
+> **Trust note.** ACE 0.1 assumes a network you trust: there is no authentication or authorization, so the Server is
+> a meeting point, not a security boundary. [Details below.](#what-you-are-trusting)
 
 ## See it work
 
@@ -62,9 +76,9 @@ omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2
 omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
-The extension is loaded **at session start**, so installing or updating takes effect in a new session. Do not also
-pass `-e/--extension` for the same file: that loads a second copy of one module. Plain **Pi** has no plugin
-registry and loads the extension file directly — [the plugin README](packages/ace-omp/README.md) shows how.
+The extension loads **at session start**, so an install or update takes effect in a new session (and not before).
+Plain **Pi** has no plugin registry and loads the extension file directly — [the plugin README](packages/ace-omp/README.md)
+covers that, and the one mistake to avoid (passing `-e/--extension` *as well*, which loads a second copy).
 
 **DeepSeek Harness** — [`ace-dsh`](packages/ace-dsh/README.md)
 
@@ -74,9 +88,9 @@ dsh plugin --profile <profile> add \
 # then restart the host so the profile recomposes
 ```
 
-The desktop application's own profile is managed by the app (`dsh plugin --profile desktop` is refused), so
-install there through the app's plugin manager — or by hand: add that URL to the profile's `package.json`
-`dependencies`, add the package name to `dsh.profile.bundles`, then restart.
+The desktop application manages its own profile (`dsh plugin --profile desktop` is refused): install there through
+the app's plugin manager, or put the URL in the profile's `package.json` `dependencies` plus the package name in
+`dsh.profile.bundles`, then restart.
 
 ## What one session gets
 

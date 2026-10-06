@@ -2,17 +2,31 @@
 
 > [English](README.md) | 中文
 
-任何连上**同一台 Redis Server** 的 agent 会话，都能和另一个会话对话 —— 同一台机器上的、另一台机器上的、地球另一端的 ——
-方式是给它发一条**事件**去驱动它的回合，或者递给它一个文件。这台共享的 Server 就是全部的交汇点：中间没有我们的中继，
-没有按宿主做的翻译，也不需要配对。
+**ACE 让正在运行的 agent 会话能够互相寻址、并跨机器接收外部事件** —— 用你已经有的那台 Redis Server 作为交汇点：
+中间没有我们的服务、没有按宿主做的翻译、也不需要配对。一条事件驱动一个回合；一个文件按 token 传递。
 
-ACE 围绕**外部事件作为输入**而设计。一条 CI 结果、一条告警、一次服务调用、或者另一个 agent 的请求，会成为**正在运行的会话
-接收并处理**的东西，而不是它去轮询、或者由人转述的东西。**任何能向 Server 发布消息的东西都能驱动一个会话**；
-本仓库端到端验证过的路径是 agent 与 agent 之间 —— 跨机器，也跨宿主。
+**你为什么需要它：**
 
-**它处在什么位置。** MCP 把工具与资源交给**一个** agent；A2A 让 agent 之间互相发布名片与任务。
-ACE 是它们下面那一层：**谁能够到谁、事件怎么送达、以及有多紧急** —— 至于宿主收到事件之后做什么，由宿主决定。
-这台 Server 本身只是一台普通 Redis：Streams 送事件、目录记谁在线；你团队里已经有的一台，就是全部基础设施。
+- **CI 挂了**、一条告警、一个 webhook —— 直接唤醒该关心的那个会话，不需要人转述；
+- 一个 agent **叫另一个 agent** 做事，答案回到它自己的 channel 上；
+- **另一台机器上的 worker** 作为平等成员加入同一台 Server；
+- **跨宿主**：oh-my-pi 的会话和 DeepSeek Harness 的会话互相说话，不需要翻译。
+
+到达的是一条**事件，不是命令**。紧急程度由发送方选 —— `immediate`、`next_turn`、或 `manual`（扣住，等人激活）——
+而会话收到之后做什么，由宿主决定。**任何能向 Server 发布消息的东西都能驱动一个会话**；本仓库端到端验证过的路径
+是 agent 与 agent 之间 —— 跨机器，也跨宿主。
+
+**它处在什么位置。** MCP 给 agent 工具；A2A 在应用/任务层连接 agent；ACE 把事件**投递给正在运行的会话**、
+并让会话可被寻址。这台 Server 只是一台普通 Redis —— Streams 送事件、目录记谁在线 —— 而正是它撑起了这份可达性：
+
+```text
+Agent A ──事件──►   Redis Server   ◄──事件── Agent B        任意机器、任意宿主
+                        │
+                 目录：谁在线
+```
+
+> **信任提示。** ACE 0.1 假设网络是你信任的：它没有鉴权与授权，所以 Server 是交汇点，不是安全边界。
+> [详见下文。](#你在信任什么)
 
 ## 看一眼它怎么工作
 
@@ -58,8 +72,9 @@ omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2
 omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
-扩展是**在会话启动时**加载的，所以安装或更新要开新会话才生效。不要对同一个文件再传 `-e/--extension`：
-那会把同一个模块加载第二份。纯 **Pi** 没有插件注册表，它是直接加载扩展文件的 —— 见[插件 README](packages/ace-omp/README.md)。
+扩展**在会话启动时**加载，所以安装或更新要开新会话才生效（之前的会话不会变）。纯 **Pi** 没有插件注册表，
+它直接加载扩展文件 —— 见[插件 README](packages/ace-omp/README.md)（那里也写了唯一要避免的坑：
+再额外传一次 `-e/--extension`，会把同一个模块加载第二份）。
 
 **DeepSeek Harness** —— [`ace-dsh`](packages/ace-dsh/README.md)
 
@@ -69,8 +84,8 @@ dsh plugin --profile <profile> add \
 # 然后重启宿主，让 profile 重新组装
 ```
 
-桌面应用自己的 profile 由应用独占管理（`dsh plugin --profile desktop` 会被拒），所以那边的安装走应用内的插件管理 ——
-或者手工：把那个 URL 加到该 profile 的 `package.json` `dependencies`、把包名加到 `dsh.profile.bundles`，然后重启。
+桌面应用自己管理它的 profile（`dsh plugin --profile desktop` 会被拒）：那边的安装走应用内的插件管理，
+或者把 URL 加到该 profile 的 `package.json` `dependencies`、把包名加到 `dsh.profile.bundles`，然后重启。
 
 ## 一个会话得到什么
 
