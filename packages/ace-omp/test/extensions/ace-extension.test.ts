@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import aceExtension, { aceCompletions } from "../../extensions/ace.ts";
-import { channelMenuItems } from "../../extensions/ace-manager.ts";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import aceExtension, { aceCompletions, compactDescription } from "../../extensions/ace.ts";
+import { channelForMenuValue, channelMenuItems } from "../../extensions/ace-manager.ts";
 import { AceDeliveryObserver, renderAceEvent } from "../../vendor/ace-runtime/dist/index.js";
 
 // The extension reads the host-global config from `$XDG_CONFIG_HOME/omp/ace.json` (falling back to
@@ -21,6 +21,17 @@ afterAll(() => {
 	rmSync(configHome, { recursive: true, force: true });
 });
 
+// The process-global claims are the point of the duplicate-load guard, and every context in this file reports the
+// same session id: without a reset, the first test that starts a main session would own this process's surfaces for
+// the rest of the worker and every later instance would refuse. Each test therefore starts from a fresh process.
+/** Start from a fresh process: the surface and runtime claims are process-global on purpose. */
+function freshProcess(): void {
+	Reflect.deleteProperty(globalThis, Symbol.for("ace-runtime.extension.surface-claimed"));
+	Reflect.deleteProperty(globalThis, Symbol.for("ace-runtime.extension.runtime-claimed"));
+}
+
+beforeEach(freshProcess);
+
 describe("argument completions", () => {
 	it("offers the subcommands with their hints while the argument is empty", () => {
 		expect(aceCompletions("")).toEqual([
@@ -31,19 +42,45 @@ describe("argument completions", () => {
 				label: "activate",
 				description: "inject one retained event: /ace activate <sender> <id>",
 			},
+			{
+				value: "agents ",
+				label: "agents",
+				description: "other live sessions on the agent directory; optional coding-agent filter",
+			},
 			{ value: "stats ", label: "stats", description: "per-channel counters, spool windows, dead letters" },
+			{ value: "help ", label: "help", description: "list these commands" },
 		]);
 		expect(aceCompletions("st")?.map((item) => item.label)).toEqual(["stats"]);
+		expect(aceCompletions("a")?.map((item) => item.label)).toEqual(["activate", "agents"]);
 	});
 
-	it("completes the retained events for activate, and nothing else", () => {
+	it("completes the retained events for activate, and hints on a subcommand with no arguments", () => {
 		const pending = [{ sender: "ci", id: "evt_1", body: "Build failed" }];
 
 		expect(aceCompletions("activate ", pending)).toEqual([
 			{ value: "activate ci evt_1", label: "ci/evt_1", description: "Build failed" },
 		]);
 		expect(aceCompletions("activate nope", pending)).toBeNull();
-		expect(aceCompletions("list ", pending)).toBeNull();
+		// A subcommand that takes no argument answers with a hint rather than silence, and its value is the text as
+		// it stands: the host replaces the whole argument text with the candidate's value, so accepting the hint
+		// must leave the line the user typed untouched.
+		expect(aceCompletions("list ", pending)).toEqual([
+			{ value: "list ", label: "list", description: "list takes no arguments" },
+		]);
+		expect(aceCompletions("agents co", pending)).toEqual([
+			{ value: "agents co", label: "agents", description: "optional coding-agent filter, e.g. codex" },
+		]);
+		expect(aceCompletions("nope ", pending)).toBeNull();
+	});
+
+	it("keeps the whole id in the value — it is what activates the event — and shows its tail in the label", () => {
+		const id = "evt_3f2a8b1c-4e5d-6789-abcd-ef0123456789";
+
+		// Measured against omp 18.5.0: the host hands `getArgumentCompletions` the argument text and replaces
+		// exactly that with the chosen value, so a value holding only a suffix would delete what was typed.
+		expect(aceCompletions("activate ", [{ sender: "ci", id, body: "x" }])).toEqual([
+			{ value: `activate ci ${id}`, label: "ci/…456789", description: "x" },
+		]);
 	});
 });
 
@@ -74,6 +111,25 @@ describe("manager rows", () => {
 			"● session-inbox → redis-streams ace:lan:events:x · [in] · (self — peers reply here)",
 		]);
 	});
+
+	it("finds a row by the target it addresses, so an aliased channel still opens its details", () => {
+		// The regression: a row's value is `in:<channel>`, while `name` may be a different local label. Looking the
+		// row up by `name` made every aliased channel inert — enter produced no details and no message.
+		const subscriptions = [
+			{
+				name: "from-wsl",
+				channel: "ace:lan:in.mac",
+				transport: "redis-streams",
+				config: { stream: "ace:lan:in.mac" },
+				options: {},
+			},
+		];
+
+		expect(channelForMenuValue(subscriptions, "in:ace:lan:in.mac")?.name).toBe("from-wsl");
+		// A value that names no channel of this session is `undefined`, never a neighbouring row.
+		expect(channelForMenuValue(subscriptions, "in:from-wsl")).toBeUndefined();
+		expect(channelForMenuValue(subscriptions, "out:ace:lan:in.mac")).toBeUndefined();
+	});
 });
 
 /** A registered tool as these tests reach it: the handler directly, with arguments of any shape. */
@@ -87,6 +143,8 @@ interface RegisteredTool {
 /** The slice of `ExtensionAPI` the extension touches; nothing else is reached in these tests. */
 function fakeExtensionApi() {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	/** Every handler for an event, in registration order: what a second instance's load adds. */
+	const allHandlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
 	const tools: RegisteredTool[] = [];
 	const commands: Array<{
 		name: string;
@@ -95,6 +153,7 @@ function fakeExtensionApi() {
 	}> = [];
 	return {
 		handlers,
+		allHandlers,
 		tools,
 		commands,
 		// The factory uses exactly these members; the cast stands in for the rest of ExtensionAPI, so the
@@ -102,6 +161,7 @@ function fakeExtensionApi() {
 		api: {
 			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 				handlers.set(event, handler);
+				allHandlers.set(event, [...(allHandlers.get(event) ?? []), handler]);
 				return () => {};
 			},
 			registerTool: (definition: RegisteredTool) => void tools.push(definition),
@@ -117,12 +177,18 @@ function fakeExtensionApi() {
 /** A session context; only the fields the extension reads are present. */
 function fakeContext(kind: "main" | "sub", cwd: string) {
 	const notifications: string[] = [];
+	/** Every footer status write, in order; `undefined` is the clear. */
+	const statuses: Array<string | undefined> = [];
 	return {
 		notifications,
+		statuses,
 		ctx: {
 			cwd,
 			hasUI: true,
-			ui: { notify: (message: string) => void notifications.push(message), setStatus: () => {} },
+			ui: {
+				notify: (message: string) => void notifications.push(message),
+				setStatus: (_key: string, text: string | undefined) => void statuses.push(text),
+			},
 			sessionManager: { getSessionId: () => "01a102b6-9dac-75b6-80ca-21cbbf58e914" },
 			isIdle: () => true,
 			agent: { kind },
@@ -134,6 +200,98 @@ function withScratchDirectory(body: (dir: string) => Promise<void>): Promise<voi
 	const dir = mkdtempSync(join(tmpdir(), "ace-extension-"));
 	return body(dir).finally(() => rmSync(dir, { recursive: true, force: true }));
 }
+
+describe("the command surface", () => {
+	/** The `/ace` command as the host holds it, so a test can call the handler the way the user does. */
+	function aceCommand(commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }>) {
+		const command = commands.find((entry) => entry.name === "ace");
+		if (command === undefined) throw new Error("the ace command was not registered");
+		return command;
+	}
+
+	it("answers /ace help and /ace ? with the command list, runtime or not", async () => {
+		await withScratchDirectory(async (dir) => {
+			const { api, handlers, commands } = fakeExtensionApi();
+			aceExtension(api);
+			const { ctx, notifications } = fakeContext("main", dir);
+			// No configuration in this directory: nothing runs, and help must still answer.
+			await handlers.get("session_start")?.({}, ctx);
+			notifications.length = 0;
+
+			const command = aceCommand(commands);
+			await command.handler("help", ctx);
+			const help = notifications.join("\n");
+			expect(help).toContain("[ace] commands:");
+			expect(help).toContain("/ace — open the channel manager");
+			expect(help).toContain("agents — other live sessions on the agent directory");
+
+			await command.handler("?", ctx);
+			expect(notifications.join("\n")).toContain("[ace] commands:");
+		});
+	});
+
+	it("tells a missing configuration file from one that will not parse", async () => {
+		// Nothing to fix anywhere: create a file.
+		await withScratchDirectory(async (dir) => {
+			const { api, handlers, commands } = fakeExtensionApi();
+			aceExtension(api);
+			const { ctx, notifications } = fakeContext("main", dir);
+			await handlers.get("session_start")?.({}, ctx);
+			notifications.length = 0;
+
+			await aceCommand(commands).handler("list", ctx);
+			expect(notifications.join("\n")).toContain(`[ace] not running: add .ace.json to ${dir} and restart Pi`);
+		});
+
+		// A file that is there but broken: "add one" would be wrong advice, so the error is repeated instead.
+		await withScratchDirectory(async (dir) => {
+			freshProcess();
+			writeFileSync(join(dir, ".ace.json"), "{ not json }\n");
+			const { api, handlers, commands } = fakeExtensionApi();
+			aceExtension(api);
+			const { ctx, notifications } = fakeContext("main", dir);
+			await handlers.get("session_start")?.({}, ctx);
+			notifications.length = 0;
+
+			await aceCommand(commands).handler("list", ctx);
+			const text = notifications.join("\n");
+			expect(text).toContain("[ace] not running: config error:");
+			expect(text).toContain(".ace.json");
+			expect(text).not.toContain("restart Pi");
+		});
+	});
+
+	it("clears the footer status on shutdown, and a subagent session never writes one", async () => {
+		await withScratchDirectory(async (dir) => {
+			const { api, handlers } = fakeExtensionApi();
+			aceExtension(api);
+			const main = fakeContext("main", dir);
+			await handlers.get("session_start")?.({}, main.ctx);
+			await handlers.get("session_shutdown")?.({}, main.ctx);
+			// The session is gone, so the slot is cleared rather than left showing the last session's numbers.
+			expect(main.statuses).toEqual([undefined]);
+
+			const sub = fakeContext("sub", dir);
+			await handlers.get("session_start")?.({}, sub.ctx);
+			await handlers.get("session_shutdown")?.({}, sub.ctx);
+			// One runtime, in the session the human talks to: a subagent never writes the main session's status.
+			expect(sub.statuses).toEqual([]);
+		});
+	});
+});
+
+describe("human rows for a peer's registry description", () => {
+	it("keeps the fields a person uses and drops the debugging ones, leaving anything else alone", () => {
+		expect(
+			compactDescription(
+				"agent=codex | session=peer11 | cwd=/tmp/peer-x | host=build-02 | ip=192.168.2.11 | platform=darwin-arm64 | pid=90940",
+			),
+		).toBe("agent=codex | session=peer11 | cwd=/tmp/peer-x");
+		// Not our blob: a foreign sender's own words are shown whole, never trimmed to nothing.
+		expect(compactDescription("a human wrote this sentence")).toBe("a human wrote this sentence");
+		expect(compactDescription("")).toBe("");
+	});
+});
 
 describe("subagent sessions", () => {
 	it("starts nothing in a subagent session and says so for /ace", async () => {

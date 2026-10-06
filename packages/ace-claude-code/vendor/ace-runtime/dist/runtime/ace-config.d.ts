@@ -93,6 +93,11 @@ export interface ResolvedAceConfig {
     /** Configuration smells that are legal but almost always mistakes. */
     warnings: string[];
     source: string;
+    /**
+     * The later configuration candidate the winning file shadowed, when there is one. Exposed so a host's
+     * human face can say *which* global file the project file overrode, not only warn that it did.
+     */
+    shadowed?: string;
 }
 /** Validate a parsed `.ace.json` document. */
 export declare function parseAceConfig(value: unknown, source: string): AceConfigFile;

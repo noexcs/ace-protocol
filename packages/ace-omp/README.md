@@ -32,6 +32,16 @@ omp plugin list                        # → ace-omp, enabled, manifest ./extens
 An updated plugin takes effect in a **new session**: the extension is loaded at session start, so a session
 that is already running keeps the code it was started with — install or update, then restart.
 
+**Link once — do not also pass `-e/--extension` for the same file.** Both routes load this same module, so two
+instances register the same `/ace` command and the same five tools in one session. The host keeps the *last*
+definition registered under a name, so the second copy — the one that refuses to start a second runtime — used
+to end up owning `/ace`: measured against omp 18.5.0, `/ace agents` answered
+`not running: another ACE runtime already runs in this process` even though ACE was running. The extension now
+keeps that from happening: only one copy in a process runs ACE, and the other copy's `/ace` delegates to it
+(the delegate checks both copies are looking at the same session first — same working directory, same session id —
+and otherwise answers for itself), while the duplicate still warns about itself at session start. The flag is
+still a pointless second load — link once and restart.
+
 **Why the core is vendored.** The host's extension loader resolves relative imports and the plugin's own
 `node_modules`, but *not* a bare `ace-runtime` specifier that points at a linked sibling package: the
 extension then fails to load with `Cannot find package 'ace-runtime'` (probed against omp 18.5.0 — the
@@ -41,7 +51,8 @@ imports it by relative path — `../vendor/ace-runtime/dist/index.js`. After cha
 copy: `node scripts/check-vendor-sync.ts --write` at the repository root.
 
 Upstream **Pi** (not oh-my-pi) has no plugin registry and resolves relative to the package anyway, so
-`pi --extension /path/to/ace-omp/extensions/ace.ts` is enough there.
+`pi --extension /path/to/ace-omp/extensions/ace.ts` is enough there — and, exactly as above, that flag is the
+*only* route there: do not pass it twice.
 
 ### Upgrading from the pre-split package
 
@@ -126,8 +137,8 @@ group is the subscribing session's sender name, both derived from the channel na
 thing.
 
 `.ace.json` is the only source of MQ configuration — there is no environment fallback for servers or channels.
-`ACE_CONFIG` selects a different config file path; runtime lines always go to stderr, and `/ace list`
-prints the channel topology (ACE keeps nothing in the UI status slot).
+`ACE_CONFIG` selects a different config file path; runtime lines always go to stderr, and `/ace` reports the
+channel topology (in a TUI it also keeps one status line — see [`/ace` commands](#ace-commands)).
 
 Two things that used to be configuration are deliberately built in and absent from the file: burst spooling
 (`<cwd>/.ace/spool`, 20 events per one-second window) and the inbound filter — nothing drops an event because of
@@ -264,7 +275,9 @@ changed. The publisher also folds it into its own `sender` (`<namespace>:<userna
 a receiver reads who and which session it was from in one field.
 
 Short labels (the tail six characters, e.g. `e7f1a9`) appear in `/ace` output and in the tool text, because
-the leading characters of a uuidv7 are a timestamp that concurrent sessions share. A label is display-only and must
+the leading characters of a uuidv7 are a timestamp that concurrent sessions share. Inside a name, the omitted
+part is marked with an explicit `…` (`cap:cap:oh-my-pi:…e7f1a9`), so a shortened label can never be read as a
+full one; a name in a target position is never shortened. A label is display-only and must
 never be used as an identifier: neither the field nor the label is authorization (a peer can claim any `sessionId`,
 exactly like any `sender`).
 
@@ -273,14 +286,24 @@ exactly like any `sender`).
 | Command | Effect |
 |---|---|
 | `/ace` | in a TUI, opens the channel manager — framed list, arrows to move, enter for a channel's details, esc to close; everywhere else prints what `/ace list` prints |
-| `/ace list` | the channel report: identity, agent state, config source, every channel this session reads — the derived inboxes first, one per live server — with its address, activation and description, and the manual/dead-letter counters |
-| `/ace stats` | per-channel counters, spool windows, dead letters, pending `manual` count |
-| `/ace pending` | list retained `manual` events (`sender/id: body`) |
-| `/ace activate <sender> <id>` | inject a retained event as `next_turn` |
+| `/ace list` | the channel report: identity, agent state, config source, every channel this session reads — the derived inboxes first, one per live server — with its address, activation and description, the manual/dead-letter counters, the row's origin, and a `config:` line when this file shadowed a later candidate |
+| `/ace agents [filter]` | the live sessions on the agent directory (this one excluded) as `<target> — renews in 2m 10s — "self-description"`, and what this session is registered as. The optional filter matches the coding agent a session *runs*; an empty directory and a filter that matched nothing read differently. The row's left side is the publishable address, verbatim; the `k=v` blob on the right is compacted for this view to what a person reads (`agent`, `session`, `cwd`) — `host`, `ip`, `platform` and `pid` stay in the record and in what `ace_agents` returns |
+| `/ace pending` | the retained `manual` events: sender, session label, id label, how long ago it was stored, its subscription, and `(expires soon)` once it is within four hours of the 24h retention |
+| `/ace activate [<sender> [<id>]]` | inject one retained event as `next_turn`. The identity is the exact `(sender, id)` pair — a prefix never matches, because the pending store answers the first exact match. An argument that names no single event prints the candidates, each with the command that activates exactly that one |
+| `/ace stats` | `dead letters: M`, `transport: ok\|down`, per-channel counters and the open spool windows |
+| `/ace help` (or `/ace ?`) | the command list |
 
-The `list` hint is "channels this session reads; publish to any channel name". Arguments complete the way
-`/mcp`'s do: the action words come with a hint, and `activate` suggests the retained events themselves. ACE
-writes nothing to the UI status slot.
+Completions follow `/mcp`'s shape: the action words come with a hint while the argument is empty, `activate`
+suggests the retained events themselves, and a subcommand that takes no argument answers with a hint instead of
+with nothing.
+
+**Status line.** Where the host has a status row (the TUI), ACE writes one line to it: ` ace · N peers · M pending`,
+with `N` from the same directory walk `/ace agents` uses and `M` the runtime's own pending list. A configured
+server that never came up — or a transport error — replaces it with `<server> down` in the warning colour. It is
+refreshed after every `/ace` command, after a publish, and on the same ~30s heartbeat the directory renews its
+leases on; `session_shutdown` clears the slot, and only the main session ever writes it, so a subagent session
+never touches the status row the human is looking at. Print and RPC modes have no status row, so the write is a
+no-op there.
 
 ### Tools
 

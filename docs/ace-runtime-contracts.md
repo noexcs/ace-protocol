@@ -55,7 +55,7 @@
 
 ### 2.1 加载顺序与覆盖规则
 
-候选文件按序：`$ACE_CONFIG`（若设置）→ `<cwd>/.ace.json` → 宿主的全局候选（按宿主自己的顺序）。**第一个存在的文件胜出**；它后面第一个存在的文件进 `shadowed`，给一条 warning。某个全局候选声明了 `projectConfig:"ignore"` 时，项目 `<cwd>/.ace.json` 被移出候选（`$ACE_CONFIG` 仍排在它前面）。
+候选文件按序：`$ACE_CONFIG`（若设置）→ `<cwd>/.ace.json` → 宿主的全局候选（按宿主自己的顺序）。**第一个存在的文件胜出**；它后面第一个存在的文件进 `shadowed`，给一条 warning（`loadAceConfig` 与 `resolveAceConfig` 都带上它，后者供人类报告点名）。某个全局候选声明了 `projectConfig:"ignore"` 时，项目 `<cwd>/.ace.json` 被移出候选（`$ACE_CONFIG` 仍排在它前面）。
 
 其它字段都是**整份取用**，唯一的继承例外是 `username`：
 
@@ -69,7 +69,7 @@
 
 - `${VAR}` 从环境变量取值，发生在**解析之前**，作用于整份文档的字符串；
 - `$$` 写出一个字面 `$`（用于写 `$${VAR}` 这类字面量）；
-- 变量未设置 → 直接报错，**绝不退化成空串**（避免"配置看着对但连错地址"）。
+- 变量未设置 → 直接报错，**绝不退化成空串**（避免"配置看着对但连错地址"）。报错文本说明要在**启动 Pi 的那个 shell** 里 `export`（运行时读的是进程环境，改文件没用），并提示 `$$` 写字面 `$`。
 
 ### 2.3 一致性要求
 
@@ -349,15 +349,19 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 
 | 入口 | 契约 |
 |---|---|
-| `/ace`（TUI 无参） | 打开管理器视图，照 `/mcp`：标题框 + 可选中列表（`● 名`，行内含 transport/地址/`[in]`/activation/描述；注册表为本会话建的收件箱标 `(registered for this session)`）+ 页脚键位提示；选中通道显示 name/direction/transport/address/activation/description/来源；**只读**（ACE 不存通道策略，无可改项） |
-| `/ace list`（任意模式） | 打印通道报告：`身份 (agent 状态) — 配置来源`；`subscribe:` 每行 `名: transport 地址 [activation] "描述"`（收件箱标 `(registered for this session)`）；`manual: N pending, dead letters: M at 目录` |
-| 参数补全 | `getArgumentCompletions`（照 `/mcp`）：空参数列动作词 + 每项 hint；`activate` 补全保留事件（`sender/id` + 正文预览） |
-| `/ace pending` | 列出保留的 manual 事件（`sender (session 尾6)/id: body 截断`） |
-| `/ace activate <sender> <id>` | 取出一条 manual 事件并以 `next_turn` 注入；不存在则报错 |
-| `/ace stats` | manual 条数、死信条数与目录、spool 窗口、逐通道计数器、当前 sender |
-| 参数错误 | 打一行 `Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats` |
-| 风格 | 照 `/mcp`：每项一行 `名: 状态, 细节`，纯文本、无表格、无状态栏（**状态栏已取消**，拓扑改由 `/ace list` 输出） |
-| 日志 | 运行时行（listen/received/injecting/spool/…）始终写 stderr；**日志不含 body** |
+| `/ace`（无参） | TUI 里打开管理器视图，照 `/mcp`：标题框 + 可选中列表（`● 名`，行内含 transport/地址/`[in]`/activation/描述；本会话自己的收件箱标 `(self — peers reply here)`）+ 页脚键位提示；非 TUI 模式打印 `/ace list` 的文本报告。**选中一行**显示 `name`（列表用的本地标签）、`transport`、`address`（派生的 stream key，含逐字全名——全名要缩的地方都在别处缩，这里是可查证的位置）、`[activation]`、`description`、`origin`（配置订阅 → `configured in <配置文件名>`；自动收件箱 → `named by this session's sender on the agent directory`），本文件压过后一个候选时再补一行 `config: <配置来源> (project file shadows <被压文件>)`。行的 value 是 `in:<channel>`，查找**按 channel**、且只剥 `in:` 前缀（channel 名自身带冒号）：按本地标签查会让带 `(as "…")` 别名的行按 enter 毫无反应。**只读**（ACE 不存通道策略，无可改项） |
+| `/ace list`（任意模式） | 打印通道报告（`formatChannelReport`，只给人看）：`身份 (agent 状态) — 配置来源`；本文件压过后一个候选时补一行 `config: <来源> (project file shadows <被压文件>)`；`subscribe:` 每行以 `<server>:<名>: <transport>` 开头，其后按需追加空格分隔的段，顺序固定：`(as "<本地标签>")` → `[activation]` → `(self — peers reply here)` → `"描述"` → `(config-removed)`——`<server>:` 前缀只在多 server 时出现，故行里的名字就是可发布的 target（与 `ace_channels` 的机器面一致）；`(as "<本地标签>")` 只在绑定的本地标签（`EndpointConfig.name`）与行里显示的名字**不同**时出现（收件箱即如此：名字是 sender 命名的 channel，标签是 `session-inbox`；多 server 时标签自身带 `<server>:` 前缀）；**默认不印 stream key（`ace:ch:…`）**；本会话自己的收件箱 channel 由 sender 命名（末段是完整 session id），只把 `selfChannels` 命中的那些名字的末段缩成 `…<尾6>`（`formatSessionLabel`），省略处用显式省略号标出、绝不悄悄变短——这个位置是地址位，缩短后的名字不得被误当成可发布 target；其余名字（配置的订阅名、`unavailable*`、`config-removed`）逐字不动；**全名不丢**：管理器详情的 `address:` 一行给的是派生 stream key `ace:ch:<全名>`，完整 channel 名在那里；无订阅时 `subscribe:` 下是 `(none)` 加一句怎么加订阅；`unavailable:` 行沿用 §4.6 的措辞（server 级在前、订阅级在后）；`manual: N pending, dead letters: M`，仅当 `M > 0` 且已知目录时才带 `at <目录>`；`身份` 这一行由**宿主**拼，其中的 sender 缩成 `…<尾6>`（与行内收件箱同一规则）——最宽的一行不该由 36 字符的 session id 决定，全名仍在管理器详情的 `address:` 里 |
+| `/ace agents [filter]` | 与 `ace_agents` **同一份**收集/过滤/排序逻辑（宿主私有函数两个入口共用），只把渲染换成人读：首行 `live agents (N) — servers <名, 名>`，每行 `<可发布 target> — renews in <人读时长> — "<self-description>"`（多 server 时 target 带 `<server>:` 前缀，单 server 不带），末行 `(this session: <本会话 sender, 缩尾6> — not listed)`；时长用核心的 `formatDurationHuman`（`PT1M30S` → `1m 30s`，与 ISO 版 `formatIsoDuration` 成对）；**目录为空**与**过滤没命中**给不同的一句话（沿用工具侧的同一判定） |
+| `/ace help`（或 `/ace ?`） | 打印命令清单（`ACE_COMMANDS` 每项一行 + 首行 bare `/ace` 的说明）；不需要运行时即可回答——它讲的是命令，不是本会话的接线 |
+| 启动输出 | 人看的两行（stderr）：每台 server 一行 `[ace] up <sender 缩尾6> on <server> (ns=<namespace>)`，随后 `[ace] <sender 缩尾6> · config <配置来源> · <N> channel(s)`（多 server 共用同一 namespace/username 时 sender 会重名，故去重后列出）；`[ace] warning: …` 行保持不变。内部宽度（stream key `ace:ch:…`、`ttl=90000ms`、`redis-streams` 这类 transport 类型）从人看行移除——它们仍在运行时自己的日志行里，`ACE_DEBUG=1` 时另打一条 `reading …` 明细 |
+| 参数补全 | `getArgumentCompletions`（照 `/mcp`）：空参数列动作词 + 每项 hint；`activate` 补全保留事件（`sender/…尾6` + 正文预览）；**无参子命令**回一条"本命令无参数"的 hint、`agents` 回一条过滤器提示，而不是 `null`（空补全读起来像命令坏了）。**实测**（omp 18.5.0，pty 探针）：宿主把**整段参数文本**交给回调、并用所选选项的 `value` 替换这一段——所以 `value` 必须是整行（`activate ci evt_…`），只给"剩余后缀"会把用户已输入的字删掉；`null` 与 `[]` 都表示"没有补全"，行为一致 |
+| `/ace pending` | 列出保留的 manual 事件，每行 `sender · session 尾6 · <id 缩尾6> · <已存放时长> ago · <订阅名> · (expires soon)` 后接 ` — "body 截断"`；`(expires soon)` 在存放满 20h（默认 24h 保留窗）后出现，含义是"窗口要关了"而不是"这条旧"；末行 `activate with: /ace activate <sender> <id>` |
+| `/ace activate [<sender> [<id>]]` | 取出一条 manual 事件并以 `next_turn` 注入。身份是**精确的** `(sender, id)` 对，**绝不做前缀匹配**——`PendingEventStore.take` 取第一个精确匹配，补全前缀会静默激活另一条事件。零参数且只有一条 pending → 直接注入并说明激活了哪条（含 session 尾6）；零参数而多条、只给 sender 而该 sender 不唯一、或给了 sender+id 而匹配不到 → 列出候选并**逐条给出可直接运行的命令** `/ace activate <sender> <id>`；激活目标的选择从不经过 `ctx.ui.select`（宿主 `--auto-approve` 会自动选选择器的第一项，那正是激活错事件的方式），只在用户显式要求时才用选择器 |
+| `/ace stats` | 首行收窄为 `stats — dead letters: M → <目录>`（`M=0` 时不带目录；不再重复 `/ace list` 已有的 pending 条数与 sender）；第二行 `transport: ok\|down`（`transportErrorReported` 或存在未起来的 server 即 `down`）；随后逐通道计数器行与 spool 窗口行（原样保留）；还没有任何计数时说明它此后会统计什么，而不是只留 `(nothing yet)` |
+| 参数错误 | 打一行 `Usage: /ace (no argument opens the channel manager), /ace list, /ace pending, /ace agents [filter], /ace activate [<sender> [<id>]], /ace stats, /ace help`。未运行时分两种：**任何候选文件都不存在** → `not running: add .ace.json to <cwd> and restart Pi`；**有文件但配置阶段失败** → `not running: config error: <启动时记下的错误>`——区别在 session_start 就判定并记下（`configFileExists` 探候选文件，不靠错误文本猜） |
+| 风格 | 照 `/mcp`：每项一行 `名: 状态, 细节`，纯文本、无表格。**状态行（本轮恢复）**：宿主本 build 的 `ctx.ui.setStatus` 与 `ctx.ui.theme.fg` 已由 pty 探针实测可用（写入被接受并真的渲染出来，`undefined` 能清除），于是 ACE 重新写一条状态行——正常时 ` ace · N peers · M pending`（`N` 与 `/ace agents` 同一趟目录遍历，`M` = 运行时 pending 数），有 server 未起来或 transport 出错时改成 warning 色的 `<server> down`（无具名 server 时 `transport down`）。写入时机：每次 `/ace` 报告后、一次发布之后、以及目录心跳的 ~30s（复用 `REGISTRY_DEFAULTS.refreshMs` 这个常量，不引入第二个魔数）；`session_shutdown` 里 `setStatus("ace", undefined)` 清除，运行时不在了也清；**只在主会话写**（复用现有的 `isSubagentContext` 判定），没有状态行的模式（print/RPC、老 build）是 no-op |
+| 重复加载 | 同一会话里同一份 `ace.ts` 被加载两次（插件发现 + 显式 `-e` 指向同一文件）时：进程级运行时 claim 决定只有一份在跑；而**宿主解析 `/ace` 用的是加载时就存在的定义**（实测：`session_start` 里再注册一次并不生效），所以另一份副本的 `/ace` 会**委托**给拥有运行时的实例——委托前先比对两边是否同一个会话（同 `cwd`、同 session id，同进程），比对不通过就自己如实作答。输的那份报 `not starting a second runtime … this copy is inactive: drop the redundant --extension/-e flag`。实测（omp 18.5.0，pty，插件发现 + 显式 `-e` 同一文件）：修前 `/ace agents` 答 `not running: another ACE runtime already runs…`，修后由活着的副本正常作答 |
+| 日志 | 运行时行（received/injecting/spool/…）始终写 stderr；**日志不含 body** |
 
 ### 4.6 `ace_channels`
 

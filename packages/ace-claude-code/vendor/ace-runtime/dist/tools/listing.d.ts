@@ -110,7 +110,10 @@ export declare function channelListingInput(subscriptions: readonly EndpointConf
     /** Every channel name this session's own sender names — the rows `ace_channels` marks `self=yes`. */
     selfChannels: readonly string[];
 };
-/** Everything `/ace list` prints; the human face, so addresses are included (the tool's listing leaves them out). */
+/**
+ * Everything `/ace list` prints; the human face, so it is prose a person reads rather than the field
+ * rows `ace_channels` returns.
+ */
 export interface ChannelReport {
     identity: string;
     agentState: string;
@@ -118,6 +121,30 @@ export interface ChannelReport {
     subscriptions: readonly EndpointConfig[];
     /** The session's own channel names, one per server: `/ace list` marks those rows as the ones peers reply to. */
     selfChannels?: readonly string[];
+    /**
+     * The later configuration candidate the winning file shadowed (`loadAceConfig`). Its presence adds the
+     * `config:` line, so a project file that quietly overrode a host-global one is visible rather than
+     * silently explaining why the session talks to the wrong Redis.
+     */
+    shadowed?: string;
+    /**
+     * The server carrying each subscription, **same order and length as `subscriptions`**. Given more than
+     * one server, every line is prefixed `<server>:` so the name shown is already the publish-ready target
+     * (the same prefixed form `ace_channels` reports); a single server needs no prefix.
+     */
+    servers?: readonly string[];
+    /** Configured servers that never came up — one cause line each, in `formatChannelListing`'s wording. */
+    unavailableServers?: readonly {
+        name: string;
+        address: string;
+    }[];
+    /** Subscriptions dropped because their server never came up — one effect line each, same wording. */
+    unavailableSubscriptions?: readonly {
+        channel: string;
+        server: string;
+    }[];
+    /** Channel names a live subscription still reads that the current configuration no longer lists. */
+    configRemoved?: readonly string[];
     pendingManual: number;
     deadLetters: {
         count: number;
@@ -125,8 +152,30 @@ export interface ChannelReport {
     };
 }
 /**
- * The `/ace list` report: one line per channel with its address, in the house style `/mcp` uses
- * (`name: state, detail`), plus the session header and the counters an operator asks about after a while.
+ * The `/ace list` report: the session header, one line per channel, then the counters an operator asks
+ * about after a while — columns a person reads, in the house style `/mcp` uses (`name: state, detail`).
+ *
+ * ```text
+ * <identity> (agent <state>) — <config file>
+ * config: <config file> (project file shadows <shadowed file>)
+ * subscribe:
+ *   <target>: <transport> [activation] "description" (self — peers reply here) (config-removed)
+ *   (none)
+ *   add channels under a server's "subscribe" in .ace.json to read them.
+ * unavailable: server "ghost" did not come up (ghost:6379 is not reachable)
+ * unavailable: ace:ana:noop (server "ghost" did not come up)
+ * manual: 2 pending, dead letters: 1 at /work/.ace
+ * ```
+ *
+ * The line's name is the **publish-ready target**: with several servers it carries the `<server>:`
+ * prefix `ace_publish` expects. The transport **stream key** (`ace:ch:…`) is deliberately not printed —
+ * it is the width hog, and the manager's detail view has the full address.
+ *
+ * A session's own inbox is *named by its sender* (`<ns>:<username>:<coding-agent>:<session id>`), so its
+ * trailing session-id segment is shortened with {@link formatSessionLabel}; every other name is a
+ * publish target and is printed verbatim. `config-removed` marks a row a live subscription still reads
+ * although the current file no longer lists it, and the `config:` line appears only when this file
+ * shadowed a later candidate. `at <dir>` on the last line appears only when dead letters exist.
  */
 export declare function formatChannelReport(report: ChannelReport): string;
 //# sourceMappingURL=listing.d.ts.map

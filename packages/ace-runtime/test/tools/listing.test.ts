@@ -5,6 +5,7 @@ import {
 	compareDiscoveredSessions,
 	describeDiscovered,
 	formatChannelListing,
+	formatChannelReport,
 	serverAddress,
 } from "../../src/tools/listing.ts";
 
@@ -173,6 +174,128 @@ describe("formatChannelListing", () => {
 		expect(rows[0]).toBe("ace 0.1 channels count=1 self=0 unavailable=2");
 		expect(rows[2]).toBe('unavailable: server "ghost" did not come up (ghost:6379 is not reachable)');
 		expect(rows[3]).toBe('unavailable: ghost:noexcs:noop (server "ghost" did not come up)');
+	});
+});
+
+describe("formatChannelReport", () => {
+	const base = {
+		identity: "ana",
+		agentState: "running",
+		source: "/work/.ace.json",
+		pendingManual: 0,
+		deadLetters: { count: 0 },
+	};
+
+	it("prints the header, one transport-only line per subscription, and the counters", () => {
+		// The stream key (`ace:ch:…`) is deliberately absent: it is the width hog, and the manager's detail
+		// view has the full address. `at <dir>` is absent at zero dead letters.
+		expect(formatChannelReport({ ...base, subscriptions: [subscribed] })).toBe(
+			[
+				"ana (agent running) — /work/.ace.json",
+				"subscribe:",
+				'  ace:ana:from-wsl: redis-streams [next_turn] "the WSL agent"',
+				"manual: 0 pending, dead letters: 0",
+			].join("\n"),
+		);
+	});
+
+	it("prefixes every line with its server when more than one server is configured", () => {
+		const second = endpoint({ name: "ace:ana:ci-ok", channel: "ace:ana:ci-ok", description: "ci failures" });
+
+		const rows = formatChannelReport({
+			...base,
+			subscriptions: [subscribed, second],
+			servers: ["local", "lan"],
+		}).split("\n");
+
+		// The name is the publish-ready target, exactly the prefixed form `ace_channels` reports.
+		expect(rows[2]).toBe('  local:ace:ana:from-wsl: redis-streams [next_turn] "the WSL agent"');
+		expect(rows[3]).toBe('  lan:ace:ana:ci-ok: redis-streams "ci failures"');
+	});
+
+	it("says how to add a subscription when there is none", () => {
+		expect(formatChannelReport({ ...base, agentState: "idle", subscriptions: [] })).toBe(
+			[
+				"ana (agent idle) — /work/.ace.json",
+				"subscribe:",
+				"  (none)",
+				'  add channels under a server\'s "subscribe" in .ace.json to read them.',
+				"manual: 0 pending, dead letters: 0",
+			].join("\n"),
+		);
+	});
+
+	it("adds the config line, the unavailable pair and the dead-letter directory only when each applies", () => {
+		const rows = formatChannelReport({
+			...base,
+			agentState: "idle",
+			subscriptions: [],
+			shadowed: "/home/u/.config/ace.json",
+			unavailableServers: [{ name: "ghost", address: "ghost:6379" }],
+			unavailableSubscriptions: [{ channel: "ace:ana:noop", server: "ghost" }],
+			pendingManual: 3,
+			deadLetters: { count: 2, directory: "/work/.ace" },
+		}).split("\n");
+
+		expect(rows[1]).toBe("config: /work/.ace.json (project file shadows /home/u/.config/ace.json)");
+		// Cause first, then the subscription it dropped — the wording `formatChannelListing` uses, verbatim.
+		expect(rows[5]).toBe('unavailable: server "ghost" did not come up (ghost:6379 is not reachable)');
+		expect(rows[6]).toBe('unavailable: ace:ana:noop (server "ghost" did not come up)');
+		expect(rows[7]).toBe("manual: 3 pending, dead letters: 2 at /work/.ace");
+	});
+
+	it("drops only `at <dir>` when there are no dead letters", () => {
+		expect(
+			formatChannelReport({
+				...base,
+				subscriptions: [],
+				deadLetters: { count: 0, directory: "/work/.ace" },
+			}),
+		).toContain("manual: 0 pending, dead letters: 0");
+	});
+
+	it("marks a channel still read although the current config no longer lists it", () => {
+		const rows = formatChannelReport({
+			...base,
+			subscriptions: [subscribed],
+			configRemoved: ["ace:ana:from-wsl"],
+		}).split("\n");
+
+		expect(rows[2]).toBe('  ace:ana:from-wsl: redis-streams [next_turn] "the WSL agent" (config-removed)');
+	});
+
+	it("shortens a self channel's full session id with an explicit ellipsis, and only that", () => {
+		// The inbox is named by its sender, so its tail is a full session id a person never types. The `…`
+		// marks the omitted middle, so the row cannot be mistaken for a usable target; the manager's
+		// `address:` line still carries the full name inside the derived stream key.
+		const longInbox = endpoint({
+			name: "session-inbox",
+			channel: "ace:noexcs:oh-my-pi:0199c8ab-1234-7def-8abc-0123456789ab",
+		});
+
+		expect(
+			formatChannelReport({
+				...base,
+				subscriptions: [longInbox],
+				selfChannels: [longInbox.channel as string],
+			}).split("\n")[2],
+		).toBe('  ace:noexcs:oh-my-pi:…6789ab: redis-streams (as "session-inbox") (self — peers reply here)');
+	});
+
+	it("leaves a short self tail and a four-segment subscription name verbatim", () => {
+		// `01a10a` is already the tail a label would produce; `nightly` is a local name, not a session id —
+		// shortening either would invent a target that does not exist.
+		const shortInbox = endpoint({ name: "session-inbox", channel: "ace:ana:oh-my-pi:01a10a" });
+		const nightly = endpoint({ name: "ace:ana:build:nightly", channel: "ace:ana:build:nightly" });
+
+		const rows = formatChannelReport({
+			...base,
+			subscriptions: [shortInbox, nightly],
+			selfChannels: [shortInbox.channel as string],
+		}).split("\n");
+
+		expect(rows[2]).toBe('  ace:ana:oh-my-pi:01a10a: redis-streams (as "session-inbox") (self — peers reply here)');
+		expect(rows[3]).toBe("  ace:ana:build:nightly: redis-streams");
 	});
 });
 

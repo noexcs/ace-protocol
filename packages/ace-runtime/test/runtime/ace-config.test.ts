@@ -29,6 +29,16 @@ function writeConfig(directory: string, config: unknown): string {
 	return path;
 }
 
+/** The message of the error `run` throws — the tests assert on the human text, not on the class alone. */
+function errorMessageOf(run: () => unknown): string {
+	try {
+		run();
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	throw new Error("expected the call to throw");
+}
+
 const minimal = { username: "noexcs", servers: { local: { url: "redis://127.0.0.1:6379" } } };
 
 afterEach(() => {
@@ -121,6 +131,13 @@ describe("interpolateEnv", () => {
 		expect(() => interpolateEnv({ url: `${dollar}{PASS}` }, {}, ".ace.json")).toThrow(/is not set/);
 	});
 
+	it("says to export the variable in the shell that starts Pi, and that $$ is literal", () => {
+		const message = errorMessageOf(() => interpolateEnv({ url: `${dollar}{PASS}` }, {}, ".ace.json"));
+
+		expect(message).toContain("export PASS in the shell that starts Pi");
+		expect(message).toContain("write $$ for a literal $");
+	});
+
 	it("writes a literal with $$", () => {
 		expect(interpolateEnv({ url: `${dollar}${dollar}{PASS}` }, { PASS: "x" }, ".ace.json")).toEqual({
 			url: `${dollar}{PASS}`,
@@ -152,11 +169,16 @@ describe("loadAceConfig", () => {
 		expect(loadAceConfig({ cwd: temporaryDirectory(), env: {} })).toBeUndefined();
 	});
 
-	it("reports invalid JSON with the path", () => {
+	it("reports invalid JSON with the path, and names the trailing-comma/comment trap", () => {
 		const cwd = temporaryDirectory();
-		writeFileSync(join(cwd, ACE_CONFIG_FILENAME), "{ not json");
+		const path = join(cwd, ACE_CONFIG_FILENAME);
+		writeFileSync(path, "{ not json");
 
-		expect(() => loadAceConfig({ cwd })).toThrow(/not valid JSON/);
+		expect(errorMessageOf(() => loadAceConfig({ cwd }))).toContain(`${path} is not valid JSON`);
+
+		// The realistic hand-edit trap: JavaScript habits do not survive JSON.parse.
+		writeFileSync(path, '{ "username": "u", }');
+		expect(errorMessageOf(() => loadAceConfig({ cwd }))).toContain("JSON allows no trailing commas and no comments");
 	});
 });
 
@@ -225,6 +247,37 @@ describe("resolveAceConfig", () => {
 			{ name: "local", url: "redis://x", namespace: NAMESPACE_DEFAULT },
 			{ name: "lan", url: "redis://y", namespace: "lan" },
 		]);
+	});
+
+	it("exposes the shadowed candidate so a human face can name it, and omits it otherwise", () => {
+		const cwd = temporaryDirectory();
+		writeConfig(cwd, minimal);
+		const global = join(temporaryDirectory(), "ace.json");
+		writeFileSync(global, JSON.stringify({ ...minimal, username: "global-user" }));
+
+		expect(resolveAceConfig({ cwd, env: {}, globalConfigPaths: [global] }).shadowed).toBe(global);
+
+		const solo = temporaryDirectory();
+		writeConfig(solo, minimal);
+		expect(resolveAceConfig({ cwd: solo, env: {} }).shadowed).toBeUndefined();
+	});
+
+	it("hands a person a minimal .ace.json and how to fill it when no file exists", () => {
+		const cwd = temporaryDirectory();
+		const message = errorMessageOf(() => resolveAceConfig({ cwd, env: {} }));
+
+		expect(message).toContain(`no ${ACE_CONFIG_FILENAME} found`);
+		// The minimal example: a username and one server url.
+		expect(message).toContain('"username": "you"');
+		expect(message).toContain('"servers": { "local": { "url": "redis://127.0.0.1:6379" } }');
+		// The three filling instructions, one line each.
+		expect(message).toContain('"url" is the Redis address to dial; "namespace" defaults to "ace".');
+		expect(message).toContain(
+			'A short "subscribe" name such as "ci-ok" is uploaded as "ace:<username>:ci-ok"; a full name passes through.',
+		);
+		expect(message).toContain(
+			'A project file wins over a host-global one — add "projectConfig": "ignore" to that global file to pin it.',
+		);
 	});
 
 	it("resolves a short name against the only server, under that server's namespace", () => {

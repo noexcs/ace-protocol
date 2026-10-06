@@ -1,7 +1,7 @@
 import type { RegistryEntry } from "../runtime/agent-registry.ts";
 import type { EndpointConfig } from "../runtime/endpoint-config.ts";
 import { endpointAddress } from "../runtime/endpoint-config.ts";
-import { formatIsoDuration } from "../utils.ts";
+import { formatIsoDuration, formatSessionLabel } from "../utils.ts";
 
 /** Address of a channel inside its transport, whatever that transport calls it. */
 export function addressOf(endpoint: EndpointConfig): string {
@@ -181,7 +181,10 @@ export function channelListingInput(
 	};
 }
 
-/** Everything `/ace list` prints; the human face, so addresses are included (the tool's listing leaves them out). */
+/**
+ * Everything `/ace list` prints; the human face, so it is prose a person reads rather than the field
+ * rows `ace_channels` returns.
+ */
 export interface ChannelReport {
 	identity: string;
 	agentState: string;
@@ -189,36 +192,108 @@ export interface ChannelReport {
 	subscriptions: readonly EndpointConfig[];
 	/** The session's own channel names, one per server: `/ace list` marks those rows as the ones peers reply to. */
 	selfChannels?: readonly string[];
+	/**
+	 * The later configuration candidate the winning file shadowed (`loadAceConfig`). Its presence adds the
+	 * `config:` line, so a project file that quietly overrode a host-global one is visible rather than
+	 * silently explaining why the session talks to the wrong Redis.
+	 */
+	shadowed?: string;
+	/**
+	 * The server carrying each subscription, **same order and length as `subscriptions`**. Given more than
+	 * one server, every line is prefixed `<server>:` so the name shown is already the publish-ready target
+	 * (the same prefixed form `ace_channels` reports); a single server needs no prefix.
+	 */
+	servers?: readonly string[];
+	/** Configured servers that never came up — one cause line each, in `formatChannelListing`'s wording. */
+	unavailableServers?: readonly { name: string; address: string }[];
+	/** Subscriptions dropped because their server never came up — one effect line each, same wording. */
+	unavailableSubscriptions?: readonly { channel: string; server: string }[];
+	/** Channel names a live subscription still reads that the current configuration no longer lists. */
+	configRemoved?: readonly string[];
 	pendingManual: number;
 	deadLetters: { count: number; directory?: string };
 }
 
 /**
- * The `/ace list` report: one line per channel with its address, in the house style `/mcp` uses
- * (`name: state, detail`), plus the session header and the counters an operator asks about after a while.
+ * The `/ace list` report: the session header, one line per channel, then the counters an operator asks
+ * about after a while — columns a person reads, in the house style `/mcp` uses (`name: state, detail`).
+ *
+ * ```text
+ * <identity> (agent <state>) — <config file>
+ * config: <config file> (project file shadows <shadowed file>)
+ * subscribe:
+ *   <target>: <transport> [activation] "description" (self — peers reply here) (config-removed)
+ *   (none)
+ *   add channels under a server's "subscribe" in .ace.json to read them.
+ * unavailable: server "ghost" did not come up (ghost:6379 is not reachable)
+ * unavailable: ace:ana:noop (server "ghost" did not come up)
+ * manual: 2 pending, dead letters: 1 at /work/.ace
+ * ```
+ *
+ * The line's name is the **publish-ready target**: with several servers it carries the `<server>:`
+ * prefix `ace_publish` expects. The transport **stream key** (`ace:ch:…`) is deliberately not printed —
+ * it is the width hog, and the manager's detail view has the full address.
+ *
+ * A session's own inbox is *named by its sender* (`<ns>:<username>:<coding-agent>:<session id>`), so its
+ * trailing session-id segment is shortened with {@link formatSessionLabel}; every other name is a
+ * publish target and is printed verbatim. `config-removed` marks a row a live subscription still reads
+ * although the current file no longer lists it, and the `config:` line appears only when this file
+ * shadowed a later candidate. `at <dir>` on the last line appears only when dead letters exist.
  */
 export function formatChannelReport(report: ChannelReport): string {
-	const channel = (endpoint: EndpointConfig): string => {
+	const removing = new Set(report.configRemoved ?? []);
+	// A full session id is the one thing in a name a person never types: it identifies a session, and its
+	// tail alone does that. Only this session's own channels are sender-named, so only they are eligible;
+	// and only a segment that looks like an opaque id is shortened, so a local name is never mangled.
+	//
+	// Tradeoff: a self row is an address position, so the shortened form must not read as a usable target.
+	// The omitted middle is therefore an explicit `…`, never a silently shorter name — `<ns>:<user>:<agent>:…4e5f6`
+	// is visibly truncated. Nothing is lost: the manager's detail view (`/ace` with no argument) shows the
+	// full name in its `address:` line, which is the derived stream key `ace:ch:<full name>`.
+	const humanize = (name: string, self: boolean): string => {
+		if (!self) return name;
+		const segments = name.split(":");
+		if (segments.length < 4) return name;
+		const sessionId = segments[segments.length - 1] as string;
+		if (sessionId.length <= 6 || !/^[A-Za-z0-9_.-]+$/.test(sessionId)) return name;
+		return [...segments.slice(0, -1), `…${formatSessionLabel(sessionId)}`].join(":");
+	};
+	const channel = (endpoint: EndpointConfig, index: number): string => {
 		const target = endpoint.channel ?? endpoint.name;
-		const stream = endpointAddress(endpoint);
+		const self = report.selfChannels?.includes(target) === true;
+		const server = report.servers?.[index];
+		const label = server === undefined ? humanize(target, self) : `${server}:${humanize(target, self)}`;
 		const extras = [
 			endpoint.name === target ? undefined : `(as "${endpoint.name}")`,
 			endpoint.activation === undefined ? undefined : `[${endpoint.activation}]`,
-			report.selfChannels?.includes(target) === true ? "(self — peers reply here)" : undefined,
+			self ? "(self — peers reply here)" : undefined,
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
+			removing.has(target) ? "(config-removed)" : undefined,
 		].filter((part) => part !== undefined);
-		const where = `${endpoint.transport}${stream === undefined ? "" : ` ${stream}`}`;
-		return `  ${target}: ${where}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
+		return `  ${label}: ${endpoint.transport}${extras.length === 0 ? "" : ` ${extras.join(" ")}`}`;
 	};
-	const lines = (endpoints: readonly EndpointConfig[]): string[] =>
-		endpoints.length === 0 ? ["  (none)"] : endpoints.map(channel);
+	const deadServers = (report.unavailableServers ?? []).map(
+		(entry) => `unavailable: server "${entry.name}" did not come up (${entry.address} is not reachable)`,
+	);
+	const unavailable = (report.unavailableSubscriptions ?? []).map(
+		(entry) => `unavailable: ${entry.channel} (server "${entry.server}" did not come up)`,
+	);
 	const letters = `dead letters: ${report.deadLetters.count}${
-		report.deadLetters.directory === undefined ? "" : ` at ${report.deadLetters.directory}`
+		report.deadLetters.count > 0 && report.deadLetters.directory !== undefined
+			? ` at ${report.deadLetters.directory}`
+			: ""
 	}`;
 	return [
 		`${report.identity} (agent ${report.agentState})${report.source === undefined ? "" : ` — ${report.source}`}`,
+		...(report.shadowed === undefined
+			? []
+			: [`config: ${report.source ?? "this file"} (project file shadows ${report.shadowed})`]),
 		"subscribe:",
-		...lines(report.subscriptions),
+		...(report.subscriptions.length === 0
+			? ["  (none)", `  add channels under a server's "subscribe" in .ace.json to read them.`]
+			: report.subscriptions.map(channel)),
+		...deadServers,
+		...unavailable,
 		`manual: ${report.pendingManual} pending, ${letters}`,
 	].join("\n");
 }

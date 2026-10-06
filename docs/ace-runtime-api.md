@@ -169,6 +169,7 @@ export interface ResolvedAceConfig {
 	manual: { max?: number; ttlMs?: number };
 	warnings: string[];
 	source: string;
+	shadowed?: string;   // 本文件压过的后一个候选；供人类报告点名
 }
 ```
 

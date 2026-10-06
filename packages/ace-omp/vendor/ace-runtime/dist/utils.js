@@ -17,6 +17,28 @@ export function formatIsoDuration(totalSeconds) {
         return `P${days}D${time === "" ? "" : `T${time}`}`;
     return `PT${time === "" ? "0S" : time}`;
 }
+/**
+ * A whole number of seconds in the house's human style: the largest units first, space-separated, zero
+ * components dropped, at most one of each unit — `0` → `0s`, `130` → `2m 10s`, `3600` → `1h`,
+ * `90000` → `1d 1h`, `3661` → `1h 1m 1s`. This is what a person reads in a report; the ISO 8601 twin
+ * ({@link formatIsoDuration}) is what a log or a directory field carries. Fractions are rounded and a
+ * negative or non-finite value is treated as zero, exactly as {@link formatIsoDuration} does, and a
+ * value that rounds to zero is `0s` rather than the empty string.
+ */
+export function formatDurationHuman(seconds) {
+    const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
+    const days = Math.floor(total / 86_400);
+    const hours = Math.floor((total % 86_400) / 3_600);
+    const minutes = Math.floor((total % 3_600) / 60);
+    const secs = total % 60;
+    const parts = [
+        days > 0 ? `${days}d` : "",
+        hours > 0 ? `${hours}h` : "",
+        minutes > 0 ? `${minutes}m` : "",
+        secs > 0 ? `${secs}s` : "",
+    ].filter((part) => part !== "");
+    return parts.length === 0 ? "0s" : parts.join(" ");
+}
 /** Whether `value` is a plain object (not `null`, not an array). */
 export function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

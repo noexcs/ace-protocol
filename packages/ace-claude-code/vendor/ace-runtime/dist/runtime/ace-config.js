@@ -172,7 +172,7 @@ function readJsonFile(path) {
         return JSON.parse(readFileSync(path, "utf8"));
     }
     catch (error) {
-        throw new AceConfigError(`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+        throw new AceConfigError(`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)} — JSON allows no trailing commas and no comments`);
     }
 }
 /** The username a global candidate declares, for a project file that omitted one. */
@@ -197,8 +197,18 @@ export function resolveAceConfig(options) {
     const loaded = loadAceConfig(options);
     if (!loaded) {
         const looked = [join(options.cwd, ACE_CONFIG_FILENAME), ...(options.globalConfigPaths ?? [])];
-        throw new AceConfigError(`no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG): create one with ` +
-            `"username", "servers", and any channels to subscribe to`);
+        throw new AceConfigError([
+            `no ${ACE_CONFIG_FILENAME} found — looked in ${looked.join(", ")} (and in $ACE_CONFIG). Create one, for example:`,
+            "",
+            "  {",
+            `    "username": "you",`,
+            `    "servers": { "local": { "url": "redis://127.0.0.1:6379" } }`,
+            "  }",
+            "",
+            `  "url" is the Redis address to dial; "namespace" defaults to "ace".`,
+            `  A short "subscribe" name such as "ci-ok" is uploaded as "ace:<username>:ci-ok"; a full name passes through.`,
+            `  A project file wins over a host-global one — add "projectConfig": "ignore" to that global file to pin it.`,
+        ].join("\n"));
     }
     const { config, source, shadowed, usernameFallback } = loaded;
     const username = config.username !== "" ? config.username : (usernameFallback ?? env.USER ?? "");
@@ -229,6 +239,7 @@ export function resolveAceConfig(options) {
             ...islandWarnings(servers),
         ],
         source,
+        ...(shadowed === undefined ? {} : { shadowed }),
     };
 }
 /**
@@ -342,7 +353,7 @@ export function interpolateEnv(value, env, source, path = "") {
             .replace(ENV_PATTERN, (_match, name) => {
             const resolved = env[name];
             if (resolved === undefined) {
-                throw new AceConfigError(`${source}: ${path || "<root>"} uses \${${name}} but the variable is not set`);
+                throw new AceConfigError(`${source}: ${path || "<root>"} uses \${${name}} but the variable is not set — export ${name} in the shell that starts Pi (the runtime reads the process environment, not the file), and write $$ for a literal $`);
             }
             return resolved;
         })

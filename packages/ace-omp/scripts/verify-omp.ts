@@ -50,8 +50,12 @@ const check = (scenario: string, expectation: string, actual: unknown, ok: boole
 interface Scenario {
 	name: string;
 	event: AceMessage;
-	/** Frame types, and fragments the injected user message must contain given the channel's stream. */
-	expect: { frame?: string; userMessage?: (stream: string) => string[] };
+	/**
+	 * Frame types, and fragments the injected user message must contain. The `arrived via:` line carries the
+	 * **channel** name — the name a peer publishes to — never the transport's stream key, which the rendered
+	 * block deliberately does not contain.
+	 */
+	expect: { frame?: string; userMessage?: (channel: string) => string[] };
 	/** Whether a turn is expected at all — `manual` events are stored, not injected. */
 	turn: boolean;
 }
@@ -72,10 +76,10 @@ const scenarios: Scenario[] = [
 		},
 		expect: {
 			frame: "message_start",
-			userMessage: (stream) => [
+			userMessage: (channel) => [
 				"<ace_event>",
 				`sender: verify:verify:ci`,
-				`stream: ${stream}`,
+				`arrived via: ${channel}`,
 				"sender description: agent=ci | session=58e914 | cwd=/tmp/verify | host=verify-host",
 				"id: evt_next_turn",
 			],
@@ -248,6 +252,8 @@ for (const scenario of scenarios) {
 	// A unique channel per scenario keeps them isolated without configuring any address.
 	const local = `inbox-${run}-${scenario.name}`;
 	const stream = streamOf(local);
+	/** The uploaded channel name: what the rendered block's `arrived via:` line carries. */
+	const channel = channelName(namespace, username, local);
 	writeConfig(local);
 	const session = new OmpSession(scratch);
 	try {
@@ -258,12 +264,28 @@ for (const scenario of scenarios) {
 		}
 		// `ready` is emitted before the extension starts, and the consumer group is created at the
 		// stream's tail (`XGROUP CREATE … $`). Publishing before that point loses the event for good,
-		// so wait for the subscription to report itself live.
-		const listening = await session.waitForLog("listening", 60_000);
+		// so wait for the start-up lines, which the extension writes once the runtime is up.
+		const listening = await session.waitForLog("[ace] up ", 60_000);
 		if (!listening) {
 			check(scenario.name, "extension subscribes", `logs=${session.logs.slice(-3).join(" | ")}`, false);
 			continue;
 		}
+		// The start-up lines are the human face of a session coming up: one `up … on <server>` per server, then
+		// the sender, the config file it read and how many channels it reads. The internal widths — the stream
+		// key, the transport kind, the directory lease `ttl` — used to sit in the middle of one long sentence and
+		// must not come back: they belong to the runtime's own log lines and the manager's detail view.
+		const startup = session.logs.filter((line) => line.startsWith("[ace] "));
+		const startupText = startup.join(" | ");
+		check(
+			scenario.name,
+			"start-up output names each server and the config, without stream keys or lease internals",
+			startupText,
+			startup.some((line) => line.includes("[ace] up ") && line.includes("(ns=")) &&
+				startup.some((line) => line.includes("config ") && line.includes("channel(s)")) &&
+				!startupText.includes("ace:ch:") &&
+				!startupText.includes("ttl=") &&
+				!startupText.includes("redis-streams"),
+		);
 		await admin.xAdd(stream, "*", { message: JSON.stringify(scenario.event) });
 		const received = await session.waitForLog(`received id=${scenario.event.id}`, 60_000);
 
@@ -271,7 +293,7 @@ for (const scenario of scenarios) {
 		await new Promise((resolve) => setTimeout(resolve, scenario.turn ? 0 : 2_000));
 
 		const injected = session.userMessages.some((text) =>
-			(scenario.expect.userMessage?.(stream) ?? []).every((fragment) => text.includes(fragment)),
+			(scenario.expect.userMessage?.(channel) ?? []).every((fragment) => text.includes(fragment)),
 		);
 		const turns = session.frames.filter((frame) => frame.type === "turn_start").length;
 		const outstanding = await pending(stream);

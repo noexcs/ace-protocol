@@ -47,8 +47,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { appendFileSync, existsSync } from "node:fs";
+import { basename, join } from "node:path";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import {
 	ACE_CONFIG_FILENAME,
 	// The model-facing tool surface — names, descriptions, guidelines and parameter schemas — lives in
@@ -86,6 +92,7 @@ import {
 	formatChannelListing,
 	formatChannelReport,
 	formatDiscoveredSessions,
+	formatDurationHuman,
 	formatPublishResult,
 	formatSessionLabel,
 	GET_FILE_PARAMETERS,
@@ -95,6 +102,7 @@ import {
 	PUBLISH_PARAMETERS,
 	type PublishTargetRow,
 	REDIS_STREAMS_DEFAULTS,
+	REGISTRY_DEFAULTS,
 	type RedisStreamsAddClient,
 	type RedisXferClient,
 	type RegistryEntry,
@@ -106,6 +114,7 @@ import {
 	rejectUnknownArguments,
 	resolveAceConfig,
 	resolveChannelTarget,
+	resolveLocalName,
 	resolvePublishTargets,
 	SESSION_INBOX,
 	STORE_FILE_PARAMETERS,
@@ -125,7 +134,27 @@ import {
 	withTrustPolicy,
 	type XferTarget,
 } from "../vendor/ace-runtime/dist/index.js";
-import { channelMenuItems, showAceManager } from "./ace-manager.ts";
+import { channelForMenuValue, channelMenuItems, showAceManager } from "./ace-manager.ts";
+
+/** TEMPORARY duplicate-load probe: one line per observation, into $ACE_DUP_PROBE. */
+const COPY_ID: number = (() => {
+	const key = Symbol.for("ace-probe.copy-counter");
+	const g = globalThis as unknown as Record<symbol, number | undefined>;
+	g[key] = (g[key] ?? 0) + 1;
+	return g[key] as number;
+})();
+
+/** Probe sink: a file, because a TUI session swallows an extension's stderr. */
+function probeLog(line: string): void {
+	const path = process.env.ACE_DUP_PROBE;
+	if (path === undefined || path.length === 0) return;
+	try {
+		appendFileSync(path, `${line}\n`);
+	} catch {
+		// probe only
+	}
+}
+probeLog(`load copy=${COPY_ID} cwd=${process.cwd()}`);
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -181,8 +210,8 @@ function codingAgentName(pi: unknown): string {
 }
 
 /**
- * Runtime logs go to stderr: the human face is `/ace list` (ACE writes nothing to the UI status slot), and
- * stderr is what print/RPC runs and the verify scripts already read.
+ * Runtime logs go to stderr: the human face is `/ace`, and stderr is what print/RPC runs and the verify scripts
+ * already read. (The TUI status line is a summary, not a log: it is written by {@link refreshStatus}.)
  */
 function createLogger(ctx: ExtensionContext): AceLogger {
 	return {
@@ -204,6 +233,20 @@ export function ompGlobalConfigPath(env: Readonly<Record<string, string | undefi
 	const directory =
 		env.XDG_CONFIG_HOME === undefined ? join(env.HOME ?? "", ".omp", "agent") : join(env.XDG_CONFIG_HOME, "omp");
 	return join(directory, "ace.json");
+}
+
+/**
+ * Whether any configuration file is actually there — the same candidates {@link resolveAceConfig} reads, in
+ * the same order, without parsing any of them.
+ *
+ * `/ace` needs this to tell the two failure modes apart: with no file anywhere the fix is to create one, and
+ * with a file that will not parse the fix is to repair it. Guessing from the error text would break the day
+ * the runtime rewords that message.
+ */
+function configFileExists(cwd: string): boolean {
+	return [process.env.ACE_CONFIG, join(cwd, ACE_CONFIG_FILENAME), ompGlobalConfigPath(process.env)].some(
+		(path) => path !== undefined && path.length > 0 && existsSync(path),
+	);
 }
 
 function truncate(text: string, limit = 60): string {
@@ -237,20 +280,81 @@ const OMP_MANUAL_SPECIFICS =
 /** The publish tool is where `manual` is explained, so it carries both paragraphs. */
 const OMP_PUBLISH_SPECIFICS = `${OMP_CONFIG_SPECIFICS} ${OMP_MANUAL_SPECIFICS}`;
 
+/**
+ * The `k=v` fields of a sender description that a person reads in `/ace agents`, named and ordered the way
+ * `describeSender` writes them. The rest of that blob (`host`, `ip`, `platform`, `pid`) is debugging detail:
+ * it belongs to the directory record and to the machine listing, not to a human row (see
+ * {@link compactDescription}).
+ */
+const HUMAN_DESCRIPTION_FIELDS = ["agent", "session", "cwd"] as const;
+
+/**
+ * A peer's registry description as `/ace agents` shows it: the blob our own publisher writes into the directory
+ * (`agent=… | session=… | cwd=… | host=… | ip=… | platform=… | pid=…`) is a machine record, and a person reading
+ * the directory wants who runs there and where — the coding agent, the session, the working directory. The
+ * debugging fields (`host`, `ip`, `platform`, `pid`) stay in the record itself and in what `ace_agents` returns;
+ * nothing is rewritten where it is stored.
+ *
+ * A description that is not our blob — a foreign sender's own text, a different shape — is not touched: if none
+ * of the fields a human uses is present, the description is shown whole, verbatim.
+ */
+export function compactDescription(description: string): string {
+	const kept = description
+		.split("|")
+		.map((field) => field.trim())
+		.filter((field) => HUMAN_DESCRIPTION_FIELDS.some((key) => field.startsWith(`${key}=`)));
+	return kept.length === 0 ? description : kept.join(" | ");
+}
+
 /** Wrong or missing arguments get this, the way `/mcp` answers with its own usage line. */
-const ACE_USAGE = "Usage: /ace list, /ace pending, /ace activate <sender> <id>, /ace stats";
+const ACE_USAGE =
+	"Usage: /ace (no argument opens the channel manager), /ace list, /ace pending, /ace agents [filter], " +
+	"/ace activate [<sender> [<id>]], /ace stats, /ace help";
 
 /** The subcommands `/ace` offers, with the hint text its completions show — `/mcp`'s pattern. */
 const ACE_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
 	{ name: "list", description: "channels this session reads; publish to any channel name" },
 	{ name: "pending", description: "manual events retained for activation" },
 	{ name: "activate", description: "inject one retained event: /ace activate <sender> <id>" },
+	{ name: "agents", description: "other live sessions on the agent directory; optional coding-agent filter" },
 	{ name: "stats", description: "per-channel counters, spool windows, dead letters" },
+	{ name: "help", description: "list these commands" },
 ];
 
+/** One retained `manual` event, as `/ace pending` and `/ace activate` read it (RFC §7.3). */
+type PendingManualEvent = { message: AceMessage; subscriptionName: string; storedAt: number };
+
 /**
- * Completion candidates for `/ace`, shaped like `/mcp`'s: the action word (with its hint) while the
- * arguments are still empty, then the retained events themselves for `activate`.
+ * How old a retained event must be before `/ace pending` flags it `(expires soon)`: the default retention is
+ * 24h (`manual.ttlMs`), so four hours of warning leave room to act. The marker means "the window is closing",
+ * not "this one is old" — an event kept for three days by a longer `ttlMs` is never flagged early.
+ */
+const PENDING_EXPIRES_SOON_MS = 20 * 60 * 60 * 1000;
+
+/**
+ * `/ace help` (and `/ace ?`, the help word every other host already accepts): the command list, in the same
+ * order the completions offer, with bare `/ace` first because it is the one entry that has no argument word.
+ */
+function aceHelpText(): string {
+	return [
+		"[ace] commands:",
+		"  /ace — open the channel manager where the host has one; /ace list prints the report in any mode",
+		...ACE_COMMANDS.map((command) => `  ${command.name} — ${command.description}`),
+	].join("\n");
+}
+
+/**
+ * Completion candidates for `/ace`, shaped like `/mcp`'s: the action word (with its hint) while the argument is
+ * still empty, the retained events for `activate`, and a hint — never silence — for every other subcommand,
+ * because a completion list that comes back empty reads as a broken command, not as "this one takes no
+ * argument".
+ *
+ * A candidate's `value` is the **whole argument text** (`activate ci evt_1`), and the host is why: it hands
+ * `getArgumentCompletions` the argument text itself and replaces exactly that span with the chosen `value`
+ * (`CombinedAutocompleteProvider.getSuggestions` / `applyCompletion`). Measured against omp 18.5.0 with a probe
+ * command: typing `/probe one two` and completing produced the callback argument `prefix="one two"` and the
+ * line `/probe PROBEVAL`. A value carrying only the remaining suffix would therefore delete the words the user
+ * had already typed.
  */
 export function aceCompletions(
 	prefix: string,
@@ -268,21 +372,57 @@ export function aceCompletions(
 					description: command.description,
 				}));
 	}
-	if (action !== "activate") return null;
-	const typed = parts.slice(1).join(" ");
-	const matches = pending.filter(
-		(event) => `${event.sender} ${event.id}`.startsWith(typed) || event.sender.startsWith(typed),
-	);
-	return matches.length === 0
-		? null
-		: matches.map((event) => ({
-				value: `activate ${event.sender} ${event.id}`,
-				label: `${event.sender}/${event.id}`,
-				description: event.body.slice(0, 60),
-			}));
+	if (action === "activate") {
+		const typed = parts.slice(1).join(" ");
+		const matches = pending.filter(
+			(event) => `${event.sender} ${event.id}`.startsWith(typed) || event.sender.startsWith(typed),
+		);
+		return matches.length === 0
+			? null
+			: matches.map((event) => {
+					const short = formatSessionLabel(event.id);
+					return {
+						// The value stays whole — it is what activates the event — while the label a person reads
+						// carries only the id's tail (`formatSessionLabel`), the same shortening `/ace pending` uses.
+						value: `activate ${event.sender} ${event.id}`,
+						label: `${event.sender}/${short === event.id ? short : `…${short}`}`,
+						description: event.body.slice(0, 60),
+					};
+				});
+	}
+	const command = ACE_COMMANDS.find((candidate) => candidate.name === action);
+	if (command === undefined) return null;
+	// The other subcommands take no argument, or (for `agents`) a free-form one no local list can enumerate.
+	// The value is the text as it stands, so accepting the hint leaves the line exactly as the user typed it.
+	return [
+		{
+			value: prefix,
+			label: action,
+			description: action === "agents" ? "optional coding-agent filter, e.g. codex" : `${action} takes no arguments`,
+		},
+	];
 }
 
 /** Marks a process that already runs an ACE runtime, whichever route loaded the extension. */
+/**
+ * What the ACE instance that owns this process publishes for a duplicate load to call.
+ *
+ * Measured against omp 18.5.0: the host resolves a registered command from the definitions that exist when it
+ * loads the extensions, so a later `registerCommand` does not reach `/ace` — with the plugin discovered *and*
+ * an explicit `--extension` of the same file, `/ace` stays bound to the copy that lost the runtime claim and
+ * answers "not running". The owner therefore publishes this handle, and the other copy delegates to it, after
+ * checking that both are looking at the same session (`cwd` and session id), which is the only case in which
+ * delegating cannot mix two sessions' identities.
+ */
+const LIVE_ACE_MARKER = Symbol.for("ace-runtime.extension.live");
+
+/** The minimal surface a duplicate copy calls: the owner's own `/ace` handler, plus what identifies it. */
+interface LiveAceHandle {
+	cwd: string;
+	sessionId: string;
+	command: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+}
+
 const RUNTIME_CLAIMED_MARKER = Symbol.for("ace-runtime.extension.runtime-claimed");
 
 /**
@@ -328,6 +468,25 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 	let deadLetters: DeadLetterSink | undefined;
 	let registryErrorReported: string | undefined;
 	let claimedRuntime = false;
+	/** The handle this instance published for a duplicate copy, while it owns the runtime. */
+	let liveHandle: LiveAceHandle | undefined;
+	/**
+	 * Why this session started without a runtime, in the words `/ace` should repeat — `undefined` when no
+	 * configuration file was found at all, so the command can tell "create a file" from "fix this file".
+	 */
+	let startupFailure: string | undefined;
+	/** The heartbeat that keeps the footer status line current; started with the runtime, cleared on shutdown. */
+	let statusTimer: NodeJS.Timeout | undefined;
+	/** One status refresh at a time: a slow directory read must not stack up behind the heartbeat. */
+	let statusRefreshing = false;
+	/**
+	 * The label the human face shows for each channel: the local name the configuration file used
+	 * (`from-wsl`), not the uploaded name the tools address (`ace:ana:from-wsl`). Only `/ace list` and the
+	 * manager read it; `ace_channels` and the runtime keep the names they were given.
+	 */
+	const reportLabels = new Map<string, string>();
+	/** The server each channel lives on, keyed by channel: the report prefixes a row with it when several are live. */
+	const reportServers = new Map<string, string>();
 	/** The inboxes the directory registered for this session, one per live server; part of every channel listing. */
 	let sessionInboxes: EndpointConfig[] = [];
 	let shuttingDown = false;
@@ -430,6 +589,56 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		);
 	}
 
+	/**
+	 * A sender as a person reads it: the session-id segment shortened to its tail, which is exactly the label
+	 * the runtime's logs and rendered events already put on a session ({@link formatSessionLabel}). A sender
+	 * name is `<namespace>:<username>:<coding agent>:<session id>`, so only the last segment can want
+	 * shortening — a short name is returned untouched.
+	 *
+	 * This is for *labels about this session* (the `/ace list` header, the start-up lines). A name in a
+	 * target position is never shortened: the manager's detail view keeps `name:`/`address:` verbatim, so the
+	 * exact address stays discoverable.
+	 */
+	function shortSender(sender: string): string {
+		const segments = sender.split(":");
+		const id = segments[segments.length - 1] ?? "";
+		const short = formatSessionLabel(id);
+		return segments.length < 4 || short === id ? sender : [...segments.slice(0, -1), `…${short}`].join(":");
+	}
+
+	/** What one directory read yields: the rows to show, plus the shape a caller needs to render them. */
+	interface LiveDirectory {
+		/** Every other live session, in the directory's stable order. */
+		live: Array<{ server: string; entry: RegistryEntry }>;
+		/** The servers this session is live on, in registration order. */
+		servers: string[];
+		/** Whether more than one server is live, so a channel name needs its `<server>:` prefix to be a target. */
+		many: boolean;
+	}
+
+	/**
+	 * Every other live session this session can see, across every server it is on — one answer for both
+	 * `ace_agents` and `/ace agents`, so the model's view of the directory and the human's cannot disagree.
+	 *
+	 * Three rules, stated here once instead of twice: this session's own entry on each server is dropped (it
+	 * is not a peer), the optional filter matches the coding agent a session *runs* — which its
+	 * self-description states, not the channel name — and the order is the runtime's stable `(channel,
+	 * server)` order, because `renews_in` shrinks as peers renew and sorting on it would reorder rows
+	 * between two calls without anyone changing.
+	 */
+	async function discoverLiveSessions(agent: string | undefined): Promise<LiveDirectory> {
+		const live: Array<{ server: string; entry: RegistryEntry }> = [];
+		for (const active of activeServers) {
+			for (const entry of await active.registry.list()) {
+				if (entry.channel === active.sender) continue;
+				if (agent !== undefined && codingAgentOf(entry) !== agent) continue;
+				live.push({ server: active.server.name, entry });
+			}
+		}
+		live.sort(compareDiscoveredSessions);
+		return { live, servers: activeServers.map((active) => active.server.name), many: activeServers.length > 1 };
+	}
+
 	/** The sessions other than this one that are live right now, across every server this session is on. */
 	function agentsTool(): ToolDefinition<typeof AGENTS_PARAMETERS> {
 		return {
@@ -446,30 +655,11 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				if (activeServers.length === 0) {
 					throw new Error(TOOL_ERROR_TEXT.noDirectory);
 				}
-				const agent = input.agent;
-				const live: Array<{ server: string; entry: RegistryEntry }> = [];
-				for (const active of activeServers) {
-					for (const entry of await active.registry.list()) {
-						// This session is itself a live entry; listing it would be noise, not information.
-						if (entry.channel === active.sender) continue;
-						// The filter means the coding agent a session *runs*, which its self-description states;
-						// the channel name only carries it as a middle segment, behind a possible `<server>:` prefix.
-						if (agent !== undefined && codingAgentOf(entry) !== agent) continue;
-						live.push({ server: active.server.name, entry });
-					}
-				}
-				// Deterministic order: by channel name, then server name. The directory listings have no stable
-				// order of their own, and `renews_in` is recomputed at each call (the peer renews its lease), so
-				// sorting on it would reorder rows between two calls without the peers changing; a caller that
-				// re-reads the tool must see the same peers in the same places. The rule is stated in the tool
-				// description.
-				live.sort(compareDiscoveredSessions);
-				const limit = input.limit;
+				const { live, servers, many } = await discoverLiveSessions(input.agent);
 				// A channel name is unique per server, not across servers, so prefix the server when there is
 				// more than one: the label is exactly the `<server>:<channel>` form ace_publish accepts as a
 				// target. With one server the prefix is noise, so the row stays as it is.
-				const many = activeServers.length > 1;
-				const rows = live.slice(0, limit).map(({ server, entry }) =>
+				const rows = live.slice(0, input.limit).map(({ server, entry }) =>
 					describeDiscovered(entry, {
 						...(many ? { server } : {}),
 						// The same meaning as ace_channels: a channel this session's own sender names — on
@@ -482,8 +672,8 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 						{
 							type: "text",
 							text: formatDiscoveredSessions(rows, {
-								servers: activeServers.map((active) => active.server.name),
-								...(agent === undefined ? {} : { filter: agent }),
+								servers,
+								...(input.agent === undefined ? {} : { filter: input.agent }),
 							}),
 						},
 					],
@@ -705,6 +895,9 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				// Nothing stored is a failed call, but its text is the same field list — `stored=0` with one
 				// `status=failed` row per input — so the result shape does not depend on how many targets succeeded.
 				if (!rows.some((row) => row.status === "stored")) throw new Error(text);
+				// A delivery is one of the moments the status line's numbers can change (the peer count comes from
+				// the same directory walk, and a peer may have appeared while this call was resolving targets).
+				void refreshStatus();
 				return {
 					content: [{ type: "text", text }],
 					details: {
@@ -723,11 +916,8 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		};
 	}
 
-	pi.registerTool(publishTool());
-	pi.registerTool(agentsTool());
-	pi.registerTool(channelsTool());
-	pi.registerTool(storeFileTool());
-	pi.registerTool(getFileTool());
+	// The five ACE tools and the `/ace` command are registered by `registerOwnedSurfaces`: at the end of this
+	// factory, and again by the instance that takes this process's runtime claim (see `session_start`).
 
 	// A failed run does not reject `inject`; the failure shows up on the assistant message that ends
 	// it. Watch `message_end`, not `turn_end`: oh-my-pi treats `turn_end` as a *boundary* event, and
@@ -750,6 +940,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		sessionContext = ctx;
 		if (runtime) return;
 
+		const process_ = globalThis as unknown as Record<symbol, unknown>;
 		const currentSessionId = ctx.sessionManager.getSessionId();
 		sessionId = currentSessionId;
 
@@ -762,25 +953,40 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				globalConfigPaths: [ompGlobalConfigPath(process.env)],
 			});
 		} catch (error) {
-			report(ctx, `[ace] not started: ${describeError(error)}`, "warning");
+			const message = describeError(error);
+			// A file that is there but will not parse and a file that is not there at all need different
+			// fixes, so `/ace` repeats which one this was (`undefined` = nothing to fix, something to create).
+			startupFailure = configFileExists(ctx.cwd) ? `config error: ${message}` : undefined;
+			report(ctx, `[ace] not started: ${message}`, "warning");
 			return;
 		}
 
-		// Two instances of this extension can live in one process: plugin discovery plus an explicit
-		// `--extension` both resolve to this file (subagent rebinding stops above). A second runtime would
-		// join the same consumer group and silently split every channel's events between them, so only the
-		// first session in the process starts one.
-		const process_ = globalThis as unknown as Record<symbol, boolean | undefined>;
+		// The runtime claim below is also the *surface* claim, and it is the only one needed: whoever runs this
+		// process's ACE is the instance whose `/ace` and tools must be the ones the host keeps. Two instances of
+		// this file in one session (plugin discovery plus an explicit `--extension` of the same path) both
+		// register at load time, and the host keeps the **last** definition of a name — which would be the copy
+		// that then refuses to start a second runtime. Measured against omp 18.5.0 with both routes loaded:
+		// `/ace agents` reached that copy and answered `not running: another ACE runtime already runs…`, as if
+		// ACE were absent. So the winner re-registers the surfaces right after it takes the claim, and the loser
+		// registers nothing at all.
 		if (process_[RUNTIME_CLAIMED_MARKER] === true) {
-			report(
-				ctx,
-				"[ace] another ACE runtime already runs in this process; not starting a second one (extension discovery and --extension/-e both resolve to ace.ts — keep one)",
-				"warning",
-			);
+			startupFailure =
+				"another ACE runtime already runs in this process — this copy is inactive: drop the redundant --extension/-e flag (a linked plugin is discovered by itself)";
+			report(ctx, `[ace] not starting a second runtime: ${startupFailure}`, "warning");
 			return;
 		}
 		process_[RUNTIME_CLAIMED_MARKER] = true;
 		claimedRuntime = true;
+		registerOwnedSurfaces();
+		probeLog(
+			`claim copy=${COPY_ID} cwd=${ctx.cwd} sid=${currentSessionId} marker=${String(process_[RUNTIME_CLAIMED_MARKER])}`,
+		);
+		liveHandle = {
+			cwd: ctx.cwd,
+			sessionId: currentSessionId,
+			command: (commandArgs, commandCtx) => aceCommand.handler(commandArgs, commandCtx),
+		};
+		process_[LIVE_ACE_MARKER] = liveHandle;
 		sessionInboxes = [];
 
 		const logger = createLogger(ctx);
@@ -798,6 +1004,8 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		unavailableSubscriptions = [];
 		unavailableServers = [];
 		sessionInboxes = [];
+		reportLabels.clear();
+		reportServers.clear();
 		for (const server of resolved.servers) {
 			const sender = senderName({
 				namespace: server.namespace,
@@ -830,6 +1038,10 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 			}
 			activeServers.push({ server, sender, registry });
 			readChannels.add(sender);
+			// The human face names this row by the inbox label the file uses (`session-inbox`), not by the
+			// sender name the tools address; the row's own channel is the sender name either way.
+			reportLabels.set(sender, SESSION_INBOX);
+			reportServers.set(sender, server.name);
 			const inbox = subscriptionEndpoint({
 				channel: sender,
 				name: multi ? `${server.name}:${SESSION_INBOX}` : SESSION_INBOX,
@@ -851,6 +1063,22 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				continue;
 			}
 			readChannels.add(subscribed.channel);
+			reportServers.set(subscribed.channel, subscribed.server.name);
+			// The human report shows the name the file used (`from-wsl`), not the uploaded one
+			// (`ace:ana:from-wsl`): the row already carries the server prefix and the publishable target, and
+			// the channel name in `(as "…")` is a label, not an address. Recomputing the upload name from each
+			// configured entry is the only way back to the local name — the resolver keeps the channel only.
+			reportLabels.set(
+				subscribed.channel,
+				(subscribed.server.subscribe ?? []).find(
+					(local) =>
+						resolveLocalName({
+							namespace: subscribed.server.namespace,
+							username: resolved.username,
+							name: local,
+						}) === subscribed.channel,
+				) ?? subscribed.channel,
+			);
 			derived.push(
 				subscriptionEndpoint({
 					channel: subscribed.channel,
@@ -901,15 +1129,29 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		try {
 			await runtime.start();
 			resolvedConfig = resolved;
+			startupFailure = undefined;
 			pi.registerTool(publishTool(resolved));
-			const identity = activeServers.map((active) => active.sender).join(", ");
-			const servers = activeServers.map((active) => `${active.server.name} (${active.sender})`).join(", ");
-			// Startup chatter stays on stderr: the session UI should not repeat the same three lines every
-			// time ACE starts, and stderr is what print/RPC runs and the `/ace` status already cover.
-			console.error(
-				`[ace] ${identity} listening (${resolved.source}): servers ${servers}; reading ${subscriptions.map(describeEndpoint).join(", ")}`,
-			);
+			// Two human lines, and the width hogs are gone: the stream key, the transport kind and the lease
+			// ttl used to sit in the middle of a startup sentence nothing could read. They stay in the runtime's
+			// own log lines and in the manager's detail view; `ACE_DEBUG=1` prints the full reading list here.
+			// Startup chatter stays on stderr: stderr is what print/RPC runs and the verify harness read.
+			const identity = [...new Set(activeServers.map((active) => shortSender(active.sender)))].join(", ");
+			for (const active of activeServers) {
+				console.error(
+					`[ace] up ${shortSender(active.sender)} on ${active.server.name} (ns=${active.server.namespace})`,
+				);
+			}
+			console.error(`[ace] ${identity} · config ${resolved.source} · ${subscriptions.length} channel(s)`);
+			if (process.env.ACE_DEBUG === "1") {
+				console.error(`[ace] reading ${subscriptions.map(describeEndpoint).join(", ")}`);
+			}
 			for (const warning of resolved.warnings) console.error(`[ace] warning: ${warning}`);
+			// The footer status line follows the same ~30s cadence the directory heartbeat renews its leases on
+			// (`REGISTRY_DEFAULTS.refreshMs`), so the peer count is at most one heartbeat stale and no second
+			// magic number enters the file.
+			statusTimer = setInterval(() => void refreshStatus(), REGISTRY_DEFAULTS.refreshMs);
+			statusTimer.unref();
+			void refreshStatus();
 		} catch (error) {
 			// Nothing is running, so the next session in this process may try again.
 			if (claimedRuntime) {
@@ -918,6 +1160,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 			}
 			runtime = undefined;
 			resolvedConfig = undefined;
+			startupFailure = `could not start: ${describeError(error)}`;
 			report(
 				ctx,
 				`[ace] could not start: ${describeError(error)} (check the broker in .ace.json, then restart Pi)`,
@@ -928,6 +1171,13 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (isSubagentContext(ctx)) return;
+		// The status line describes a running runtime, and this session is going away: stop the heartbeat and
+		// clear the slot, so no stale peer count survives into whatever the host shows next.
+		if (statusTimer !== undefined) {
+			clearInterval(statusTimer);
+			statusTimer = undefined;
+		}
+		if (typeof ctx.ui.setStatus === "function") ctx.ui.setStatus("ace", undefined);
 		// Backstop for `agent_settled`: a session can end mid-run. Must run *before* `shutdownAce`
 		// stops the reader — the transport's `stop()` drains the delivery queue, and a queued wait
 		// that never gets released would make that drain hang on the entry it is holding.
@@ -935,9 +1185,12 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		// Order matters: `unregister` drops this session's own stream (and its group), so the reader has to
 		// be gone first — otherwise it wakes up to a deleted group and reports NOGROUP on the way out.
 		shuttingDown = true;
+		const process_ = globalThis as unknown as Record<symbol, unknown>;
+		if (process_[LIVE_ACE_MARKER] === liveHandle) process_[LIVE_ACE_MARKER] = undefined;
+		liveHandle = undefined;
 		if (claimedRuntime) {
 			// A session switch inside one process starts a fresh session with a fresh runtime.
-			(globalThis as unknown as Record<symbol, boolean | undefined>)[RUNTIME_CLAIMED_MARKER] = false;
+			process_[RUNTIME_CLAIMED_MARKER] = false;
 			claimedRuntime = false;
 		}
 		const active = runtime;
@@ -953,6 +1206,8 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		readChannels = new Set();
 		unavailableSubscriptions = [];
 		unavailableServers = [];
+		reportLabels.clear();
+		reportServers.clear();
 		activeServers = [];
 		addClients.clear();
 		xferClients.clear();
@@ -975,10 +1230,340 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		shuttingDown = false;
 	});
 
-	pi.registerCommand("ace", {
-		description: "ACE event runtime: list channels, pending manual events, activation",
+	/**
+	 * The channel listing the human face draws: the same rows, each named by the local label the configuration
+	 * file used instead of the uploaded name the tools address.
+	 *
+	 * Only `/ace list` and the manager read this. `ace_channels`, the spool file names and every log line keep
+	 * exactly the names they were given, so nothing model-visible or on-disk moves.
+	 */
+	function humanListing(listing: { subscriptions: readonly EndpointConfig[]; selfChannels: readonly string[] }): {
+		subscriptions: readonly EndpointConfig[];
+		selfChannels: readonly string[];
+	} {
+		return {
+			subscriptions: listing.subscriptions.map((endpoint) => {
+				const label = reportLabels.get(endpoint.channel ?? endpoint.name);
+				return label === undefined || label === endpoint.name ? endpoint : { ...endpoint, name: label };
+			}),
+			selfChannels: listing.selfChannels,
+		};
+	}
+
+	/** `/ace agents [filter]`: the same directory `ace_agents` reads, as lines a person reads. */
+	async function agentsReport(filter: string | undefined): Promise<string> {
+		const { live, servers, many } = await discoverLiveSessions(filter);
+		const where = `(servers: ${servers.join(", ")})`;
+		// Two empty directories, two different pieces of news: a filter that matched nothing blames the filter,
+		// an empty directory says nobody is registered at all.
+		if (live.length === 0) {
+			return filter === undefined
+				? `[ace] no other live sessions ${where}`
+				: `[ace] no live session matches agent filter ${JSON.stringify(filter)} ${where}`;
+		}
+		const rows = live.map(({ server, entry }) => {
+			const renewsIn = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
+			// The name is the publish-ready target: with several servers it already carries the `<server>:`
+			// prefix, so the row needs no second copy of the server name.
+			const target = many ? `${server}:${entry.channel}` : entry.channel;
+			return `  ${target} — renews in ${formatDurationHuman(renewsIn)} — ${JSON.stringify(compactDescription(entry.description))}`;
+		});
+		// What this session is itself registered as: the directory lists these too, and the rows above exclude
+		// them, so the count and the rows stay reconcilable.
+		const mine = activeServers.map((active) =>
+			many ? `${active.server.name}:${shortSender(active.sender)}` : shortSender(active.sender),
+		);
+		return [
+			`[ace] live agents (${live.length}) — servers ${servers.join(", ")}`,
+			...rows,
+			`  (this session: ${mine.join(", ")} — not listed)`,
+		].join("\n");
+	}
+
+	/** `/ace pending`: the retained `manual` events, short enough to scan in one screen. */
+	function pendingReport(events: readonly PendingManualEvent[]): string {
+		if (events.length === 0) return "[ace] no pending manual events";
+		const now = Date.now();
+		const rows = events.map((event) => {
+			const ageMs = Math.max(0, now - event.storedAt);
+			const short = formatSessionLabel(event.message.id);
+			const fields = [
+				event.message.sender,
+				...(event.message.sessionId === undefined
+					? []
+					: [`session ${formatSessionLabel(event.message.sessionId)}`]),
+				// A label, not a value to type: the full id is what `/ace activate` lists and takes, and the row
+				// only needs to tell two retained events apart while someone reads the list.
+				short === event.message.id ? short : `…${short}`,
+				`${formatDurationHuman(ageMs / 1000)} ago`,
+				event.subscriptionName,
+				...(ageMs >= PENDING_EXPIRES_SOON_MS ? ["(expires soon)"] : []),
+			];
+			return `  ${fields.join(" · ")} — ${JSON.stringify(truncate(event.message.body))}`;
+		});
+		return [
+			`[ace] pending manual events (${events.length}):`,
+			...rows,
+			"activate with: /ace activate <sender> <id>",
+		].join("\n");
+	}
+
+	/**
+	 * `/ace activate [<sender> [<id>]]`: name exactly one retained event and inject it.
+	 *
+	 * The identity is an exact `(sender, id)` pair, never a prefix of one. `PendingEventStore.take` answers the
+	 * first exact match, so completing a prefix would silently activate a *different* event than the one the
+	 * user meant; "no such event", "several events from that sender" and "several pending in total" all answer
+	 * with the candidate list, one runnable command per event. With no argument at all a single pending event
+	 * is unambiguous and is activated directly, and several are a list to choose from — the chooser is a
+	 * printed command, never `ctx.ui.select`, because the host's `--auto-approve` picks a selector's first row
+	 * by itself, which is how the wrong event would get activated.
+	 */
+	async function activateCommand(rest: readonly string[], ctx: ExtensionCommandContext): Promise<string> {
+		const active = runtime;
+		if (active === undefined) return notRunningMessage(ctx.cwd);
+		const pending = active.pendingEvents;
+		if (pending.length === 0) return "[ace] no pending manual events";
+		const runnable = (event: PendingManualEvent): string =>
+			`  /ace activate ${event.message.sender} ${event.message.id} — ${JSON.stringify(truncate(event.message.body))}`;
+		const [sender, id] = rest;
+		const matches =
+			sender === undefined
+				? []
+				: pending.filter(
+						(event) => event.message.sender === sender && (id === undefined || event.message.id === id),
+					);
+		// Exactly one candidate activates: with no argument it is the only pending event, with a sender it is
+		// that sender's only event, and with a sender and an id it is the exact pair. Nothing else does.
+		const only =
+			sender === undefined
+				? pending.length === 1
+					? pending[0]
+					: undefined
+				: matches.length === 1
+					? matches[0]
+					: undefined;
+		if (only !== undefined) {
+			await active.activatePendingEvent(only.message.sender, only.message.id);
+			const session =
+				only.message.sessionId === undefined ? "" : ` (session ${formatSessionLabel(only.message.sessionId)})`;
+			return `[ace] activated ${only.message.sender}/${only.message.id}${session}`;
+		}
+		// Everything else is a list to choose from, one runnable command per event.
+		if (sender === undefined) {
+			return [
+				`[ace] ${pending.length} pending manual events — activate exactly one:`,
+				...pending.map(runnable),
+			].join("\n");
+		}
+		const why =
+			id === undefined
+				? `sender ${JSON.stringify(sender)}`
+				: `${JSON.stringify(sender)} with id ${JSON.stringify(id)}`;
+		return matches.length > 1
+			? [
+					`[ace] ${matches.length} pending events from ${JSON.stringify(sender)} — activate exactly one:`,
+					...matches.map(runnable),
+				].join("\n")
+			: [`[ace] nothing pending for ${why} — pending events:`, ...pending.map(runnable)].join("\n");
+	}
+
+	/** `/ace stats`: the counters, the spool windows, and whether the transport is still up. */
+	function statsReport(): string {
+		const lines = runtime?.metrics.render() ?? [];
+		const windows = (runtime?.openSpoolWindows() ?? []).map(
+			(window) => `  spooling ${window.subscription}: ${window.buffered} buffered → ${window.path}`,
+		);
+		const count = deadLetters?.count ?? 0;
+		const directory = deadLetters?.directory;
+		// `→ <dir>` is a path, and a path with zero letters is a line about nothing.
+		const letters = `dead letters: ${count}${count > 0 && directory !== undefined ? ` → ${directory}` : ""}`;
+		// The two states a reader asks about: a configured server that never came up, and a broker that died
+		// after it did. Both are already reported once (a warning, an error); this is where they are summarised.
+		const transport = transportErrorReported || unavailableServers.length > 0 ? "down" : "ok";
+		return [
+			`[ace] stats — ${letters}`,
+			`  transport: ${transport}`,
+			...(lines.length > 0
+				? lines.map((line) => `  ${line}`)
+				: [
+						"  (no counters yet — one line per channel appears here as events arrive, counting received,",
+						"   injected, deduped, spooled, reclaimed and dropped)",
+					]),
+			...windows,
+		].join("\n");
+	}
+
+	/** Why `/ace` cannot act, in the words the start-up failure left behind. */
+	function notRunningMessage(cwd: string): string {
+		return `[ace] not running: ${startupFailure ?? `add ${ACE_CONFIG_FILENAME} to ${cwd} and restart Pi`}`;
+	}
+
+	/**
+	 * Refresh the footer status line: ` ace · N peers · M pending`, or `<server> down` in the warning colour
+	 * when a configured server never came up or the transport reported an error.
+	 *
+	 * Written at the three moments the numbers can change — after every `/ace` report, after a publish, and on
+	 * the directory's own ~30s heartbeat (`REGISTRY_DEFAULTS.refreshMs`) — and cleared on shutdown. The peer
+	 * count is the same walk `ace_agents` and `/ace agents` do, so the footer and those listings cannot
+	 * disagree; `M` is the runtime's own pending list, so it cannot disagree with `/ace pending` either.
+	 *
+	 * Main session only: `sessionContext` is never set in a subagent (one runtime, in the session a human
+	 * talks to). A host with no status row — print and RPC modes, older builds — is a no-op, because the call
+	 * is checked before it is made.
+	 */
+	async function refreshStatus(): Promise<void> {
+		const ctx = sessionContext;
+		if (ctx === undefined || isSubagentContext(ctx) || statusRefreshing) return;
+		if (typeof ctx.ui.setStatus !== "function") return;
+		statusRefreshing = true;
+		try {
+			// A status line describes a running runtime; with none there is nothing true to say, so the slot is
+			// cleared rather than left showing the last session's numbers.
+			if (runtime === undefined) {
+				ctx.ui.setStatus("ace", undefined);
+				return;
+			}
+			const down = unavailableServers.map((server) => server.server);
+			const warning =
+				down.length > 0 ? `${down.join(", ")} down` : transportErrorReported ? "transport down" : undefined;
+			if (warning !== undefined) {
+				const theme = ctx.ui.theme;
+				ctx.ui.setStatus("ace", typeof theme?.fg === "function" ? theme.fg("warning", warning) : warning);
+				return;
+			}
+			let peers = 0;
+			try {
+				peers = (await discoverLiveSessions(undefined)).live.length;
+			} catch {
+				// A directory that cannot be read must not blank the line: the pending count below is still true.
+			}
+			ctx.ui.setStatus(
+				"ace",
+				` ace · ${peers} peer${peers === 1 ? "" : "s"} · ${runtime.pendingEvents.length} pending`,
+			);
+		} finally {
+			statusRefreshing = false;
+		}
+	}
+
+	/**
+	 * `/ace list`, and bare `/ace` where the host has a TUI: the human channel report, or the manager view.
+	 *
+	 * One function for both so the manager's rows, its detail view and the printed report can never disagree
+	 * about what this session is wired to.
+	 */
+	async function listCommand(
+		args: string,
+		ctx: ExtensionCommandContext,
+		pending: readonly PendingManualEvent[],
+	): Promise<void> {
+		const listing = humanListing(channelListingInput(subscriptions, sessionInboxes));
+		const identity = [...new Set(activeServers.map((active) => shortSender(active.sender)))].join(", ");
+		const describeChannel = (value: string): string[] | undefined => {
+			// The row's value addresses the channel (`in:<channel>`), never the row's local label — see
+			// `channelForMenuValue`, which is the same lookup the row was built with.
+			const endpoint = channelForMenuValue(listing.subscriptions, value);
+			if (endpoint === undefined) return [`${value} is not a channel this session reads`];
+			const target = endpoint.channel ?? endpoint.name;
+			const inbox = sessionInboxes.some((candidate) => (candidate.channel ?? candidate.name) === target);
+			return [
+				// `name:` and `address:` stay verbatim: this is where the exact address is still discoverable after
+				// the header and the rows above have shortened this session's own session-id segment.
+				`name: ${endpoint.name}`,
+				`transport: ${endpoint.transport}`,
+				`address: ${endpointAddress(endpoint) ?? "(none)"}`,
+				...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
+				...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
+				// Every row says where it came from: a configured subscription names the file it was configured
+				// in, and an inbox says it is named by this session's own sender, which is auto-registered.
+				inbox
+					? "origin: named by this session's sender on the agent directory"
+					: `origin: configured in ${basename(resolvedConfig?.source ?? ACE_CONFIG_FILENAME)}`,
+				...(resolvedConfig?.shadowed === undefined
+					? []
+					: [`config: ${resolvedConfig.source} (project file shadows ${resolvedConfig.shadowed})`]),
+			];
+		};
+		const header = `${identity} (agent ${adapter.isRunning() ? "running" : "idle"})${
+			resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
+		}`;
+		// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
+		// scripts and non-TUI modes keep the text report.
+		if (args.trim().length === 0 && ctx.mode === "tui") {
+			try {
+				await showAceManager(
+					ctx,
+					() => ({
+						title: "ACE channels",
+						details: header,
+						items: channelMenuItems(listing),
+						empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
+					}),
+					describeChannel,
+				);
+				return;
+			} catch (error) {
+				console.error(`[ace] manager view failed, printing the report instead: ${describeError(error)}`);
+			}
+		}
+		// The core prefixes each row with its server when several are live, so it wants one server name per row in
+		// the rows' own order. A row whose server cannot be named falls back to no prefix at all, rather than
+		// prefixing the wrong row.
+		const rowServers =
+			activeServers.length > 1
+				? listing.subscriptions.map((endpoint) => reportServers.get(endpoint.channel ?? endpoint.name))
+				: [];
+		const servers =
+			rowServers.length === 0 || rowServers.some((name) => name === undefined)
+				? undefined
+				: (rowServers as readonly string[]);
+		// A channel removed from `.ace.json` since this session started is still being read until restart, so it
+		// is marked rather than silently listed as if it were still configured (`ace_channels` marks it too).
+		const removed =
+			resolvedConfig === undefined
+				? []
+				: configRemovedChannels({
+						subscriptions: resolvedConfig.subscriptions,
+						cwd: sessionContext?.cwd ?? process.cwd(),
+						env: process.env,
+						globalConfigPaths: [ompGlobalConfigPath(process.env)],
+					});
+		report(
+			ctx,
+			formatChannelReport({
+				identity,
+				agentState: adapter.isRunning() ? "running" : "idle",
+				...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
+				subscriptions: listing.subscriptions,
+				...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
+				...(resolvedConfig?.shadowed === undefined ? {} : { shadowed: resolvedConfig.shadowed }),
+				...(servers === undefined ? {} : { servers }),
+				...(unavailableServers.length === 0
+					? {}
+					: {
+							unavailableServers: unavailableServers.map((server) => ({
+								name: server.server,
+								address: server.address,
+							})),
+						}),
+				...(unavailableSubscriptions.length === 0 ? {} : { unavailableSubscriptions }),
+				...(removed.length === 0 ? {} : { configRemoved: removed }),
+				pendingManual: pending.length,
+				deadLetters: {
+					count: deadLetters?.count ?? 0,
+					...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
+				},
+			}),
+		);
+	}
+
+	/** The `/ace` command definition: registered at the end of this factory, and again by the surface owner. */
+	const aceCommand = {
+		description:
+			"ACE event runtime: channels, pending manual events, activation, live agents — bare /ace opens the manager",
 		// Completions follow `/mcp`: the action word with its hint, then the retained events for `activate`.
-		getArgumentCompletions: (prefix) =>
+		getArgumentCompletions: (prefix: string) =>
 			aceCompletions(
 				prefix,
 				(runtime?.pendingEvents ?? []).map((event) => ({
@@ -987,7 +1572,7 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 					body: event.message.body,
 				})),
 			),
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const [subcommand = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 
 			if (isSubagentContext(ctx)) {
@@ -995,122 +1580,83 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 				return;
 			}
 
+			// `/ace` may be this copy's definition while another copy of this file runs ACE: the host resolves
+			// commands from the definitions present when it loaded them (measured), so a later registration never
+			// reaches this name. Delegate to the copy that owns the runtime, after the subagent guard above — a
+			// subagent's registry has no owner of its own and must keep answering for itself.
+			//
+			// The guard is the working directory, not the session id: both copies are loaded into **one** session's
+			// registry (a second session gets its own), but they report *different* session ids for it (measured:
+			// comparing them made this delegate never fire). The owner of the process's runtime claim is, by
+			// construction, the copy serving whichever session this registry belongs to.
+			const live = (globalThis as unknown as Record<symbol, unknown>)[LIVE_ACE_MARKER] as LiveAceHandle | undefined;
+			probeLog(
+				`ace copy=${COPY_ID} ownRuntime=${runtime !== undefined} claimed=${claimedRuntime} liveVisible=${live !== undefined} liveCwd=${live?.cwd ?? "-"} ctxCwd=${ctx.cwd}`,
+			);
+			if (!claimedRuntime && live !== undefined && live.cwd === ctx.cwd) {
+				return live.command(args, ctx);
+			}
+
+			// `help` answers with or without a runtime: it describes the command, not this session's wiring.
+			if (subcommand === "help" || subcommand === "?") {
+				report(ctx, aceHelpText());
+				return;
+			}
+
 			if (!runtime) {
-				report(ctx, `[ace] not running: add ${ACE_CONFIG_FILENAME} to ${ctx.cwd} and restart Pi`, "warning");
+				report(ctx, notRunningMessage(ctx.cwd), "warning");
 				return;
 			}
 
-			if (subcommand === "activate") {
-				const [sender, id] = rest;
-				if (!sender || !id) {
-					report(ctx, "[ace] usage: /ace activate <sender> <id>", "warning");
+			try {
+				if (subcommand === "activate") {
+					report(ctx, await activateCommand(rest, ctx));
 					return;
 				}
-				try {
-					await runtime.activatePendingEvent(sender, id);
-					report(ctx, `[ace] activated ${sender}/${id}`);
-				} catch (error) {
-					report(ctx, `[ace] ${describeError(error)}`, "error");
-				}
-				return;
-			}
-
-			const pending = runtime.pendingEvents;
-			if (subcommand === "stats") {
-				const lines = runtime.metrics.render();
-				const windows = runtime
-					.openSpoolWindows()
-					.map((window) => `  spooling ${window.subscription}: ${window.buffered} buffered → ${window.path}`);
-				report(
-					ctx,
-					[
-						`[ace] stats (pending manual: ${pending.length}, dead letters: ${deadLetters?.count ?? 0} → ${deadLetters?.directory ?? "none"}${activeServers.length > 0 ? `, sender ${activeServers.map((active) => active.sender).join(", ")}` : ""})`,
-						...(lines.length > 0 ? lines.map((line) => `  ${line}`) : ["  (nothing yet)"]),
-						...windows,
-					].join("\n"),
-				);
-				return;
-			}
-
-			if (subcommand === "pending") {
-				if (pending.length === 0) {
-					report(ctx, "[ace] no pending manual events");
+				if (subcommand === "agents") {
+					report(ctx, await agentsReport(rest[0]));
 					return;
 				}
-				const lines = pending.map((event) => {
-					const session =
-						event.message.sessionId === undefined
-							? ""
-							: ` (session ${formatSessionLabel(event.message.sessionId)})`;
-					return `${event.message.sender}${session}/${event.message.id}: ${truncate(event.message.body)}`;
-				});
-				report(ctx, `[ace] pending manual events (${pending.length}):\n${lines.join("\n")}`);
-				return;
-			}
-
-			if (subcommand === "list") {
-				const listing = channelListingInput(subscriptions, sessionInboxes);
-				const identity = activeServers.map((active) => active.sender).join(", ");
-				const describeChannel = (value: string): string[] | undefined => {
-					const [direction, name] = value.split(":");
-					if (direction !== "in") {
-						return [`${name} is not a channel this session reads`];
-					}
-					const endpoint = listing.subscriptions.find((candidate) => candidate.name === name);
-					if (endpoint === undefined) return undefined;
-					return [
-						`name: ${endpoint.name}`,
-						`direction: subscribed`,
-						`transport: ${endpoint.transport}`,
-						`address: ${endpointAddress(endpoint) ?? "(none)"}`,
-						...(endpoint.activation === undefined ? [] : [`activation: ${endpoint.activation}`]),
-						...(endpoint.description === undefined ? [] : [`description: ${endpoint.description}`]),
-						...(sessionInboxes.some((inbox) => name === (inbox.channel ?? inbox.name))
-							? ["origin: named by this session's sender on the agent directory"]
-							: []),
-					];
-				};
-				const header = `${identity} (agent ${adapter.isRunning() ? "running" : "idle"})${
-					resolvedConfig?.source === undefined ? "" : ` — ${resolvedConfig.source}`
-				}`;
-				// `/ace` with no arguments opens the manager where the host has a TUI; `/ace list` always prints, so
-				// scripts and non-TUI modes keep the text report.
-				if (args.trim().length === 0 && ctx.mode === "tui") {
-					try {
-						await showAceManager(
-							ctx,
-							() => ({
-								title: "ACE channels",
-								details: header,
-								items: channelMenuItems(listing),
-								empty: `No channels configured in ${ACE_CONFIG_FILENAME}.`,
-							}),
-							describeChannel,
-						);
-						return;
-					} catch (error) {
-						console.error(`[ace] manager view failed, printing the report instead: ${describeError(error)}`);
-					}
+				if (subcommand === "pending") {
+					report(ctx, pendingReport(runtime.pendingEvents));
+					return;
 				}
-				report(
-					ctx,
-					formatChannelReport({
-						identity,
-						agentState: adapter.isRunning() ? "running" : "idle",
-						...(resolvedConfig?.source === undefined ? {} : { source: resolvedConfig.source }),
-						subscriptions: listing.subscriptions,
-						...(listing.selfChannels.length === 0 ? {} : { selfChannels: listing.selfChannels }),
-						pendingManual: pending.length,
-						deadLetters: {
-							count: deadLetters?.count ?? 0,
-							...(deadLetters?.directory === undefined ? {} : { directory: deadLetters.directory }),
-						},
-					}),
-				);
-				return;
+				if (subcommand === "stats") {
+					report(ctx, statsReport());
+					return;
+				}
+				if (subcommand === "list") {
+					await listCommand(args, ctx, runtime.pendingEvents);
+					return;
+				}
+				report(ctx, ACE_USAGE, "warning");
+			} catch (error) {
+				report(ctx, `[ace] ${describeError(error)}`, "error");
+			} finally {
+				// The footer follows every report, so what the status line says and what was just printed cannot
+				// drift apart. It is deliberately not awaited: a status refresh reads the directory over the
+				// network, and the text the user asked for must not wait behind it.
+				void refreshStatus();
 			}
-
-			report(ctx, ACE_USAGE, "warning");
 		},
-	});
+	};
+
+	/**
+	 * Register the surfaces this instance owns: the five ACE tools and the `/ace` command.
+	 *
+	 * Called once when the factory loads — so the surfaces exist even where `session_start` never fires — and
+	 * again from the instance that claims {@link the runtime claim}, because the host keeps the **last**
+	 * definition of each name: a duplicate load (plugin discovery plus an explicit `--extension` of this same
+	 * file) would otherwise leave `/ace` and the tools bound to the copy that is not running ACE.
+	 */
+	function registerOwnedSurfaces(): void {
+		pi.registerTool(publishTool());
+		pi.registerTool(agentsTool());
+		pi.registerTool(channelsTool());
+		pi.registerTool(storeFileTool());
+		pi.registerTool(getFileTool());
+		pi.registerCommand("ace", aceCommand);
+	}
+
+	registerOwnedSurfaces();
 }

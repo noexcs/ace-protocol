@@ -62,7 +62,7 @@ export function channelMenuItems(input: {
 			endpoint.description === undefined ? undefined : `"${endpoint.description}"`,
 		];
 		return {
-			value: `in:${target}`,
+			value: `${ROW_TARGET_PREFIX}${target}`,
 			label: `● ${target}`,
 			description: parts.filter((part) => part !== undefined).join(" · "),
 		};
@@ -74,6 +74,28 @@ export function channelMenuItems(input: {
 function endpointAddressOf(endpoint: EndpointConfig): string | undefined {
 	const address = endpoint.config.stream ?? endpoint.config.subject ?? endpoint.config.topic ?? endpoint.config.queue;
 	return typeof address === "string" ? address : undefined;
+}
+
+/** The prefix a manager row's `value` carries: the direction, then the channel the row addresses. */
+const ROW_TARGET_PREFIX = "in:";
+
+/**
+ * The channel a manager row's `value` names, or `undefined` when the value is not one of this session's
+ * channels.
+ *
+ * Two traps, and every row fell into one of them: the value addresses the **channel** — the publishable name a
+ * peer writes to — which is *not* the row's local label when the two differ (`(as "<label>")` marks exactly
+ * that), and a channel name carries colons of its own (`ace:ana:from-wsl`), so only the `in:` prefix is
+ * stripped. Looking the row up by its label, or splitting the value on every colon (which reads the name as
+ * `ace`), leaves `enter` on an aliased row with no detail view and no message.
+ */
+export function channelForMenuValue(
+	subscriptions: readonly EndpointConfig[],
+	value: string,
+): EndpointConfig | undefined {
+	if (!value.startsWith(ROW_TARGET_PREFIX)) return undefined;
+	const target = value.slice(ROW_TARGET_PREFIX.length);
+	return subscriptions.find((candidate) => (candidate.channel ?? candidate.name) === target);
 }
 
 /** A full-width rule, the border `/mcp` draws with its internal `DynamicBorder`. */

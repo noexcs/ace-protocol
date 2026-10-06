@@ -7,6 +7,15 @@
  * value is treated as zero.
  */
 export declare function formatIsoDuration(totalSeconds: number): string;
+/**
+ * A whole number of seconds in the house's human style: the largest units first, space-separated, zero
+ * components dropped, at most one of each unit — `0` → `0s`, `130` → `2m 10s`, `3600` → `1h`,
+ * `90000` → `1d 1h`, `3661` → `1h 1m 1s`. This is what a person reads in a report; the ISO 8601 twin
+ * ({@link formatIsoDuration}) is what a log or a directory field carries. Fractions are rounded and a
+ * negative or non-finite value is treated as zero, exactly as {@link formatIsoDuration} does, and a
+ * value that rounds to zero is `0s` rather than the empty string.
+ */
+export declare function formatDurationHuman(seconds: number): string;
 /** Whether `value` is a plain object (not `null`, not an array). */
 export declare function isPlainObject(value: unknown): value is Record<string, unknown>;
 /**
