@@ -461,10 +461,14 @@ Log lines carry `id`, `sender`, `subscribe`, and `activation` only — never the
 
 ## MVP limitations
 
-- `manual` events live in process memory with `manual.max` / `manual.ttlMs` limits; a restart loses them
-  (design doc §12). No persistence, no query API, no inbox API.
-- Transports: `InMemoryTransport` and `RedisStreamsTransport`. Kafka/NATS adapters, a CLI, agent registry,
-  dynamic targets, bindings, result events and acknowledgement APIs are out of scope (design doc §27, §37).
+- `manual` events are held with `manual.max` / `manual.ttlMs` limits and **persisted to the spool directory**
+  (`manual-*.jsonl`), then restored on the next start. The retention window is not enforced across restarts yet
+  (a restored event keeps its id and gets a fresh expiry — tracked by the robustness audit), and there is still no
+  query API beyond the pending list, and no inbox API.
+- Transports: `InMemoryTransport` and `RedisStreamsTransport`. Kafka/NATS adapters, a CLI, dynamic targets,
+  bindings, result events and acknowledgement APIs are out of scope (design doc §27, §37). The **agent directory is
+  implemented** (contracts §3.3) and used by both host plugins; what stays out of scope is its absence from
+  RFC 0.1 (RFC §22 item 1).
 - No backlog: a subscription's consumer group is created at the stream's tail (`XGROUP CREATE … $`), so events
   published before the agent subscribed are skipped rather than replayed. Replay stays an infrastructure
   capability (RFC §17); the runtime consumes from now on.

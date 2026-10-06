@@ -156,3 +156,38 @@ describe("ACE 0.1 JSON Schema", () => {
 		expect(validatorAccepts).toBe(schemaAccepts);
 	});
 });
+
+describe("field bounds (audit F6 / F3')", () => {
+	it("rejects a sender carrying a control character", () => {
+		expect(() => validateAceMessage({ ...validMessage, sender: "ace:ana:topic:x\nself: yes" })).toThrow(
+			AceValidationError,
+		);
+	});
+
+	it("rejects an id carrying a NUL, which would collide dedup identities", () => {
+		expect(() => validateAceMessage({ ...validMessage, id: "evt_1\u0000evt_2" })).toThrow(AceValidationError);
+	});
+
+	it("rejects a body over 64 KiB and points at the file-transfer route", () => {
+		let thrown: AceValidationError | undefined;
+		try {
+			validateAceMessage({ ...validMessage, body: "x".repeat(64 * 1024 + 1) });
+		} catch (error) {
+			thrown = error as AceValidationError;
+		}
+		expect(thrown?.issues.some((issue) => issue.path === "body" && issue.message.includes("ace_store_file"))).toBe(
+			true,
+		);
+	});
+
+	it("still accepts the legal shapes, including a four-segment sender channel", () => {
+		expect(
+			validateAceMessage({
+				...validMessage,
+				sender: "ace:ana:topic:build-events",
+				id: "evt_2de75e19-a261-4bfe-b7c1-981a2a1b0b10",
+				body: "x".repeat(64 * 1024),
+			}).sender,
+		).toBe("ace:ana:topic:build-events");
+	});
+});

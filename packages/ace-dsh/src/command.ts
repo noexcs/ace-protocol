@@ -59,8 +59,8 @@ function statusReport(session: AceSession): string {
 		unavailableServers: [...session.unavailableServers],
 		unavailableSubscriptions: ignored,
 		pendingManual: session.runtime.pendingEvents.length,
-		// This host has no dead-letter sink: an entry it gave up on stays in the broker's pending list, where
-		// the transport's own reclaim pass owns it.
+		// This host has no dead-letter sink: once the reclaim budget is spent the core acknowledges the entry
+		// and drops it, leaving one notice line as the only trace.
 		deadLetters: { count: 0 },
 	});
 }

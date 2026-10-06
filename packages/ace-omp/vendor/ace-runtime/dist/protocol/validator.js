@@ -14,6 +14,18 @@ const utf8 = new TextDecoder();
 const MAX_SESSION_ID_LENGTH = 128;
 /** Longest accepted sender description: enough for the host facts, short enough to keep headers readable. */
 const MAX_SENDER_DESCRIPTION_LENGTH = 512;
+/**
+ * Bounds on the two fields the renderer interpolates into an event block's header, and on the body.
+ *
+ * `sender` and `id` are rendered verbatim and the dedup identity joins them with `\u0000`
+ * (`agent/event-rendering.ts`), so unbounded or control-bearing values are not merely untidy: a
+ * newline can forge a header line, and a NUL can make two different events share one identity. The
+ * body is bounded too, because whatever arrives is injected into a model's context whole — a large
+ * payload belongs in a stored file (`ace_store_file`), with the token sent as the event.
+ */
+const MAX_SENDER_LENGTH = 512;
+const MAX_ID_LENGTH = 128;
+const MAX_BODY_LENGTH = 64 * 1024;
 /** Control characters would let a session id forge lines in the rendered event header. */
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 /**
@@ -34,11 +46,23 @@ export function validateAceMessage(value) {
             message: `must be "${ACE_VERSION}", received ${describeValue(aceVersion)}`,
         });
     }
-    if (typeof id !== "string" || id.length === 0) {
-        issues.push({ path: "id", message: `must be a non-empty string, received ${describeValue(id)}` });
+    if (typeof id !== "string" || id.length === 0 || id.length > MAX_ID_LENGTH) {
+        issues.push({
+            path: "id",
+            message: `must be a string of 1..${MAX_ID_LENGTH} characters, received ${describeValue(id)}`,
+        });
     }
-    if (typeof sender !== "string" || sender.length === 0) {
-        issues.push({ path: "sender", message: `must be a non-empty string, received ${describeValue(sender)}` });
+    else if (CONTROL_CHARACTERS.test(id)) {
+        issues.push({ path: "id", message: "must not contain control characters" });
+    }
+    if (typeof sender !== "string" || sender.length === 0 || sender.length > MAX_SENDER_LENGTH) {
+        issues.push({
+            path: "sender",
+            message: `must be a string of 1..${MAX_SENDER_LENGTH} characters, received ${describeValue(sender)}`,
+        });
+    }
+    else if (CONTROL_CHARACTERS.test(sender)) {
+        issues.push({ path: "sender", message: "must not contain control characters" });
     }
     if (sessionId !== undefined) {
         if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > MAX_SESSION_ID_LENGTH) {
@@ -72,6 +96,12 @@ export function validateAceMessage(value) {
     }
     if (typeof body !== "string") {
         issues.push({ path: "body", message: `must be a string, received ${describeValue(body)}` });
+    }
+    else if (body.length > MAX_BODY_LENGTH) {
+        issues.push({
+            path: "body",
+            message: `must be at most ${MAX_BODY_LENGTH} characters, received ${body.length}; store larger payloads as a file (ace_store_file) and send the token`,
+        });
     }
     if (issues.length > 0)
         throw new AceValidationError(issues);

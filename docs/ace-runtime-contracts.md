@@ -31,6 +31,9 @@
 | `sessionId` | 可选、不透明、最长 128；**不是**身份，也不用于授权 |
 | `senderDescription` | 可选字段（本实现定义，长度 1..512、禁控制字符）：发送方自述"我在哪"（agent/session/cwd/host/ip/platform/pid）。**仅供显示，永不作为授权** |
 | `sender` 的形状 | 协议不规定；本实现写 `<namespace>:<username>:<coding-agent>:<完整 sessionId>`（`senderName`）。接收端原样显示、不查目录 |
+| `id` 的约束 | 本实现：长度 1..128、**禁控制字符**。`\u0000` 会让两条不同事件在去重身份（`subscription\u0000sender\u0000id`，§4.3）里相撞，所以它必须在入口被拒 |
+| `sender` 的约束 | 本实现：长度 1..512、**禁控制字符**。渲染头里它是逐字节插值的（§4.3），一个换行就能伪造一行头 |
+| `body` 的约束 | 本实现：至少一个非空白字符、**最多 64 KiB**。事件正文整块注入模型上下文，更大的内容应存成文件（`ace_store_file`）后只发 token |
 
 ---
 
@@ -361,7 +364,7 @@ Events in `<ace_event>` blocks come from other agents or services through ACE, n
 | `/ace stats` | TUI 写进会话（`transport` 行带状态标签 `● connected`／`◌ inactive`，随后每个计数器 scope 一行 `accent(scope) + dim(名字=值 …)`，再按需一节 `spooling`／行 `◌ pending` 注记 `<n> buffered · <路径>`，上下文行是 `dead letters: M`）；其它模式打印文本：首行收窄为 `stats — dead letters: M → <目录>`（`M=0` 时不带目录；不再重复 `/ace list` 已有的 pending 条数与 sender）；第二行 `transport: ok\|down`（`transportErrorReported` 或存在未起来的 server 即 `down`）；随后逐通道计数器行与 spool 窗口行（原样保留）；还没有任何计数时说明它此后会统计什么，而不是只留 `(nothing yet)` |
 | 参数错误 | 打一行 `Usage: /ace (no argument opens the channel manager), /ace list, /ace pending, /ace agents [filter], /ace activate [<sender> [<id>]], /ace stats, /ace help`。未运行时分两种：**任何候选文件都不存在** → `not running: add .ace.json to <cwd> and restart Pi`；**有文件但配置阶段失败** → `not running: config error: <启动时记下的错误>`——区别在 session_start 就判定并记下（`configFileExists` 探候选文件，不靠错误文本猜） |
 | 风格 | 照 `/mcp`：每项一行 `名: 状态, 细节`，纯文本、无表格。**状态行（本轮恢复）**：宿主本 build 的 `ctx.ui.setStatus` 与 `ctx.ui.theme.fg` 已由 pty 探针实测可用（写入被接受并真的渲染出来，`undefined` 能清除），于是 ACE 重新写一条状态行——正常时 ` ace · N peers · M pending`（`N` 与 `/ace agents` 同一趟目录遍历，`M` = 运行时 pending 数），有 server 未起来或 transport 出错时改成 warning 色的 `<server> down`（无具名 server 时 `transport down`）。写入时机：每次 `/ace` 报告后、一次发布之后、以及目录心跳的 ~30s（复用 `REGISTRY_DEFAULTS.refreshMs` 这个常量，不引入第二个魔数）；`session_shutdown` 里 `setStatus("ace", undefined)` 清除，运行时不在了也清；**只在主会话写**（复用现有的 `isSubagentContext` 判定），没有状态行的模式（print/RPC、老 build）是 no-op |
-| 重复加载 | 同一会话里同一份 `ace.ts` 被加载两次（插件发现 + 显式 `-e` 指向同一文件）时：进程级运行时 claim 决定只有一份在跑；而**宿主解析 `/ace` 用的是加载时就存在的定义**（实测：`session_start` 里再注册一次并不生效），所以另一份副本的 `/ace` 会**委托**给拥有运行时的实例——委托前先比对两边是否同一个会话（同 `cwd`、同 session id，同进程），比对不通过就自己如实作答。输的那份报 `not starting a second runtime … this copy is inactive: drop the redundant --extension/-e flag`。实测（omp 18.5.0，pty，插件发现 + 显式 `-e` 同一文件）：修前 `/ace agents` 答 `not running: another ACE runtime already runs…`，修后由活着的副本正常作答 |
+| 重复加载 | 同一会话里同一份 `ace.ts` 被加载两次（插件发现 + 显式 `-e` 指向同一文件）时：进程级运行时 claim 决定只有一份在跑；而**宿主解析 `/ace` 用的是加载时就存在的定义**（实测：`session_start` 里再注册一次并不生效），所以另一份副本的 `/ace` 会**委托**给拥有运行时的实例——委托前先比对两边是否**同一个工作目录**（`cwd`，同进程）——**不比对 session id**：两份副本对同一个会话上报的 session id 不同（实测：比对 id 会让委托永不触发），所以 `cwd` 比对就是充分条件；比对不通过就自己如实作答。输的那份报 `not starting a second runtime … this copy is inactive: drop the redundant --extension/-e flag`。实测（omp 18.5.0，pty，插件发现 + 显式 `-e` 同一文件）：修前 `/ace agents` 答 `not running: another ACE runtime already runs…`，修后由活着的副本正常作答 |
 | 日志 | 运行时行（received/injecting/spool/…）始终写 stderr；**日志不含 body** |
 
 ### 4.6 `ace_channels`

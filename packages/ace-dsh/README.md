@@ -204,8 +204,9 @@ npm run check                # biome + tsc
 
 - **No connection sharing.** Each session opens its own clients, as the core's registry and transports do.
   A deployment with many live sessions pays one connection each.
-- **No dead-letter sink and no spool directory.** The core supports both; this host does not wire them, so
-  an entry the reader gives up on stays in the Server's pending list for the transport's reclaim pass.
+- **No dead-letter sink and no spool directory.** The core supports both; this host does not wire them, so an
+  entry the reader gives up on is **acknowledged and dropped** once `reclaimAttempts` is spent — one notice line is
+  the only trace (the core's dead-letter path is what makes that loss visible; without a sink it is not).
 - **Configuration is read once**, at session creation. There is no `/ace reload`.
 - **`/ace` is registered but not dispatched by the client.** The command exists in the host's catalog (and its
   reports are correct when invoked), but typing `/ace …` in the composer reaches the model as plain text

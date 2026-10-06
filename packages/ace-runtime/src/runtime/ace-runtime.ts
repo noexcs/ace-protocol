@@ -168,15 +168,29 @@ export class AceRuntime {
 	async start(): Promise<void> {
 		if (this.started) throw new AceConfigError("ACE runtime is already started");
 		this.started = true;
+		const started: Transport[] = [];
 		try {
 			for (const subscription of this.subscribe) {
-				await this.transportFor(subscription).start((raw, receivedAt) =>
-					this.deliver(raw, subscription, receivedAt),
-				);
+				const transport = this.transportFor(subscription);
+				await transport.start((raw, receivedAt) => this.deliver(raw, subscription, receivedAt));
+				started.push(transport);
 			}
 		} catch (error) {
-			// Do not claim to be started when a transport refused to connect.
+			// Do not claim to be started when a transport refused to connect — and do not leave the
+			// transports that *did* connect running: they would keep reading and injecting into an
+			// engine the caller was just told is not there, invisible and unbounded.
 			this.started = false;
+			for (const transport of started) {
+				try {
+					await transport.stop();
+				} catch (stopError) {
+					this.logger.warn?.(
+						`[ACE] stopping a half-started transport failed: ${
+							stopError instanceof Error ? stopError.message : String(stopError)
+						}`,
+					);
+				}
+			}
 			throw error;
 		}
 		this.logger.info?.(

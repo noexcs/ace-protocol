@@ -1,5 +1,16 @@
 import { AceConfigError, optionalStringField, positiveIntegerField, rejectUnknownKeys, requiredStringField, } from "../runtime/endpoint-config.js";
 import { createRedisStreamsClient } from "./redis-streams-node-client.js";
+/**
+ * A group the broker no longer has.
+ *
+ * The directory sweep deletes a pruned channel's stream, and a deleted stream takes its consumer
+ * groups with it — so this error says "the group is gone", not "the broker is broken". It is
+ * recoverable in place: rebuild the group and keep reading. Events published while the group was
+ * missing are not replayed, which is the same "no backlog" rule a fresh subscription gets.
+ */
+function isMissingGroupError(error) {
+    return error instanceof Error && error.message.includes("NOGROUP");
+}
 const DEFAULT_CONSUMER = `ace-${process.pid}`;
 /** Defaults shared by the Redis Streams consumer and publisher. */
 export const REDIS_STREAMS_DEFAULTS = {
@@ -254,12 +265,29 @@ export class RedisStreamsTransport {
             catch (error) {
                 if (this.stopped)
                     break;
+                // A swept-away group is rebuilt and read on: retrying NOGROUP forever is exactly how a
+                // live session used to stay deaf for the rest of its life (the sweep deletes the stream
+                // and its groups, and a publisher recreating the stream does not recreate the group).
+                let recovered = false;
+                if (isMissingGroupError(error)) {
+                    try {
+                        await this.client.ensureGroup(this.config.stream, this.config.group);
+                        recovered = true;
+                    }
+                    catch (rebuildError) {
+                        this.report(rebuildError);
+                    }
+                }
                 if (!outage) {
                     outage = true;
                     this.report(error);
                 }
                 await this.delay(delay);
-                delay = Math.min(delay * 2, this.config.maxRetryDelayMs);
+                // Recovery retries at the base delay and never escalates to the cap, so a group swept
+                // again mid-rebuild is retried promptly without turning into a hot loop.
+                delay = recovered ? this.config.retryDelayMs : Math.min(delay * 2, this.config.maxRetryDelayMs);
+                if (recovered)
+                    this.reportNotice(`redis stream ${this.config.stream}: consumer group recreated`);
             }
         }
         // The loop ended because we are stopping: an entry already read is delivered and acked (or

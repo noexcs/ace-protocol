@@ -212,3 +212,29 @@ describe("RedisStreamsTransport resilience", () => {
 		await stop(transport, client);
 	});
 });
+
+describe("RedisStreamsTransport recovery from a swept-away group (audit A)", () => {
+	it("rebuilds the consumer group and keeps reading instead of retrying NOGROUP forever", async () => {
+		const { client, transport, errors } = setup();
+		const handled: unknown[] = [];
+		await transport.start(async (raw) => {
+			handled.push(raw);
+		});
+		// start() creates the group once; that is the only time it used to be created.
+		expect(client.ensuredGroups).toHaveLength(1);
+
+		// What the directory sweep leaves behind: the stream is deleted, and its group with it.
+		client.readError = new Error(
+			"NOGROUP No such key 'ace:in' or consumer group 'g' in XREADGROUP with GROUP option",
+		);
+		// The read issued before the sweep is still blocked; let it settle so the loop tries again
+		// and meets the NOGROUP (a real broker would answer it with the block timeout or the error).
+		client.releaseRead();
+		await settle(() => client.ensuredGroups.length > 1);
+		// Stop before asserting: without the rebuild the loop retries NOGROUP forever (which is the
+		// defect), and a spinning loop would hang the test instead of failing it.
+		await stop(transport, client);
+		expect(client.ensuredGroups.length).toBeGreaterThan(1);
+		expect(errors.some((error) => String(error).includes("NOGROUP"))).toBe(true);
+	});
+});

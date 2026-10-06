@@ -38,7 +38,9 @@ definition registered under a name, so the second copy — the one that refuses 
 end up owning `/ace`: measured against omp 18.5.0, `/ace agents` answered
 `not running: another ACE runtime already runs in this process` even though ACE was running. The extension now
 keeps that from happening: only one copy in a process runs ACE, and the other copy's `/ace` delegates to it (the
-delegate checks both copies are looking at the same session first — same working directory, same session id — and
+delegate checks that both copies are looking at the same **working directory** first — not the session id: the two
+copies report *different* session ids for one session, and comparing them was measured to stop the delegate firing
+at all — and
 otherwise answers for itself), while the duplicate still warns about itself at session start. The flag is still a
 pointless second load — install once and restart.
 
