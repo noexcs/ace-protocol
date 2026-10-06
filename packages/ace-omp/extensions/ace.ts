@@ -47,7 +47,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import type {
 	ExtensionAPI,
@@ -135,26 +135,6 @@ import {
 	type XferTarget,
 } from "../vendor/ace-runtime/dist/index.js";
 import { channelForMenuValue, channelMenuItems, showAceManager } from "./ace-manager.ts";
-
-/** TEMPORARY duplicate-load probe: one line per observation, into $ACE_DUP_PROBE. */
-const COPY_ID: number = (() => {
-	const key = Symbol.for("ace-probe.copy-counter");
-	const g = globalThis as unknown as Record<symbol, number | undefined>;
-	g[key] = (g[key] ?? 0) + 1;
-	return g[key] as number;
-})();
-
-/** Probe sink: a file, because a TUI session swallows an extension's stderr. */
-function probeLog(line: string): void {
-	const path = process.env.ACE_DUP_PROBE;
-	if (path === undefined || path.length === 0) return;
-	try {
-		appendFileSync(path, `${line}\n`);
-	} catch {
-		// probe only
-	}
-}
-probeLog(`load copy=${COPY_ID} cwd=${process.cwd()}`);
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -978,9 +958,6 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 		process_[RUNTIME_CLAIMED_MARKER] = true;
 		claimedRuntime = true;
 		registerOwnedSurfaces();
-		probeLog(
-			`claim copy=${COPY_ID} cwd=${ctx.cwd} sid=${currentSessionId} marker=${String(process_[RUNTIME_CLAIMED_MARKER])}`,
-		);
 		liveHandle = {
 			cwd: ctx.cwd,
 			sessionId: currentSessionId,
@@ -1590,9 +1567,6 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 			// comparing them made this delegate never fire). The owner of the process's runtime claim is, by
 			// construction, the copy serving whichever session this registry belongs to.
 			const live = (globalThis as unknown as Record<symbol, unknown>)[LIVE_ACE_MARKER] as LiveAceHandle | undefined;
-			probeLog(
-				`ace copy=${COPY_ID} ownRuntime=${runtime !== undefined} claimed=${claimedRuntime} liveVisible=${live !== undefined} liveCwd=${live?.cwd ?? "-"} ctxCwd=${ctx.cwd}`,
-			);
 			if (!claimedRuntime && live !== undefined && live.cwd === ctx.cwd) {
 				return live.command(args, ctx);
 			}
