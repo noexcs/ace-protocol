@@ -16,6 +16,7 @@
  * as a warning rather than dropped silently.
  */
 
+import { join } from "node:path";
 import {
 	type AceLogger,
 	type AceMessage,
@@ -29,6 +30,8 @@ import {
 	createRedisStreamsAddClient,
 	createRedisXferClient,
 	createTransports,
+	DeadLetterSink,
+	type DroppedEntry,
 	describeSender,
 	type EndpointConfig,
 	hostFacts,
@@ -71,6 +74,7 @@ export interface AceFactories {
 		endpoints: readonly EndpointConfig[],
 		onError: (error: unknown) => void,
 		onNotice: (message: string) => void,
+		onDropped: (subscription: string, entry: DroppedEntry) => void | Promise<void>,
 	): Record<string, Transport>;
 	addClient(url: string, onError: (error: unknown) => void): RedisStreamsAddClient;
 	xferClient(server: ResolvedServer, onError: (error: unknown) => void): RedisXferClient;
@@ -80,7 +84,8 @@ export interface AceFactories {
 export const REDIS_FACTORIES: AceFactories = {
 	registryStore: (server, onError) =>
 		createRedisAgentRegistry({ url: server.url, namespace: server.namespace, onError }),
-	transports: (endpoints, onError, onNotice) => createTransports(endpoints, { onError, onNotice }),
+	transports: (endpoints, onError, onNotice, onDropped) =>
+		createTransports(endpoints, { onError, onNotice, onDropped }),
 	addClient: (url, onError) => createRedisStreamsAddClient(url, onError),
 	xferClient: (server, onError) => createRedisXferClient({ url: server.url, name: `${server.name}:xfer`, onError }),
 };
@@ -96,6 +101,8 @@ export interface AceSessionOptions {
 	/** Session working directory: the file-transfer root and what the directory entry reports. */
 	cwd: string;
 	logger?: AceLogger;
+	/** Dead-letter sink shared with the transports; `open()` creates it, tests may inject one. */
+	deadLetters?: DeadLetterSink;
 	/** A problem that must not take the session down (an unreachable server, a failed heartbeat). */
 	onProblem?: (message: string, error?: unknown) => void;
 	factories?: Partial<AceFactories>;
@@ -156,6 +163,13 @@ export class AceSession {
 		const problem = options.onProblem ?? ((): void => {});
 		/** The core's registry and transport hooks take a bare error; the subject is added here. */
 		const onError = (error: unknown): void => problem("[ace] the broker reported a problem", error);
+		// Entries the reader gives up on are written down before they leave the PEL, in the same `.ace/`
+		// the Pi host uses. Nothing is written until an entry is actually given up on.
+		const deadLetters = new DeadLetterSink({
+			dir: join(options.cwd, ".ace"),
+			...(options.logger === undefined ? {} : { logger: options.logger }),
+			onError: (error) => problem("[ace] could not write a dead letter", error),
+		});
 		const links: AceServerLink[] = [];
 		const unavailable: UnavailableServer[] = [];
 		const metrics = new AceMetrics();
@@ -208,7 +222,12 @@ export class AceSession {
 			subscribe: endpoints,
 			manual: options.config.manual,
 			selfSenders: links.map((link) => link.sender),
-			transports: factories.transports(endpoints, onError, (message) => problem(message)),
+			transports: factories.transports(
+				endpoints,
+				onError,
+				(message) => problem(message),
+				(subscription, entry) => deadLetters.record(subscription, entry),
+			),
 			...(options.config.defaultActivation === undefined
 				? {}
 				: { defaultActivation: options.config.defaultActivation }),
@@ -225,7 +244,7 @@ export class AceSession {
 			links,
 			unavailable,
 			endpoints,
-			options,
+			{ ...options, deadLetters },
 		);
 
 		if (endpoints.length > 0) {
@@ -282,6 +301,12 @@ export class AceSession {
 	 */
 	get configuredServers(): readonly ResolvedServer[] {
 		return this.options.config.servers;
+	}
+
+	/** What the dead-letter sink holds, for the human report. */
+	get deadLetterSummary(): { count: number; directory?: string } {
+		const sink = this.options.deadLetters;
+		return sink === undefined ? { count: 0 } : { count: sink.count, directory: sink.directory };
 	}
 
 	/** Configured servers that did not come up, for the human report. */

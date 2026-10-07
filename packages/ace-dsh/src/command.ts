@@ -59,9 +59,9 @@ function statusReport(session: AceSession): string {
 		unavailableServers: [...session.unavailableServers],
 		unavailableSubscriptions: ignored,
 		pendingManual: session.runtime.pendingEvents.length,
-		// This host has no dead-letter sink: once the reclaim budget is spent the core acknowledges the entry
-		// and drops it, leaving one notice line as the only trace.
-		deadLetters: { count: 0 },
+		// The reader writes an entry it gives up on into `<cwd>/.ace/dead-letter.*.jsonl` before
+		// acknowledging it, so the loss is both recoverable and visible (contract §5.2).
+		deadLetters: session.deadLetterSummary,
 	});
 }
 

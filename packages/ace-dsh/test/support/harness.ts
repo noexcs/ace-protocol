@@ -21,6 +21,7 @@ import type {
 	RegistryEntry,
 	Transport,
 	XferSetCommand,
+	DroppedEntry,
 } from "../../vendor/ace-runtime/dist/index.js";
 
 /** One stored stream entry, as the broker keeps it. */
@@ -79,10 +80,16 @@ export class FakeBroker {
 	/** Make every directory *read* fail, standing in for a directory that went away mid-session. */
 	directoryReadFails = false;
 
+	/** The dead-letter hook the session handed its transports, so a test can fire one. */
+	capturedOnDropped: ((subscription: string, entry: DroppedEntry) => void | Promise<void>) | undefined;
+
 	factories(): Partial<AceFactories> {
 		return {
 			registryStore: (server) => this.registryStore(server?.name),
-			transports: (endpoints) => this.transportsFor(endpoints),
+			transports: (endpoints, _onError, _onNotice, onDropped) => {
+				this.capturedOnDropped = onDropped;
+				return this.transportsFor(endpoints);
+			},
 			addClient: () => this.addClient(),
 			xferClient: (server) => this.xferClient(`xfer:${server.name}`),
 		};

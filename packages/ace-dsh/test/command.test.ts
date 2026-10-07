@@ -3,11 +3,54 @@
  * cannot observe: a session with no configuration, no server, or no held events reads as exactly that.
  */
 
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+const directories: string[] = [];
+
+async function workspace(): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "ace-dsh-dlq-"));
+	directories.push(dir);
+	return dir;
+}
+
+afterEach(async () => {
+	await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 import { runAceCommand } from "../src/command.ts";
 import { aceEvent, FakeAgent, FakeBroker, openTestSession, streamOf, testConfig } from "./support/harness.ts";
 
 describe("/ace", () => {
+	it("writes a dead letter the reader gives up on, and counts it", async () => {
+		const broker = new FakeBroker();
+		const cwd = await workspace();
+		const { session } = await openTestSession({ broker, cwd });
+		expect(broker.capturedOnDropped).toBeDefined();
+
+		await broker.capturedOnDropped?.("inbox", {
+			streamEntryId: "9-0",
+			stream: "ace:ch:inbox",
+			field: "message",
+			payload: "{}",
+			attempts: 3,
+			reason: "after 3 delivery attempts",
+		});
+
+		// The entry leaves the PEL only once the record is on disk, in the `.ace/` directory the Pi host uses.
+		const files = await readdir(join(cwd, ".ace"));
+		const deadLetter = files.find((name) => name.startsWith("dead-letter."));
+		expect(deadLetter).toBeDefined();
+		const written = await readFile(join(cwd, ".ace", deadLetter ?? ""), "utf8");
+		expect(written).toContain('"streamEntryId":"9-0"');
+		expect(written).toContain('"attempts":3');
+
+		// `/ace` (the status report) is where this host surfaces the count.
+		const reply = await runAceCommand("", session);
+		expect(reply.text).toContain("dead letters: 1");
+	});
+
 	it("reports this session's identity, configuration and liveness", async () => {
 		const broker = new FakeBroker();
 		const { session } = await openTestSession({ broker });

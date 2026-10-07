@@ -204,9 +204,11 @@ npm run check                # biome + tsc
 
 - **No connection sharing.** Each session opens its own clients, as the core's registry and transports do.
   A deployment with many live sessions pays one connection each.
-- **No dead-letter sink and no spool directory.** The core supports both; this host does not wire them, so an
-  entry the reader gives up on is **acknowledged and dropped** once `reclaimAttempts` is spent — one notice line is
-  the only trace (the core's dead-letter path is what makes that loss visible; without a sink it is not).
+- **Dead letters are written; the burst spool is not.** An entry the reader gives up on (its
+  `reclaimAttempts` budget spent) is appended to `<cwd>/.ace/dead-letter.<timestamp>.jsonl` — the same directory
+  and format the Pi host uses — before it leaves the pending list, so the loss is recoverable
+  (`npm run replay:dead-letters`) and countable in `/ace stats`. Bursts beyond `deliveryQueueLimit` are not
+  spooled to a file the way the Pi host spools them; they stay in the pending list.
 - **Configuration is read once**, at session creation. There is no `/ace reload`.
 - **`/ace` is registered but not dispatched by the client.** The command exists in the host's catalog (and its
   reports are correct when invoked), but typing `/ace …` in the composer reaches the model as plain text
