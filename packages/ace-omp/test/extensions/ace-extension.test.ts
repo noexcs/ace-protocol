@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import aceExtension, { aceCompletions, compactDescription } from "../../extensions/ace.ts";
+import aceExtension, { aceCompletions, compactDescription, isTransportRecovery } from "../../extensions/ace.ts";
 import {
 	type AceTheme,
 	agentsPanel,
@@ -803,5 +803,17 @@ describe("host specifics", () => {
 		expect(publish.description).toContain("$ACE_CONFIG");
 		expect(publish.description).toContain("manual-<subscription>.jsonl");
 		expect((publish.description ?? "").split("Host specifics:").length - 1).toBe(1);
+	});
+});
+
+describe("transport recovery notices (audit C2)", () => {
+	it("recognises the notices that mean the connection came back", () => {
+		expect(isTransportRecovery("redis stream ace:in: reconnected")).toBe(true);
+		expect(isTransportRecovery("redis stream ace:in: consumer group recreated")).toBe(true);
+	});
+
+	it("does not read ordinary notices as recoveries", () => {
+		expect(isTransportRecovery("redis stream ace:in: reclaimed entry 9-0 (attempt 1)")).toBe(false);
+		expect(isTransportRecovery("redis stream ace:in: dropping entry 9-0 after 3 delivery attempts")).toBe(false);
 	});
 });

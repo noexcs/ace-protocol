@@ -1,5 +1,7 @@
 import { createClient } from "redis";
 /** Give up after this many failed attempts instead of retrying a dead broker forever. */
+/** Bound a connect (initial or reconnect): a broker that accepts TCP and never answers must not hang it. */
+const CONNECT_TIMEOUT_MS = 5_000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 150;
 function isGroupAlreadyExistsError(error) {
@@ -30,6 +32,7 @@ export function createRedisStreamsClient(url, field, onError, clientOptions = {}
         // Bounded so an unreachable broker fails `connect()` instead of retrying forever. That bound is
         // about *starting*: after start, recovery is this adapter's job (see `ensureUsable`), because a
         // client that spent its budget cannot be reused.
+        connectTimeout: CONNECT_TIMEOUT_MS,
         reconnectStrategy: (retries) => retries > MAX_RECONNECT_ATTEMPTS ? new Error(`${url} is unreachable`) : retries * RECONNECT_DELAY_MS,
     };
     // The initial connection failure is thrown by `connect()` (and reported once by the host);
@@ -155,7 +158,10 @@ export function createRedisStreamsClient(url, field, onError, clientOptions = {}
             });
         },
         async close() {
-            if (client.isOpen) {
+            // `quit()` is graceful and needs a live connection: on a client that is connecting, closing or
+            // otherwise not ready it waits for a reply that cannot come, which hangs teardown. Only a ready
+            // client gets `quit`; everything else is destroyed outright.
+            if (client.isReady) {
                 try {
                     await client.quit();
                     return;

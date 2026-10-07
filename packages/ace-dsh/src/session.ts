@@ -67,7 +67,11 @@ interface UnavailableServer {
 /** The four host-side constructions one session needs; injectable so tests run without a broker. */
 export interface AceFactories {
 	registryStore(server: ResolvedServer, onError: (error: unknown) => void): AgentRegistryStore;
-	transports(endpoints: readonly EndpointConfig[], onError: (error: unknown) => void): Record<string, Transport>;
+	transports(
+		endpoints: readonly EndpointConfig[],
+		onError: (error: unknown) => void,
+		onNotice: (message: string) => void,
+	): Record<string, Transport>;
 	addClient(url: string, onError: (error: unknown) => void): RedisStreamsAddClient;
 	xferClient(server: ResolvedServer, onError: (error: unknown) => void): RedisXferClient;
 }
@@ -76,7 +80,7 @@ export interface AceFactories {
 export const REDIS_FACTORIES: AceFactories = {
 	registryStore: (server, onError) =>
 		createRedisAgentRegistry({ url: server.url, namespace: server.namespace, onError }),
-	transports: (endpoints, onError) => createTransports(endpoints, { onError }),
+	transports: (endpoints, onError, onNotice) => createTransports(endpoints, { onError, onNotice }),
 	addClient: (url, onError) => createRedisStreamsAddClient(url, onError),
 	xferClient: (server, onError) => createRedisXferClient({ url: server.url, name: `${server.name}:xfer`, onError }),
 };
@@ -204,7 +208,7 @@ export class AceSession {
 			subscribe: endpoints,
 			manual: options.config.manual,
 			selfSenders: links.map((link) => link.sender),
-			transports: factories.transports(endpoints, onError),
+			transports: factories.transports(endpoints, onError, (message) => problem(message)),
 			...(options.config.defaultActivation === undefined
 				? {}
 				: { defaultActivation: options.config.defaultActivation }),

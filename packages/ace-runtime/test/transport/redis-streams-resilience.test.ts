@@ -258,3 +258,32 @@ describe("RedisStreamsTransport start failures (audit C5)", () => {
 		expect(client.connections).toBe(1);
 	});
 });
+
+describe("RedisStreamsTransport notice routing (audit C2)", () => {
+	it("sends notices to onNotice instead of the error sink", async () => {
+		let now = 0;
+		const notices: string[] = [];
+		const { client, errors, transport } = setup({ reclaimAttempts: 1 }, () => now, {
+			onNotice: (message) => notices.push(message),
+		});
+		await transport.start(async () => {
+			throw new Error("agent unavailable");
+		});
+
+		now = 100;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await settle(() => client.reclaimed.length >= 1 && client.reads.length >= 3);
+
+		now = 200;
+		client.pushReclaimable({ id: "9-0", payload: validEntry });
+		client.releaseRead();
+		await client.waitForAcks(1);
+		await stop(transport, client);
+
+		// The drop is a notice, not a failure: a host that derives health from onError would latch
+		// "down" on it and then swallow the real errors that follow.
+		expect(notices.some((message) => message.includes("dropping entry 9-0"))).toBe(true);
+		expect(errors.some((error) => String(error).includes("dropping entry"))).toBe(false);
+	});
+});

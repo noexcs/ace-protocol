@@ -175,6 +175,7 @@ export class RedisStreamsTransport {
     name;
     client;
     onError;
+    onNotice;
     onDropped;
     metrics;
     deliveryQueueLimit;
@@ -193,6 +194,7 @@ export class RedisStreamsTransport {
         this.config = redisStreamsConfigFrom(subscription);
         this.name = subscription.name;
         this.onError = options.onError ?? (() => { });
+        this.onNotice = options.onNotice;
         this.onDropped = options.onDropped;
         this.metrics = options.metrics;
         this.deliveryQueueLimit = options.deliveryQueueLimit ?? REDIS_STREAMS_DELIVERY_QUEUE_LIMIT;
@@ -420,7 +422,18 @@ export class RedisStreamsTransport {
         }
     }
     reportNotice(message) {
-        this.report(new Error(message));
+        // A notice is a diagnostic, not a failure. Hosts that want them separately say so; the rest keep
+        // the old behaviour, notices on the error sink.
+        if (this.onNotice === undefined) {
+            this.report(new Error(message));
+            return;
+        }
+        try {
+            this.onNotice(message);
+        }
+        catch {
+            // A failing notice hook must not stop consumption.
+        }
     }
 }
 //# sourceMappingURL=redis-streams-transport.js.map

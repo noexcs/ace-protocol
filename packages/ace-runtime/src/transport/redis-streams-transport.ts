@@ -168,6 +168,14 @@ export interface RedisStreamsTransportOptions {
 	onDropped?: (entry: DroppedEntry) => void | Promise<void>;
 	/** Called when the broker connection or the read loop fails. */
 	onError?: (error: unknown) => void;
+	/**
+	 * Called with transport notices — a reconnect, a reclaimed entry, a dropped one.
+	 *
+	 * Deliberately separate from `onError`: a notice is not a failure, and a host that reads its health
+	 * off the error sink latched "down" on a routine message and then swallowed the real errors after it.
+	 * Without this hook, notices keep going to `onError` (the previous behaviour).
+	 */
+	onNotice?: (message: string) => void;
 	/** Counter sink for reconnects, reclaimed entries and dropped events. */
 	metrics?: AceMetrics;
 	/**
@@ -265,6 +273,7 @@ export class RedisStreamsTransport implements Transport {
 	private readonly name: string;
 	private readonly client: RedisStreamsClient;
 	private readonly onError: (error: unknown) => void;
+	private readonly onNotice: ((message: string) => void) | undefined;
 	private readonly onDropped: ((entry: DroppedEntry) => void | Promise<void>) | undefined;
 	private readonly metrics: AceMetrics | undefined;
 	private readonly deliveryQueueLimit: number;
@@ -284,6 +293,7 @@ export class RedisStreamsTransport implements Transport {
 		this.config = redisStreamsConfigFrom(subscription);
 		this.name = subscription.name;
 		this.onError = options.onError ?? (() => {});
+		this.onNotice = options.onNotice;
 		this.onDropped = options.onDropped;
 		this.metrics = options.metrics;
 		this.deliveryQueueLimit = options.deliveryQueueLimit ?? REDIS_STREAMS_DELIVERY_QUEUE_LIMIT;
@@ -536,6 +546,16 @@ export class RedisStreamsTransport implements Transport {
 	}
 
 	private reportNotice(message: string): void {
-		this.report(new Error(message));
+		// A notice is a diagnostic, not a failure. Hosts that want them separately say so; the rest keep
+		// the old behaviour, notices on the error sink.
+		if (this.onNotice === undefined) {
+			this.report(new Error(message));
+			return;
+		}
+		try {
+			this.onNotice(message);
+		} catch {
+			// A failing notice hook must not stop consumption.
+		}
 	}
 }

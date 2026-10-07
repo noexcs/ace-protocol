@@ -181,6 +181,8 @@ export interface TransportFactoryOptions {
     onError: (error: unknown) => void;
     metrics?: AceMetrics;
     onDropped?: (subscription: string, entry: DroppedEntry) => void | Promise<void>;
+    /** Notices (reconnect, reclaimed entry, dropped entry), kept out of `onError`. */
+    onNotice?: (message: string) => void;
 }
 export declare function createTransports(subscriptions: readonly EndpointConfig[], options: TransportFactoryOptions): Record<string, Transport>;
 /**

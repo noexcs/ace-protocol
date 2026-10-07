@@ -89,6 +89,14 @@ export interface RedisStreamsTransportOptions {
     onDropped?: (entry: DroppedEntry) => void | Promise<void>;
     /** Called when the broker connection or the read loop fails. */
     onError?: (error: unknown) => void;
+    /**
+     * Called with transport notices — a reconnect, a reclaimed entry, a dropped one.
+     *
+     * Deliberately separate from `onError`: a notice is not a failure, and a host that reads its health
+     * off the error sink latched "down" on a routine message and then swallowed the real errors after it.
+     * Without this hook, notices keep going to `onError` (the previous behaviour).
+     */
+    onNotice?: (message: string) => void;
     /** Counter sink for reconnects, reclaimed entries and dropped events. */
     metrics?: AceMetrics;
     /**
@@ -124,6 +132,7 @@ export declare class RedisStreamsTransport implements Transport {
     private readonly name;
     private readonly client;
     private readonly onError;
+    private readonly onNotice;
     private readonly onDropped;
     private readonly metrics;
     private readonly deliveryQueueLimit;

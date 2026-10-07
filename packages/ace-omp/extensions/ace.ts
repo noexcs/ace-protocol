@@ -157,6 +157,17 @@ function describeError(error: unknown): string {
 }
 
 /** Report to the user: notification in UI modes, stderr in print/JSON modes. */
+/**
+ * Whether a transport notice means the connection got better rather than worse.
+ *
+ * The core reports notices and failures through separate hooks, but both end up in this file's reporting.
+ * Without this the footer's "transport down" state is a one-way latch: one blip and the session looks
+ * broken for the rest of its life while the real errors that follow are swallowed.
+ */
+export function isTransportRecovery(message: string): boolean {
+	return message.includes("reconnected") || message.includes("consumer group recreated");
+}
+
 function report(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void {
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, type);
@@ -1107,22 +1118,20 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 			transports: createTransports(subscriptions, {
 				metrics,
 				onDropped: (subscription, entry) => deadLetters?.record(subscription, entry),
+				onNotice: (message) => {
+					// The heartbeat that keeps the footer honest has to be able to come back up: a recovery
+					// clears the latch, everything else is only reported.
+					if (isTransportRecovery(message)) transportErrorReported = false;
+					report(ctx, `[ace] ${message}`, "info");
+				},
 				onError: (error) => {
 					// Teardown drops this session's own stream; a reader that is still draining would report
 					// NOGROUP for a group we just removed on purpose.
 					if (shuttingDown) return;
-					const message = describeError(error);
-					// The core sends notices down this same sink, so a recovery arrives here too. Without
-					// honouring it the latch below is one-way: the footer would say "transport down" for
-					// the rest of the session and every later, real error would be swallowed.
-					if (message.includes("reconnected") || message.includes("consumer group recreated")) {
-						transportErrorReported = false;
-						return;
-					}
 					// A broker that dies mid-session would otherwise repeat the same error.
 					if (transportErrorReported) return;
 					transportErrorReported = true;
-					report(ctx, `[ace] transport error: ${message}`, "error");
+					report(ctx, `[ace] transport error: ${describeError(error)}`, "error");
 				},
 			}),
 			...(resolved.defaultActivation ? { defaultActivation: resolved.defaultActivation } : {}),

@@ -507,6 +507,8 @@ export interface TransportFactoryOptions {
 	onError: (error: unknown) => void;
 	metrics?: AceMetrics;
 	onDropped?: (subscription: string, entry: DroppedEntry) => void | Promise<void>;
+	/** Notices (reconnect, reclaimed entry, dropped entry), kept out of `onError`. */
+	onNotice?: (message: string) => void;
 }
 
 export function createTransports(
@@ -519,6 +521,7 @@ export function createTransports(
 		transports[subscription.name] = new RedisStreamsTransport(subscription, {
 			onError: options.onError,
 			...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+			...(options.onNotice === undefined ? {} : { onNotice: options.onNotice }),
 			...(options.onDropped === undefined
 				? {}
 				: { onDropped: (entry) => options.onDropped?.(subscription.name, entry) }),

@@ -335,6 +335,7 @@ export function createTransports(subscriptions, options) {
         transports[subscription.name] = new RedisStreamsTransport(subscription, {
             onError: options.onError,
             ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+            ...(options.onNotice === undefined ? {} : { onNotice: options.onNotice }),
             ...(options.onDropped === undefined
                 ? {}
                 : { onDropped: (entry) => options.onDropped?.(subscription.name, entry) }),
