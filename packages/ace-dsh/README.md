@@ -148,7 +148,7 @@ The plugin is installed into a profile as a single tarball; it is not part of an
 ```bash
 # any profile the CLI manages:
 dsh plugin --profile <profile> add \
-  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.1/ace-dsh-0.1.1.tgz
 # then restart the host so the profile recomposes
 ```
 

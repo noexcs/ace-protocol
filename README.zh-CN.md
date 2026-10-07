@@ -32,10 +32,10 @@ Agent A ──事件──►   Redis Server   ◄──事件── Agent B    
 
 ```bash
 # 1. 从 Release 安装宿主插件 —— 你的机器上什么都不用构建
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
 #    改用 DeepSeek Harness 的话：
 #    dsh plugin --profile <profile> add \
-#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.1/ace-dsh-0.1.1.tgz
 
 # 2. 说清楚你是谁、要连哪台 Server
 mkdir -p ~/ace-demo && cd ~/ace-demo
@@ -68,7 +68,7 @@ omp
 **oh-my-pi / Pi** —— [`ace-omp`](packages/ace-omp/README.md)
 
 ```bash
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
 omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
@@ -80,7 +80,7 @@ omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 
 ```bash
 dsh plugin --profile <profile> add \
-  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.1/ace-dsh-0.1.1.tgz
 # 然后重启宿主，让 profile 重新组装
 ```
 

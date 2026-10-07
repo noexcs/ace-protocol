@@ -35,10 +35,10 @@ Agent A ──event──►  Redis Server  ◄──event── Agent B        
 
 ```bash
 # 1. install the host plugin from its release — nothing is built on your machine
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
 #    DeepSeek Harness instead:
 #    dsh plugin --profile <profile> add \
-#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+#      https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.1/ace-dsh-0.1.1.tgz
 
 # 2. say who you are and which Server you talk to
 mkdir -p ~/ace-demo && cd ~/ace-demo
@@ -72,7 +72,7 @@ Both hosts install from a release tarball. Neither needs a checkout, and nothing
 **oh-my-pi / Pi** — [`ace-omp`](packages/ace-omp/README.md)
 
 ```bash
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.18/ace-omp-0.2.18.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
 omp plugin list          # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
@@ -84,7 +84,7 @@ covers that, and the one mistake to avoid (passing `-e/--extension` *as well*, w
 
 ```bash
 dsh plugin --profile <profile> add \
-  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.0/ace-dsh-0.1.0.tgz
+  https://github.com/noexcs/ace-protocol/releases/download/ace-dsh-v0.1.1/ace-dsh-0.1.1.tgz
 # then restart the host so the profile recomposes
 ```
 
