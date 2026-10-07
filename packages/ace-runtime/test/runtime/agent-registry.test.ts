@@ -13,6 +13,9 @@ class FakeStore implements AgentRegistryStore {
 	readonly ensured: Array<{ stream: string; group: string }> = [];
 	readonly entries = new Map<string, { description: string; expiresAt: number }>();
 	readonly dropped: string[] = [];
+	readonly puts: string[] = [];
+	/** When set, `refresh` rejects: the store itself is broken, which is the error path. */
+	refreshError?: Error;
 	closed = false;
 
 	async ensureStream(stream: string, group: string): Promise<void> {
@@ -20,13 +23,17 @@ class FakeStore implements AgentRegistryStore {
 	}
 
 	async put(channel: string, description: string, expiresAt: number): Promise<void> {
+		this.puts.push(channel);
 		this.entries.set(channel, { description, expiresAt });
 	}
 
-	async refresh(channel: string, expiresAt: number): Promise<void> {
+	async refresh(channel: string, expiresAt: number): Promise<boolean> {
+		if (this.refreshError !== undefined) throw this.refreshError;
 		const entry = this.entries.get(channel);
-		if (!entry) throw new Error(`unknown channel ${channel}`);
+		// A swept entry is not an error: it is the answer the caller acts on (re-register).
+		if (entry === undefined) return false;
 		entry.expiresAt = expiresAt;
+		return true;
 	}
 
 	async remove(channel: string): Promise<void> {
@@ -37,7 +44,15 @@ class FakeStore implements AgentRegistryStore {
 		this.dropped.push(stream);
 	}
 
-	async list(now: number): Promise<RegistryEntry[]> {
+	async list(now: number, streamGraceMs: number): Promise<RegistryEntry[]> {
+		// Mirrors the Redis store: an expired entry leaves the listing at once, but its leftovers are only
+		// dropped once the score is older than the grace.
+		for (const [channel, entry] of [...this.entries]) {
+			if (entry.expiresAt > now) continue;
+			if (entry.expiresAt > now - streamGraceMs) continue;
+			this.entries.delete(channel);
+			this.dropped.push(channelStreamKey(NAMESPACE_DEFAULT, channel));
+		}
 		return [...this.entries]
 			.filter(([, entry]) => entry.expiresAt > now)
 			.map(([channel, entry]) => ({ channel, description: entry.description, expiresAt: entry.expiresAt }));
@@ -73,7 +88,9 @@ class ManualTimer {
 	}
 }
 
-function setup(options: { namespace?: string; refreshMs?: number; onError?: (error: unknown) => void } = {}) {
+function setup(
+	options: { namespace?: string; refreshMs?: number; streamGraceMs?: number; onError?: (error: unknown) => void } = {},
+) {
 	const store = new FakeStore();
 	const timer = new ManualTimer();
 	let now = 1_000;
@@ -81,6 +98,7 @@ function setup(options: { namespace?: string; refreshMs?: number; onError?: (err
 		store,
 		ttlMs: 90_000,
 		refreshMs: options.refreshMs ?? 30_000,
+		...(options.streamGraceMs === undefined ? {} : { streamGraceMs: options.streamGraceMs }),
 		now: () => now,
 		setTimer: timer.setTimer,
 		...(options.namespace === undefined ? {} : { namespace: options.namespace }),
@@ -141,15 +159,44 @@ describe("AgentRegistry", () => {
 		expect(store.entries.get(sender)?.expiresAt).toBe(31_000 + 90_000);
 	});
 
-	it("reports a heartbeat that cannot extend the entry", async () => {
+	it("reports a heartbeat the store itself rejects", async () => {
 		const errors: unknown[] = [];
-		const { store, timer, registry } = setup({ refreshMs: 1, onError: (error) => errors.push(error) });
+		const { store, timer, registry } = setup({ onError: (error) => errors.push(error) });
 		await registry.register(registration);
-		store.entries.clear();
+		store.refreshError = new Error("directory unavailable");
 
 		await timer.fire();
 
-		expect(errors).toHaveLength(1);
+		// A missing member is not an error any more — that path re-registers (see the sweep test) — but a
+		// store that cannot answer is: it is reported once per beat.
+		expect(errors.map(String)).toEqual(["Error: directory unavailable"]);
+	});
+
+	it("re-registers when the directory has swept the entry while it was away", async () => {
+		const { store, timer, registry } = setup();
+		await registry.register(registration);
+		// What a directory read on another session (or on this one, after a lapse longer than the TTL)
+		// does to an entry whose heartbeat missed: the member is gone, and a bare `ZADD XX` would no-op.
+		store.entries.delete(sender);
+
+		await timer.fire();
+
+		expect(store.entries.has(sender)).toBe(true);
+		expect(store.puts).toEqual([sender, sender]);
+	});
+
+	it("keeps a lapsed entry's stream through the grace window, then drops it", async () => {
+		const { store, registry, advance } = setup({ streamGraceMs: 5_000 });
+		const registered = await registry.register(registration);
+
+		advance(92_000); // past the TTL, inside the grace
+		expect(await registry.list()).toEqual([]); // not listed any more
+		expect(store.dropped).toEqual([]); // ...but its stream is still there for its reader
+		expect(store.entries.has(sender)).toBe(true);
+
+		advance(6_000); // past the grace
+		expect(await registry.list()).toEqual([]);
+		expect(store.dropped).toEqual([registered.stream]);
 	});
 
 	it("removes the entry and the channel's stream on a clean shutdown", async () => {

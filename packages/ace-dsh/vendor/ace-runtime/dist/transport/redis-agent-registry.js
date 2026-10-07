@@ -81,7 +81,17 @@ export function createRedisAgentRegistry(options) {
             });
         },
         async refresh(channel, expiresAt) {
-            await use(() => client.zAdd(membersKey, { score: expiresAt, value: channel }, { XX: true }));
+            // `ZADD XX` reports *additions*, which is 0 both for "updated an existing member" and for
+            // "refused to add because it is gone" — so ask for the score in the same round trip and answer
+            // the question the caller actually has. A refresh that silently no-ops is how a live session
+            // stayed invisible for the rest of its life.
+            const reply = await use(() => client
+                .multi()
+                .zAdd(membersKey, { score: expiresAt, value: channel }, { XX: true })
+                .zScore(membersKey, channel)
+                .exec());
+            const score = Array.isArray(reply) ? reply[1] : undefined;
+            return score !== null && score !== undefined;
         },
         async remove(channel) {
             await use(async () => {
@@ -91,16 +101,26 @@ export function createRedisAgentRegistry(options) {
         async dropStream(stream) {
             await use(() => client.del(stream));
         },
-        async list(now) {
+        async list(now, streamGraceMs) {
             // Housekeeping happens on the read path. A session killed without a clean shutdown never runs
-            // its own cleanup, so whoever reads next removes the expired channel *and* its leftovers
-            // (hash field, stream) — all of them derivable from the channel name.
+            // its own cleanup, so whoever reads next removes the expired channel *and* its leftovers — all of
+            // them derivable from the channel name.
+            //
+            // Expiry and disposal are two different moments: an entry stops being *listed* the instant its
+            // score lapses, but its stream and hash field survive a grace window, because a session that only
+            // lost its heartbeat comes back to them (its reader keeps the group and the PEL, and its next beat
+            // re-registers the entry). Only leftovers past the grace are dropped.
             const live = await use(async () => {
-                const expired = await client.zRangeByScore(membersKey, "-inf", `(${now}`);
-                if (expired.length > 0) {
-                    await client.multi().zRemRangeByScore(membersKey, "-inf", `(${now}`).hDel(entriesKey, expired).exec();
-                    for (const channel of expired)
-                        await client.del(channelStreamKey(namespace, channel));
+                const stale = await client.zRangeByScoreWithScores(membersKey, "-inf", `(${now - streamGraceMs}`);
+                if (stale.length > 0) {
+                    const channels = stale.map((entry) => entry.value);
+                    await client
+                        .multi()
+                        .zRemRangeByScore(membersKey, "-inf", `(${now - streamGraceMs}`)
+                        .hDel(entriesKey, channels)
+                        .exec();
+                    for (const entry of stale)
+                        await client.del(channelStreamKey(namespace, entry.value));
                 }
                 return client.zRangeByScoreWithScores(membersKey, `(${now}`, "+inf");
             });

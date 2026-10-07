@@ -5,6 +5,15 @@ import { channelStreamKey, NAMESPACE_DEFAULT } from "./naming.js";
 export const REGISTRY_DEFAULTS = {
     ttlMs: 90_000,
     refreshMs: 30_000,
+    /**
+     * How long an expired channel's stream, group and hash field outlive its directory entry.
+     *
+     * The entry stops being *listed* the moment it expires; the leftovers are only deleted once the score
+     * is older than this. A session that merely lost its heartbeat (a sleeping laptop, a network split, a
+     * restarted pod) therefore comes back to the stream and consumer group it was reading — and the sweep
+     * that used to destroy them on the first read is what turned one blip into permanent deafness.
+     */
+    streamGraceMs: 3_600_000,
 };
 export function readerFactsOf(options) {
     const { channel, live, subscriptions, own = [] } = options;
@@ -26,6 +35,9 @@ export class AgentRegistry {
     namespace;
     ttlMs;
     refreshMs;
+    streamGraceMs;
+    /** What this session published about itself, kept so a swept entry can be put back. */
+    description;
     now;
     setTimer;
     logger;
@@ -37,6 +49,7 @@ export class AgentRegistry {
         this.namespace = options.namespace ?? NAMESPACE_DEFAULT;
         this.ttlMs = options.ttlMs ?? REGISTRY_DEFAULTS.ttlMs;
         this.refreshMs = options.refreshMs ?? REGISTRY_DEFAULTS.refreshMs;
+        this.streamGraceMs = options.streamGraceMs ?? REGISTRY_DEFAULTS.streamGraceMs;
         this.now = options.now ?? (() => Date.now());
         this.setTimer =
             options.setTimer ??
@@ -59,6 +72,7 @@ export class AgentRegistry {
         await this.store.put(channel, description, this.now() + this.ttlMs);
         const registered = { channel, stream, group };
         this.registration = registered;
+        this.description = description;
         this.logger?.info?.(`[ACE] registered ${channel} stream=${stream} ttl=${this.ttlMs}ms`);
         if (this.refreshMs > 0) {
             const tick = () => {
@@ -73,6 +87,7 @@ export class AgentRegistry {
     async unregister() {
         const registered = this.registration;
         this.registration = undefined;
+        this.description = undefined;
         this.timer?.cancel();
         this.timer = undefined;
         if (registered === undefined)
@@ -83,17 +98,29 @@ export class AgentRegistry {
     }
     /** Live registrations, expired ones pruned on the way. */
     async list() {
-        return this.store.list(this.now());
+        return this.store.list(this.now(), this.streamGraceMs);
     }
     async close() {
         this.timer?.cancel();
         this.timer = undefined;
         await this.store.close();
     }
-    /** Extend the expiry; a failure is reported and the next beat retries. */
+    /**
+     * Extend the expiry; a failure is reported and the next beat retries.
+     *
+     * When the member is gone — the directory swept it during a lapse longer than the TTL — the beat puts
+     * it back rather than refreshing nothing. That is the directory half of recovering from a partition;
+     * the stream half is the grace window in {@link REGISTRY_DEFAULTS.streamGraceMs}.
+     */
     async beat(channel) {
         try {
-            await this.store.refresh(channel, this.now() + this.ttlMs);
+            if (await this.store.refresh(channel, this.now() + this.ttlMs))
+                return;
+            const registration = this.registration;
+            if (registration === undefined || this.description === undefined)
+                return;
+            await this.store.put(channel, this.description, this.now() + this.ttlMs);
+            this.logger?.info?.(`[ACE] re-registered ${channel}: the directory had swept its entry`);
         }
         catch (error) {
             this.onError(error);

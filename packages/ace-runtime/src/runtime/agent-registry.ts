@@ -7,6 +7,15 @@ import { channelStreamKey, NAMESPACE_DEFAULT } from "./naming.ts";
 export const REGISTRY_DEFAULTS = {
 	ttlMs: 90_000,
 	refreshMs: 30_000,
+	/**
+	 * How long an expired channel's stream, group and hash field outlive its directory entry.
+	 *
+	 * The entry stops being *listed* the moment it expires; the leftovers are only deleted once the score
+	 * is older than this. A session that merely lost its heartbeat (a sleeping laptop, a network split, a
+	 * restarted pod) therefore comes back to the stream and consumer group it was reading — and the sweep
+	 * that used to destroy them on the first read is what turned one blip into permanent deafness.
+	 */
+	streamGraceMs: 3_600_000,
 } as const;
 
 /**
@@ -77,13 +86,22 @@ export interface AgentRegistryStore {
 	/** Create this session's stream and group when absent; idempotent. */
 	ensureStream(stream: string, group: string): Promise<void>;
 	put(channel: string, description: string, expiresAt: number): Promise<void>;
-	/** Extend the expiry without rewriting the entry. */
-	refresh(channel: string, expiresAt: number): Promise<void>;
+	/**
+	 * Extend the expiry without rewriting the entry.
+	 *
+	 * Resolves `false` when the member is gone (a sweep removed it while this session was away): the
+	 * caller re-registers instead of refreshing something that is not there. A refresh that silently
+	 * no-ops is how a live session stayed invisible for the rest of its life.
+	 */
+	refresh(channel: string, expiresAt: number): Promise<boolean>;
 	remove(channel: string): Promise<void>;
 	/** Drop the session's stream: nothing can be addressed to a closed session. */
 	dropStream(stream: string): Promise<void>;
-	/** Live entries, expired channels pruned on the way. */
-	list(now: number): Promise<RegistryEntry[]>;
+	/**
+	 * Live entries. Expired channels are not listed, and leftovers older than `streamGraceMs` are swept
+	 * on the way (see {@link REGISTRY_DEFAULTS.streamGraceMs}).
+	 */
+	list(now: number, streamGraceMs: number): Promise<RegistryEntry[]>;
 	close(): Promise<void>;
 }
 
@@ -109,6 +127,8 @@ export interface AgentRegistryOptions {
 	namespace?: string;
 	ttlMs?: number;
 	refreshMs?: number;
+	/** How long an expired channel's leftovers outlive its entry; defaults to the registry default. */
+	streamGraceMs?: number;
 	now?: () => number;
 	setTimer?: (callback: () => void, ms: number) => { cancel: () => void };
 	logger?: AceLogger;
@@ -138,6 +158,9 @@ export class AgentRegistry {
 	private readonly namespace: string;
 	private readonly ttlMs: number;
 	private readonly refreshMs: number;
+	private readonly streamGraceMs: number;
+	/** What this session published about itself, kept so a swept entry can be put back. */
+	private description?: string;
 	private readonly now: () => number;
 	private readonly setTimer: (callback: () => void, ms: number) => { cancel: () => void };
 	private readonly logger: AceLogger | undefined;
@@ -150,6 +173,7 @@ export class AgentRegistry {
 		this.namespace = options.namespace ?? NAMESPACE_DEFAULT;
 		this.ttlMs = options.ttlMs ?? REGISTRY_DEFAULTS.ttlMs;
 		this.refreshMs = options.refreshMs ?? REGISTRY_DEFAULTS.refreshMs;
+		this.streamGraceMs = options.streamGraceMs ?? REGISTRY_DEFAULTS.streamGraceMs;
 		this.now = options.now ?? (() => Date.now());
 		this.setTimer =
 			options.setTimer ??
@@ -174,6 +198,7 @@ export class AgentRegistry {
 		await this.store.put(channel, description, this.now() + this.ttlMs);
 		const registered: Registration = { channel, stream, group };
 		this.registration = registered;
+		this.description = description;
 		this.logger?.info?.(`[ACE] registered ${channel} stream=${stream} ttl=${this.ttlMs}ms`);
 		if (this.refreshMs > 0) {
 			const tick = () => {
@@ -189,6 +214,7 @@ export class AgentRegistry {
 	async unregister(): Promise<void> {
 		const registered = this.registration;
 		this.registration = undefined;
+		this.description = undefined;
 		this.timer?.cancel();
 		this.timer = undefined;
 		if (registered === undefined) return;
@@ -199,7 +225,7 @@ export class AgentRegistry {
 
 	/** Live registrations, expired ones pruned on the way. */
 	async list(): Promise<RegistryEntry[]> {
-		return this.store.list(this.now());
+		return this.store.list(this.now(), this.streamGraceMs);
 	}
 
 	async close(): Promise<void> {
@@ -208,10 +234,20 @@ export class AgentRegistry {
 		await this.store.close();
 	}
 
-	/** Extend the expiry; a failure is reported and the next beat retries. */
+	/**
+	 * Extend the expiry; a failure is reported and the next beat retries.
+	 *
+	 * When the member is gone — the directory swept it during a lapse longer than the TTL — the beat puts
+	 * it back rather than refreshing nothing. That is the directory half of recovering from a partition;
+	 * the stream half is the grace window in {@link REGISTRY_DEFAULTS.streamGraceMs}.
+	 */
 	private async beat(channel: string): Promise<void> {
 		try {
-			await this.store.refresh(channel, this.now() + this.ttlMs);
+			if (await this.store.refresh(channel, this.now() + this.ttlMs)) return;
+			const registration = this.registration;
+			if (registration === undefined || this.description === undefined) return;
+			await this.store.put(channel, this.description, this.now() + this.ttlMs);
+			this.logger?.info?.(`[ACE] re-registered ${channel}: the directory had swept its entry`);
 		} catch (error) {
 			this.onError(error);
 		}

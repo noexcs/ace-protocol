@@ -69,6 +69,28 @@ describe("ace_publish", () => {
 		expect(alice.agent.received).toHaveLength(0);
 	});
 
+	it("refuses a target on a configured server that is down instead of rerouting it", async () => {
+		const broker = new FakeBroker();
+		broker.unreachableServers.add("remote");
+		const alice = await openTestSession({
+			broker,
+			config: testConfig({ extraServers: [{ name: "remote" }] }),
+		});
+
+		// `remote` is configured but did not come up while `local` is live. Target resolution needs the
+		// *configured* list to keep `remote:inbox` looking like a server prefix; with only the live list it
+		// falls through to short-name completion, lands on the live server, and reports success.
+		const outcome = await tool(ACE_TOOL_NAMES.publish)
+			.run({ body: "hello", channel: "remote:inbox" }, alice.session)
+			.catch((thrown: unknown) => thrown);
+		const text = outcome instanceof Error ? outcome.message : String(outcome);
+
+		expect(text).toContain("status=failed");
+		expect(text).toContain("did not come up");
+		expect(text).not.toContain("stored=1");
+		expect(broker.published).toHaveLength(0);
+	});
+
 	it("carries the sender's session id and self-description in the envelope", async () => {
 		const broker = new FakeBroker();
 		const alice = await openTestSession({ broker });

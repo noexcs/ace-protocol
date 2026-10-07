@@ -361,16 +361,22 @@ await (async () => {
 	try {
 		const registered = await registry.register({ sender, codingAgent: "verify-agent", sessionId, cwd: "/tmp/gc" });
 		await settle(600); // past the expiry
-		const live = await registry.list(); // the read is what sweeps
+		const live = await registry.list(); // the read is what lists, and what sweeps
+		const leftListing = live.every((entry) => entry.channel !== sender);
+		// Within the grace window the leftovers stay: a session that only lost its heartbeat comes back to
+		// the same stream and consumer group, so a blip does not cost it the events waiting in its PEL.
+		const keptStream = (await admin.exists(registered.stream)) === 1;
+		// Age the member past the grace — what a genuinely dead session looks like — and the sweep takes
+		// the leftovers with it.
+		await admin.zAdd(directoryKey(namespace), { score: 0, value: sender });
+		await registry.list();
 		const swept =
-			live.every((entry) => entry.channel !== sender) &&
-			(await admin.hLen(directoryEntryKey(namespace))) === 0 &&
-			(await admin.exists(registered.stream)) === 0;
+			(await admin.hLen(directoryEntryKey(namespace))) === 0 && (await admin.exists(registered.stream)) === 0;
 		check(
 			"agent directory gc",
-			"an expired channel loses its entry, hash field and stream",
-			`swept=${swept} hashFields=${await admin.hLen(directoryEntryKey(namespace))} streamExists=${await admin.exists(registered.stream)}`,
-			swept,
+			"a lapsed channel leaves the listing at once, keeps its stream through the grace, and is dropped after it",
+			`leftListing=${leftListing} keptStream=${keptStream} swept=${swept}`,
+			leftListing && keptStream && swept,
 		);
 	} catch (error) {
 		check("agent directory gc", "scenario completes", error instanceof Error ? error.message : String(error), false);

@@ -3,6 +3,15 @@ import type { AceLogger } from "../logger.ts";
 export declare const REGISTRY_DEFAULTS: {
     readonly ttlMs: 90000;
     readonly refreshMs: 30000;
+    /**
+     * How long an expired channel's stream, group and hash field outlive its directory entry.
+     *
+     * The entry stops being *listed* the moment it expires; the leftovers are only deleted once the score
+     * is older than this. A session that merely lost its heartbeat (a sleeping laptop, a network split, a
+     * restarted pod) therefore comes back to the stream and consumer group it was reading — and the sweep
+     * that used to destroy them on the first read is what turned one blip into permanent deafness.
+     */
+    readonly streamGraceMs: 3600000;
 };
 /**
  * One live registration, as discovery sees it: **a channel** — the one a session opened under its own
@@ -62,13 +71,22 @@ export interface AgentRegistryStore {
     /** Create this session's stream and group when absent; idempotent. */
     ensureStream(stream: string, group: string): Promise<void>;
     put(channel: string, description: string, expiresAt: number): Promise<void>;
-    /** Extend the expiry without rewriting the entry. */
-    refresh(channel: string, expiresAt: number): Promise<void>;
+    /**
+     * Extend the expiry without rewriting the entry.
+     *
+     * Resolves `false` when the member is gone (a sweep removed it while this session was away): the
+     * caller re-registers instead of refreshing something that is not there. A refresh that silently
+     * no-ops is how a live session stayed invisible for the rest of its life.
+     */
+    refresh(channel: string, expiresAt: number): Promise<boolean>;
     remove(channel: string): Promise<void>;
     /** Drop the session's stream: nothing can be addressed to a closed session. */
     dropStream(stream: string): Promise<void>;
-    /** Live entries, expired channels pruned on the way. */
-    list(now: number): Promise<RegistryEntry[]>;
+    /**
+     * Live entries. Expired channels are not listed, and leftovers older than `streamGraceMs` are swept
+     * on the way (see {@link REGISTRY_DEFAULTS.streamGraceMs}).
+     */
+    list(now: number, streamGraceMs: number): Promise<RegistryEntry[]>;
     close(): Promise<void>;
 }
 /**
@@ -92,6 +110,8 @@ export interface AgentRegistryOptions {
     namespace?: string;
     ttlMs?: number;
     refreshMs?: number;
+    /** How long an expired channel's leftovers outlive its entry; defaults to the registry default. */
+    streamGraceMs?: number;
     now?: () => number;
     setTimer?: (callback: () => void, ms: number) => {
         cancel: () => void;
@@ -121,6 +141,9 @@ export declare class AgentRegistry {
     private readonly namespace;
     private readonly ttlMs;
     private readonly refreshMs;
+    private readonly streamGraceMs;
+    /** What this session published about itself, kept so a swept entry can be put back. */
+    private description?;
     private readonly now;
     private readonly setTimer;
     private readonly logger;
@@ -135,7 +158,13 @@ export declare class AgentRegistry {
     /** Live registrations, expired ones pruned on the way. */
     list(): Promise<RegistryEntry[]>;
     close(): Promise<void>;
-    /** Extend the expiry; a failure is reported and the next beat retries. */
+    /**
+     * Extend the expiry; a failure is reported and the next beat retries.
+     *
+     * When the member is gone — the directory swept it during a lapse longer than the TTL — the beat puts
+     * it back rather than refreshing nothing. That is the directory half of recovering from a partition;
+     * the stream half is the grace window in {@link REGISTRY_DEFAULTS.streamGraceMs}.
+     */
     private beat;
 }
 export interface HostFacts {

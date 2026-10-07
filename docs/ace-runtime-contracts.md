@@ -143,10 +143,10 @@ agent=<codingAgent [版本]> | session=<尾6> | cwd=… | host=… | ip=… | pl
 | 项 | 约定 |
 |---|---|
 | 注册时机 | 会话开始（仅主会话；见 §6.9） |
-| 心跳 | 每 `refreshMs`(30s) `ZADD XX` 续期；`refreshMs=0` 关闭心跳（条目活到显式注销） |
-| TTL | `ttlMs`(90s)：分数过期即视为离线 |
+| 心跳 | 每 `refreshMs`(30s) `ZADD XX` 续期；**若成员已被清扫则重新 `put`**（刷新会回答"成员是否还在"，成员不在就自愈重注册）；`refreshMs=0` 关闭心跳（条目活到显式注销） |
+| TTL | `ttlMs`(90s)：分数过期即**不再被列出**（视为离线），但遗留暂不删除，见下一行 |
 | 注销时机 | 会话干净关闭：`ZREM` + `HDEL`，再 `DEL` 该 channel 的流 |
-| 崩溃 | 不依赖关闭钩子：过期后由**读取端清扫**（`ZREMRANGEBYSCORE -inf (<now)` + `HDEL` 过期字段 + `DEL` 遗留流） |
+| 崩溃与分区 | 不依赖关闭钩子：**过期条目立即退出列表**，但它的 hash 字段与 stream 保留 `streamGraceMs`(1h) 之后才由**读取端清扫**（`ZREMRANGEBYSCORE -inf (<now - grace)` + `HDEL` + `DEL` 遗留流）。这段 grace 是给"只丢了心跳"的会话留的：它回来时组、PEL 与事件都还在（配合 reader 遇 NOGROUP 重建组），一次网络抖动因此不再等于永久失聪 |
 | 自动订阅 | 运行时用 `subscriptionEndpoint({ channel: sender, name: SESSION_INBOX, url, namespace, sender })` 把收件箱派生成本会话的一条订阅，否则公示的 channel 无人接收 |
 | 发现读取 | `ZRANGEBYSCORE <ns>:agents (<now> +inf` → `HMGET <ns>:entry <channels…>`；清扫与读取同一次进行 |
 | 寻址 | 目录只回答"哪些 channel 现在在线、叫什么"；发布端据此把 stream key 从名字算出来（§4.1），**条目里没有任何 transport/url/stream 可读** |

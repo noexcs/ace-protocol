@@ -71,6 +71,9 @@ export class FakeBroker {
 	readonly published: StreamEntry[] = [];
 	readonly blobs = new Map<string, Uint8Array>();
 	readonly droppedStreams: string[] = [];
+	/** Server names whose directory operations must fail, standing in for a configured-but-down server. */
+	readonly unreachableServers = new Set<string>();
+
 	/** Make every directory operation fail, standing in for an unreachable server. */
 	unreachable = false;
 	/** Make every directory *read* fail, standing in for a directory that went away mid-session. */
@@ -78,7 +81,7 @@ export class FakeBroker {
 
 	factories(): Partial<AceFactories> {
 		return {
-			registryStore: () => this.registryStore(),
+			registryStore: (server) => this.registryStore(server?.name),
 			transports: (endpoints) => this.transportsFor(endpoints),
 			addClient: () => this.addClient(),
 			xferClient: (server) => this.xferClient(`xfer:${server.name}`),
@@ -101,25 +104,26 @@ export class FakeBroker {
 		return this.transports.find((transport) => transport.stream === stream);
 	}
 
-	private registryStore(): AgentRegistryStore {
+	private registryStore(serverName?: string): AgentRegistryStore {
 		const store: AgentRegistryStore = {
 			ensureStream: async (stream, group) => {
-				this.failWhenUnreachable();
+				this.failWhenUnreachable(serverName);
 				this.journal.push(`ensureStream:${stream}:${group}`);
 				this.streams.set(stream, this.streams.get(stream) ?? []);
 			},
 			put: async (channel, description, expiresAt) => {
-				this.failWhenUnreachable();
+				this.failWhenUnreachable(serverName);
 				this.journal.push(`put:${channel}`);
 				this.directory.set(channel, { description, expiresAt });
 			},
 			refresh: async (channel, expiresAt) => {
-				this.failWhenUnreachable();
+				this.failWhenUnreachable(serverName);
 				const entry = this.directory.get(channel);
 				if (entry !== undefined) this.directory.set(channel, { ...entry, expiresAt });
+				return entry !== undefined;
 			},
 			remove: async (channel) => {
-				this.failWhenUnreachable();
+				this.failWhenUnreachable(serverName);
 				this.journal.push(`remove:${channel}`);
 				this.directory.delete(channel);
 			},
@@ -129,7 +133,7 @@ export class FakeBroker {
 				this.droppedStreams.push(stream);
 				this.streams.delete(stream);
 			},
-			list: async (now) => {
+			list: async (now, _streamGraceMs: number) => {
 				if (this.directoryReadFails) throw new Error("directory unavailable");
 				this.failWhenUnreachable();
 				const live: RegistryEntry[] = [];
@@ -192,7 +196,10 @@ export class FakeBroker {
 		return live;
 	}
 
-	private failWhenUnreachable(): void {
+	private failWhenUnreachable(serverName?: string): void {
+		if (serverName !== undefined && this.unreachableServers.has(serverName)) {
+			throw new Error(`server "${serverName}" is unreachable`);
+		}
 		if (this.unreachable) throw new Error("broker is unreachable");
 	}
 }
@@ -266,6 +273,8 @@ export interface TestConfigOptions {
 	namespace?: string;
 	manual?: { max?: number; ttlMs?: number };
 	defaultActivation?: "immediate" | "next_turn" | "manual";
+	/** Extra servers to configure, e.g. one that never comes up. */
+	extraServers?: Array<{ name: string; url?: string; namespace?: string }>;
 	warnings?: string[];
 	subscriptions?: Array<{ channel: string; serverName?: string }>;
 }
@@ -276,7 +285,14 @@ export function testConfig(options: TestConfigOptions = {}) {
 	const namespace = options.namespace ?? "ace";
 	return {
 		username: options.username ?? "tester",
-		servers: [{ name: serverName, url: "redis://fake:6379", namespace }],
+		servers: [
+			{ name: serverName, url: "redis://fake:6379", namespace },
+			...(options.extraServers ?? []).map((server) => ({
+				name: server.name,
+				url: server.url ?? "redis://fake:6379",
+				namespace: server.namespace ?? namespace,
+			})),
+		],
 		subscriptions: (options.subscriptions ?? []).map((subscription) => ({
 			server: { name: subscription.serverName ?? serverName, url: "redis://fake:6379", namespace },
 			channel: subscription.channel,
