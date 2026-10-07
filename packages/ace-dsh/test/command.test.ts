@@ -19,6 +19,7 @@ async function workspace(): Promise<string> {
 afterEach(async () => {
 	await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
 import { runAceCommand } from "../src/command.ts";
 import { aceEvent, FakeAgent, FakeBroker, openTestSession, streamOf, testConfig } from "./support/harness.ts";
 

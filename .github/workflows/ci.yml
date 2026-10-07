@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [ace-omp]
+        package: [ace-omp, ace-dsh]
     defaults:
       run:
         working-directory: packages/${{ matrix.package }}
@@ -22,6 +22,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # ace-omp depends on `file:../ace-runtime`, whose `main`/`types` point at dist — so the runtime
       # must be built before the host package can typecheck or test.
       - name: Build ace-runtime
@@ -32,6 +35,19 @@ jobs:
       # ace-omp locks with bun.lock, so the install path is bun. `check` = biome + tsc; `test` = vitest.
       - name: Install
         run: bun install --frozen-lockfile
+      # ace-dsh is not part of the bun workspace: it installs and runs under node/npm like the runtime.
+      - name: Install (node/npm)
+        if: matrix.package == 'ace-dsh'
+        run: npm ci
+      - name: Lint and types (npm)
+        if: matrix.package == 'ace-dsh'
+        run: npm run check
+      - name: Unit tests (npm)
+        if: matrix.package == 'ace-dsh'
+        run: npm test
+      - name: Build (npm)
+        if: matrix.package == 'ace-dsh'
+        run: npm run build
       - name: Lint and types
         run: bun run check
       - name: Unit tests

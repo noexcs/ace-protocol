@@ -15,13 +15,13 @@ import { AceSession } from "../../src/session.ts";
 import type {
 	AceMessage,
 	AgentRegistryStore,
+	DroppedEntry,
 	EndpointConfig,
 	RedisStreamsAddClient,
 	RedisXferClient,
 	RegistryEntry,
 	Transport,
 	XferSetCommand,
-	DroppedEntry,
 } from "../../vendor/ace-runtime/dist/index.js";
 
 /** One stored stream entry, as the broker keeps it. */
