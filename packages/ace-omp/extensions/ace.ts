@@ -1111,10 +1111,18 @@ export default function aceExtension(pi: ExtensionAPI, internals: AceExtensionIn
 					// Teardown drops this session's own stream; a reader that is still draining would report
 					// NOGROUP for a group we just removed on purpose.
 					if (shuttingDown) return;
+					const message = describeError(error);
+					// The core sends notices down this same sink, so a recovery arrives here too. Without
+					// honouring it the latch below is one-way: the footer would say "transport down" for
+					// the rest of the session and every later, real error would be swallowed.
+					if (message.includes("reconnected") || message.includes("consumer group recreated")) {
+						transportErrorReported = false;
+						return;
+					}
 					// A broker that dies mid-session would otherwise repeat the same error.
 					if (transportErrorReported) return;
 					transportErrorReported = true;
-					report(ctx, `[ace] transport error: ${describeError(error)}`, "error");
+					report(ctx, `[ace] transport error: ${message}`, "error");
 				},
 			}),
 			...(resolved.defaultActivation ? { defaultActivation: resolved.defaultActivation } : {}),

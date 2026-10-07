@@ -67,3 +67,14 @@ describe("PendingEventStore", () => {
 		expect(store.list().map((event) => event.message.id)).toEqual(["e2", "e3"]);
 	});
 });
+
+describe("PendingEventStore capacity bounds (audit C3)", () => {
+	it("treats a negative capacity as zero instead of looping forever", () => {
+		// `evictOverCapacity` loops while `size > max`; a negative bound never satisfies that, so this
+		// call used to spin the event loop until the process was killed.
+		const store = new PendingEventStore({ max: -1 });
+		store.store(message("evt_1"), "inbox");
+
+		expect(store.size).toBe(0);
+	});
+});

@@ -105,7 +105,7 @@ function targetResolver(session: AceSession): (name: string) => Promise<PublishT
 		const target = await resolveChannelTarget({
 			name,
 			active,
-			configured: [...session.servers],
+			configured: [...session.configuredServers],
 			username: session.config.username,
 		});
 		const link = active.find((candidate) => candidate.server.name === target.server.name);
@@ -130,7 +130,9 @@ function publishTool(): AceToolDescriptor {
 		},
 		async run(args, session) {
 			if (session === undefined) throw new Error(TOOL_ERROR_TEXT.notRunning);
-			const input = validatePublishInput(args, { servers: session.servers.map((server) => server.name) });
+			const input = validatePublishInput(args, {
+				servers: session.configuredServers.map((server) => server.name),
+			});
 			if (!session.live) throw new Error(TOOL_ERROR_TEXT.noDirectory);
 			const id = `evt_${randomUUID()}`;
 			const description = session.senderDescription();

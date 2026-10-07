@@ -472,3 +472,11 @@ describe("AceConfigError", () => {
 		expect(() => parseAceConfig(null, ".ace.json")).toThrow(AceConfigError);
 	});
 });
+
+describe("manual bounds validation (audit C3)", () => {
+	it("rejects a negative manual.max, which would wedge the eviction loop", () => {
+		expect(() => parseAceConfig({ ...minimal, manual: { max: -1 } }, ".ace.json")).toThrow(
+			/manual\.max must be a non-negative integer/,
+		);
+	});
+});

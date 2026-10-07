@@ -171,7 +171,9 @@ describe("RedisStreamsTransport resilience", () => {
 				throw new Error("disk full");
 			},
 		});
+		let deliveries = 0;
 		await transport.start(async () => {
+			deliveries += 1;
 			throw new Error("agent unavailable");
 		});
 
@@ -195,6 +197,10 @@ describe("RedisStreamsTransport resilience", () => {
 
 		expect(errors.filter((error) => String(error).includes("cannot record dead letter"))).toHaveLength(1);
 		expect(client.acked).toEqual([]);
+		// The record is retried; the delivery is not. Re-running the handler is the unbounded loop this
+		// guards against (the budget used to be cleared before the write, so it restarted at zero).
+		expect(recorded.length).toBeGreaterThanOrEqual(2);
+		expect(deliveries).toBe(1);
 		await stop(transport, client);
 	});
 
@@ -236,5 +242,19 @@ describe("RedisStreamsTransport recovery from a swept-away group (audit A)", () 
 		await stop(transport, client);
 		expect(client.ensuredGroups.length).toBeGreaterThan(1);
 		expect(errors.some((error) => String(error).includes("NOGROUP"))).toBe(true);
+	});
+});
+
+describe("RedisStreamsTransport start failures (audit C5)", () => {
+	it("releases the client it connected when the group cannot be created", async () => {
+		const { client, transport } = setup();
+		client.ensureGroupError = new Error("NOAUTH group creation denied");
+
+		await expect(transport.start(async () => {})).rejects.toThrow(/NOAUTH/);
+
+		// The read loop was never started, so `stop()` returns early; the transport must not leave a
+		// connected client behind (a connection nobody owns, for the life of the process).
+		expect(client.closes).toBe(1);
+		expect(client.connections).toBe(1);
 	});
 });

@@ -207,7 +207,15 @@ export class RedisStreamsTransport {
         if (this.loop)
             throw new AceConfigError("Redis Streams transport is already started");
         await this.client.connect();
-        await this.client.ensureGroup(this.config.stream, this.config.group);
+        try {
+            await this.client.ensureGroup(this.config.stream, this.config.group);
+        }
+        catch (error) {
+            // A connected client with no read loop is a connection nobody owns: `stop()` returns early
+            // while `this.loop` is unset, so release it here before failing the start.
+            await this.client.close().catch(() => { });
+            throw error;
+        }
         this.stopped = false;
         this.lastReclaimAt = this.now();
         this.loop = this.consume(handler, new DeliveryQueue(this.deliveryQueueLimit, (error) => this.report(error)));
@@ -345,8 +353,9 @@ export class RedisStreamsTransport {
             if (attempts >= reclaimAttempts) {
                 // Give up. The last copy is recorded first: an entry that no handler could deliver is
                 // exactly the one worth keeping, and it may leave the PEL only once it is written down.
-                this.reclaimAttempts.delete(entry.id);
-                this.metrics?.increment(this.name, "dropped");
+                // The budget is spent *first* and only forgotten once the record lands: clearing it up
+                // front is what put one entry into an endless loop (write fails -> budget back to zero ->
+                // the handler runs again, forever, and the entry never reaches a terminal state).
                 try {
                     await this.onDropped?.({
                         streamEntryId: entry.id,
@@ -356,18 +365,22 @@ export class RedisStreamsTransport {
                         attempts,
                         reason: `after ${attempts} delivery attempts`,
                     });
-                    this.reportedDrops.delete(entry.id);
-                    this.reportNotice(`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${attempts} delivery attempts`);
-                    await this.acknowledge(entry);
                 }
                 catch (error) {
-                    // Stay pending: the loss remains visible in the PEL, and the write failure is
-                    // reported once per entry instead of once per reclaim pass.
+                    // Stay pending with the budget spent: the next reclaim pass retries the record, not
+                    // the delivery. The loss stays visible in the PEL, and the write failure is reported
+                    // once per entry instead of once per pass.
                     if (!this.reportedDrops.has(entry.id)) {
                         this.reportedDrops.add(entry.id);
                         this.report(new Error(`redis stream ${this.config.stream}: cannot record dead letter for entry ${entry.id}: ${error instanceof Error ? error.message : String(error)}`));
                     }
+                    continue;
                 }
+                this.reclaimAttempts.delete(entry.id);
+                this.metrics?.increment(this.name, "dropped");
+                this.reportedDrops.delete(entry.id);
+                this.reportNotice(`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${attempts} delivery attempts`);
+                await this.acknowledge(entry);
                 continue;
             }
             this.reclaimAttempts.set(entry.id, attempts + 1);

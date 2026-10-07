@@ -114,14 +114,20 @@ function parseManual(value, source) {
     rejectUnknownKeys(value, ["max", "ttlMs"], `${source}: manual`);
     const manual = {};
     if (value.max !== undefined) {
-        if (typeof value.max !== "number")
-            throw new AceConfigError(`${source}: manual.max must be a number`);
-        manual.max = value.max;
+        // A negative capacity is not a smaller queue: the store evicts while `size > max`, so a negative
+        // bound never satisfies the condition and wedges the event loop.
+        const max = value.max;
+        if (typeof max !== "number" || !Number.isInteger(max) || max < 0) {
+            throw new AceConfigError(`${source}: manual.max must be a non-negative integer, received ${describeValue(max)}`);
+        }
+        manual.max = max;
     }
     if (value.ttlMs !== undefined) {
-        if (typeof value.ttlMs !== "number")
-            throw new AceConfigError(`${source}: manual.ttlMs must be a number`);
-        manual.ttlMs = value.ttlMs;
+        const ttlMs = value.ttlMs;
+        if (typeof ttlMs !== "number" || !Number.isFinite(ttlMs) || ttlMs < 0) {
+            throw new AceConfigError(`${source}: manual.ttlMs must be a non-negative number, received ${describeValue(ttlMs)}`);
+        }
+        manual.ttlMs = ttlMs;
     }
     return manual;
 }

@@ -269,6 +269,17 @@ export class AceSession {
 		return this.links.map((link) => link.server);
 	}
 
+	/**
+	 * Every server the session was configured with, live or not.
+	 *
+	 * This is what target resolution needs for the `<server>:` prefix: a name that matches a configured
+	 * but unreachable server must fail loudly ("did not come up") instead of being mistaken for a plain
+	 * channel name and stored on whichever server happens to be live.
+	 */
+	get configuredServers(): readonly ResolvedServer[] {
+		return this.options.config.servers;
+	}
+
 	/** Configured servers that did not come up, for the human report. */
 	get unavailableServers(): readonly UnavailableServer[] {
 		return this.unavailable;

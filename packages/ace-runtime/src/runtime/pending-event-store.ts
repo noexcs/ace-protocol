@@ -37,8 +37,13 @@ export class PendingEventStore {
 	private readonly onEvict: ((event: PendingAceEvent, reason: PendingEvictionReason) => void) | undefined;
 
 	constructor(options: PendingEventStoreOptions = {}) {
-		this.max = options.max ?? 100;
-		this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
+		// Defensive: the config layer rejects a negative capacity, but this store is also constructed by
+		// hosts directly, and `evictOverCapacity` loops while `size > max` — a negative bound would spin
+		// forever. Anything unusable falls back to "keep nothing" (0) rather than an unbounded loop.
+		const max = options.max ?? 100;
+		this.max = Number.isFinite(max) && max >= 0 ? Math.floor(max) : 0;
+		const ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
+		this.ttlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 24 * 60 * 60 * 1000;
 		this.now = options.now ?? (() => Date.now());
 		this.persist = options.persist;
 		this.onEvict = options.onEvict;
