@@ -471,14 +471,17 @@ export class RedisStreamsTransport implements Transport {
 				// The budget is spent *first* and only forgotten once the record lands: clearing it up
 				// front is what put one entry into an endless loop (write fails -> budget back to zero ->
 				// the handler runs again, forever, and the entry never reaches a terminal state).
+				// `attempts` counts reclaims; the first delivery was not one. The record's field is documented as
+				// the number of *deliveries*, so the first is counted here rather than left off by one.
+				const deliveries = attempts + 1;
 				try {
 					await this.onDropped?.({
 						streamEntryId: entry.id,
 						stream: this.config.stream,
 						field: this.config.field,
 						payload: entry.payload,
-						attempts,
-						reason: `after ${attempts} delivery attempts`,
+						attempts: deliveries,
+						reason: `after ${deliveries} delivery attempts`,
 					});
 				} catch (error) {
 					// Stay pending with the budget spent: the next reclaim pass retries the record, not
@@ -500,7 +503,7 @@ export class RedisStreamsTransport implements Transport {
 				this.metrics?.increment(this.name, "dropped");
 				this.reportedDrops.delete(entry.id);
 				this.reportNotice(
-					`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${attempts} delivery attempts`,
+					`redis stream ${this.config.stream}: dropping entry ${entry.id} after ${deliveries} delivery attempts`,
 				);
 				await this.acknowledge(entry);
 				continue;

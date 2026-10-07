@@ -154,8 +154,9 @@ describe("RedisStreamsTransport resilience", () => {
 				stream: "ace:in",
 				field: "message",
 				payload: validEntry,
-				attempts: 1,
-				reason: "after 1 delivery attempts",
+				// The first delivery, then the reclaim that gave up: two deliveries in total.
+				attempts: 2,
+				reason: "after 2 delivery attempts",
 			},
 		]);
 		expect(client.acked).toEqual(["9-0"]);
