@@ -306,6 +306,23 @@ describe("the ace-dsh plugin entry", () => {
 		}
 	});
 
+	it("stops a session whose agent was disposed while it was still connecting", async () => {
+		const recorded = newRecorded();
+		const host = stubHost(recorded);
+		apply(host as unknown as Context);
+		const cwd = await configuredWorkspace();
+		const agent = agentFor("s-1", cwd, host.scoped);
+
+		// The host can dispose an agent while `open()` is still awaiting registration and the read loop.
+		const created = (recorded.events.get("agent/created") ?? [])[0]?.({ agent });
+		await (recorded.events.get("agent/disposed") ?? [])[0]?.({ agent });
+		await created;
+
+		// Nothing was published for a session that is already gone: no tools bound to a dead agent, and the
+		// reader that came up behind it was stopped rather than left running for nobody.
+		expect(recorded.tools).toEqual([]);
+	});
+
 	it("tears a session down on agent/disposed without throwing", async () => {
 		const recorded = newRecorded();
 		const host = stubHost(recorded);

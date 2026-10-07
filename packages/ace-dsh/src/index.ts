@@ -154,6 +154,14 @@ function dshTool(descriptor: AceToolDescriptor, session: AceSession) {
  */
 export function apply(ctx: Context): void {
 	const sessions = new Map<string, AceSession>();
+	/**
+	 * Sessions whose agent was disposed while `open()` was still connecting.
+	 *
+	 * `open()` awaits registration and reading, and the host can dispose the agent during that await: without
+	 * this, the session finishes coming up for an agent that is already gone and nothing ever stops it —
+	 * a reader and a directory entry for a session nobody owns.
+	 */
+	const disposed = new Set<string>();
 	const logger: AceLogger = {
 		info: (message) => ctx.logger.info(message),
 		warn: (message) => ctx.logger.warn(message),
@@ -260,6 +268,7 @@ export function apply(ctx: Context): void {
 			return;
 		}
 
+		if (disposed.has(sessionId)) return;
 		const engine = new DshAgentEngine({ agent: enginePort(agent), buildMessage, logger });
 		const session = await AceSession.open({
 			engine,
@@ -270,8 +279,15 @@ export function apply(ctx: Context): void {
 			logger,
 			onProblem: report,
 		});
-		sessions.set(sessionId, session);
+		if (disposed.has(sessionId)) {
+			// The agent went away while we were connecting: stop what we just started, rather than publishing a
+			// session no one can close (the host has already forgotten this agent id).
+			await session.stop().catch((error: unknown) => report("[ace] could not stop a cancelled session", error));
+			return;
+		}
+		// Bind before publishing: a session in the map with no tools bound would be reachable but unusable.
 		bind(agent, session);
+		sessions.set(sessionId, session);
 		ctx.logger.info(
 			`[ace] ${session.senders.join(", ") || "(no server came up)"} · config ${config.source} · ${session.servers.length} server(s)`,
 		);
@@ -280,6 +296,8 @@ export function apply(ctx: Context): void {
 	/** Withdraw one session's address and stop its reader. */
 	async function close(agent: HostAgent): Promise<void> {
 		const sessionId = String(agent.session.id);
+		// Remember the disposal even when there is nothing to close yet: `open()` may still be in flight.
+		disposed.add(sessionId);
 		const session = sessions.get(sessionId);
 		if (session === undefined) return;
 		sessions.delete(sessionId);

@@ -122,14 +122,20 @@ describe("EventSpool", () => {
 		expect(await spool.offer("quiet", message("e1"))).toEqual({ spooled: false });
 	});
 
-	it("rejects the waiters when the batch cannot be summarised", async () => {
+	it("acknowledges a batch it could not summarise, and retries the summary", async () => {
 		const time = fakeTime();
 		const errors: unknown[] = [];
+		const delivered: string[] = [];
+		let failNext = true;
 		const spool = new EventSpool({
 			dir: temporaryDirectory(),
 			rules: () => ({ afterEvents: 1, windowMs: 50 }),
-			onBatch: () => {
-				throw new Error("summary failed");
+			onBatch: (batch) => {
+				if (failNext) {
+					failNext = false;
+					throw new Error("summary failed");
+				}
+				delivered.push(...batch.events.map((event) => event.id));
 			},
 			onError: (error) => errors.push(error),
 			now: time.now,
@@ -140,7 +146,14 @@ describe("EventSpool", () => {
 		const pending = spool.offer("inbox", message("e2"));
 		await time.advance(50);
 
-		await expect(pending).rejects.toThrow("summary failed");
+		// The events are on disk, so the batch is acknowledged: redelivering it would inject the same events
+		// a second time. Only the summary is outstanding, and it is retried.
+		await expect(pending).resolves.toMatchObject({ spooled: true });
+		expect(errors).toHaveLength(1);
+		expect(delivered).toEqual([]);
+
+		await time.advance(5_000);
+		expect(delivered).toEqual(["e2"]);
 		expect(errors).toHaveLength(1);
 	});
 

@@ -65,6 +65,10 @@ export declare class EventSpool {
     private readonly now;
     private readonly setTimer;
     private readonly windows;
+    /** Batches that are on disk but whose summary has not been injected yet. */
+    private readonly failedBatches;
+    /** One retry timer at a time, so a run of failures cannot pile up timers. */
+    private retryTimer?;
     constructor(options: EventSpoolOptions);
     /**
      * Offer one event to the spool.
@@ -108,6 +112,12 @@ export declare class EventSpool {
     }>;
     private windowFor;
     private flushWindow;
+    /** Inject one batch's summary. Returns whether it landed; a failure is reported, never thrown. */
+    private deliverBatch;
+    /** Retry every batch whose summary has not landed yet. */
+    private retryFailedBatches;
+    /** One retry timer at a time, so a run of failures cannot pile up timers. */
+    private scheduleRetry;
     /** Write and fsync: an acknowledgement may only follow a durable append. */
     private appendDurably;
     /** Keep one subscription's spool files bounded: age first, then count. */

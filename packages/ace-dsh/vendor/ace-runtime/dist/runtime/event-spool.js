@@ -1,5 +1,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync, } from "node:fs";
 import { join } from "node:path";
+/** How long to wait before retrying a summary whose injection failed (the events are already durable). */
+const RETRY_FAILED_BATCH_MS = 5_000;
 /** How many records a manual file may hold before it is compacted on the next prune. */
 const MANUAL_COMPACT_AFTER = 200;
 /**
@@ -62,6 +64,10 @@ export class EventSpool {
     now;
     setTimer;
     windows = new Map();
+    /** Batches that are on disk but whose summary has not been injected yet. */
+    failedBatches = [];
+    /** One retry timer at a time, so a run of failures cannot pile up timers. */
+    retryTimer;
     constructor(options) {
         this.dir = options.dir;
         this.rules = options.rules;
@@ -187,6 +193,7 @@ export class EventSpool {
     }
     /** Close every open window now (called on shutdown). */
     async flush() {
+        await this.retryFailedBatches();
         for (const subscription of [...this.windows.keys()])
             await this.flushWindow(subscription);
     }
@@ -218,21 +225,62 @@ export class EventSpool {
         const spooling = state?.spooling;
         if (!state || !spooling)
             return;
+        const batch = { subscription, path: spooling.path, events: spooling.events };
         try {
             const lines = spooling.events.map((message) => `${JSON.stringify(message)}\n`).join("");
             this.appendDurably(spooling.path, lines);
-            await this.onBatch({ subscription, path: spooling.path, events: spooling.events });
-            this.prune(subscription);
-            this.logger.info?.(`[ACE] spool flushed subscribe=${subscription} events=${spooling.events.length}`);
-            for (const waiter of spooling.waiters)
-                waiter.resolve({ spooled: true, path: spooling.path });
         }
         catch (error) {
-            // Not acknowledged on purpose: the transport redelivers, so nothing is silently lost.
+            // Nothing reached the disk, so the transport must redeliver: this is the one failure that rejects.
             this.report(error);
             for (const waiter of spooling.waiters)
                 waiter.reject(error);
+            return;
         }
+        // The events are durable, so the delivery contract is already met — acknowledging is safe even when the
+        // summary cannot be injected yet. Redelivering instead would inject the same events twice: once
+        // individually (the redelivered event is no longer seen as spooled) and once from the file. The summary
+        // is retried until it lands instead.
+        const delivered = await this.deliverBatch(batch);
+        if (!delivered) {
+            this.failedBatches.push(batch);
+            this.scheduleRetry();
+        }
+        for (const waiter of spooling.waiters)
+            waiter.resolve({ spooled: true, path: spooling.path });
+    }
+    /** Inject one batch's summary. Returns whether it landed; a failure is reported, never thrown. */
+    async deliverBatch(batch) {
+        try {
+            await this.onBatch(batch);
+            this.prune(batch.subscription);
+            this.logger.info?.(`[ACE] spool flushed subscribe=${batch.subscription} events=${batch.events.length}`);
+            return true;
+        }
+        catch (error) {
+            this.report(error);
+            return false;
+        }
+    }
+    /** Retry every batch whose summary has not landed yet. */
+    async retryFailedBatches() {
+        if (this.failedBatches.length === 0)
+            return;
+        const pending = this.failedBatches.splice(0);
+        for (const batch of pending) {
+            if (await this.deliverBatch(batch))
+                continue;
+            this.failedBatches.push(batch);
+            this.scheduleRetry();
+        }
+    }
+    /** One retry timer at a time, so a run of failures cannot pile up timers. */
+    scheduleRetry() {
+        this.retryTimer?.cancel();
+        this.retryTimer = this.setTimer(() => {
+            this.retryTimer = undefined;
+            void this.retryFailedBatches();
+        }, RETRY_FAILED_BATCH_MS);
     }
     /** Write and fsync: an acknowledgement may only follow a durable append. */
     appendDurably(path, content) {
