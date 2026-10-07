@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -148,6 +148,23 @@ describe("storeFile", () => {
 		await expect(
 			storeFile({ root, input: validateStoreInput({ path: "report.txt/child" }), targets: [] }),
 		).rejects.toThrow(/file "report.txt\/child" cannot be read:/);
+	});
+
+	it("judges the ceiling from the size before the file is read at all", async () => {
+		const root = await workspace();
+		const path = join(root, "unreadable.bin");
+		await writeFile(path, new Uint8Array(64));
+		// Readable by `stat`, unreadable by `readFile`: which error comes back says which check ran first.
+		await chmod(path, 0o000);
+
+		await expect(
+			storeFile({
+				root,
+				input: validateStoreInput({ path: "unreadable.bin" }),
+				targets: [target("local", new FakeClient())],
+				maxBytes: 16,
+			}),
+		).rejects.toThrow(/exceeds the configured maximum/);
 	});
 
 	it("refuses a file over the configured ceiling, naming the size", async () => {

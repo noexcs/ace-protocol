@@ -19,6 +19,7 @@ async function assertReadableFile(absolute, written) {
     }
     if (info.isDirectory())
         throw new Error(XFER_ERROR_TEXT.notAFile(written));
+    return info;
 }
 /**
  * Read a local file and store one copy under a fresh token on **every** target, in order.
@@ -31,7 +32,10 @@ async function assertReadableFile(absolute, written) {
 export async function storeFile(options) {
     const { root, input, targets } = options;
     const absolute = resolve(root, input.path);
-    await assertReadableFile(absolute, input.path);
+    const info = await assertReadableFile(absolute, input.path);
+    // Judge the ceiling from the directory entry, before the file is in memory: reading first and checking
+    // afterwards means a huge file is pulled in whole only to be refused (finding F5).
+    assertTransferSize(info.size, options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes });
     let bytes;
     try {
         bytes = await readFile(absolute);
@@ -40,6 +44,7 @@ export async function storeFile(options) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(XFER_ERROR_TEXT.unreadableFile(input.path, reason));
     }
+    // Backstop: the file can change between the stat and the read, and the bytes are what is stored.
     assertTransferSize(bytes.byteLength, options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes });
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     // The name that lands on the receiver's disk, computed here rather than only at the write: control

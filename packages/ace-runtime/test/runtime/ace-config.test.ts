@@ -480,3 +480,11 @@ describe("manual bounds validation (audit C3)", () => {
 		);
 	});
 });
+
+describe("username bounds (finding NR-4)", () => {
+	it("refuses a username that cannot fit in a sender name", () => {
+		expect(() => parseAceConfig({ ...minimal, username: "u".repeat(129) }, ".ace.json")).toThrow(
+			/username must be at most 128 characters/,
+		);
+	});
+});

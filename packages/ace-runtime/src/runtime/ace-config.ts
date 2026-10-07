@@ -112,6 +112,9 @@ export interface ResolvedAceConfig {
 }
 
 /** Validate a parsed `.ace.json` document. */
+/** Longest accepted `username`: it is a fixed segment of every sender name (see the sender cap). */
+const MAX_USERNAME_LENGTH = 128;
+
 export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 	if (!isPlainObject(value)) {
 		throw new AceConfigError(`${source} must contain a JSON object, received ${describeValue(value)}`);
@@ -131,6 +134,14 @@ export function parseAceConfig(value: unknown, source: string): AceConfigFile {
 	if (username !== undefined) {
 		if (typeof username !== "string") {
 			throw new AceConfigError(`${source}: username must be a string, received ${describeValue(username)}`);
+		}
+		// The username is a fixed segment of every sender name this session publishes, and names are
+		// bounded: a long one is accepted here and then rejected on every single publish (finding NR-4),
+		// which is a worse way to learn about a typo.
+		if (username.length > MAX_USERNAME_LENGTH) {
+			throw new AceConfigError(
+				`${source}: username must be at most ${MAX_USERNAME_LENGTH} characters, received ${username.length}`,
+			);
 		}
 		refuseColon(username, `${source}: username`);
 	}

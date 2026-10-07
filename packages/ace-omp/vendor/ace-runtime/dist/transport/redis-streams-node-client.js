@@ -2,6 +2,29 @@ import { createClient } from "redis";
 /** Give up after this many failed attempts instead of retrying a dead broker forever. */
 /** Bound a connect (initial or reconnect): a broker that accepts TCP and never answers must not hang it. */
 const CONNECT_TIMEOUT_MS = 5_000;
+/**
+ * How long a blocking read may outlive its own `BLOCK` before the connection is presumed dead.
+ *
+ * This client exposes no command timeout, so a broker that completes the handshake and then answers
+ * nothing would hold the read forever: the loop would wait, report nothing, and the session would look
+ * healthy while receiving nothing. The watchdog turns that into an error the adapter can act on.
+ */
+const READ_WATCHDOG_SLACK_MS = 5_000;
+/** A command that outlived the watchdog: the socket is alive enough to hold it and never answers. */
+class ReadWatchdogError extends Error {
+}
+/** Race `work` against a deadline, so a silent socket cannot hold a read open forever. */
+function withWatchdog(work, ms, stream) {
+    let timer;
+    const watchdog = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new ReadWatchdogError(`read on ${stream} did not return within ${ms}ms; treating the connection as dead`)), ms);
+        timer.unref?.();
+    });
+    return Promise.race([work, watchdog]).finally(() => {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    });
+}
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 150;
 function isGroupAlreadyExistsError(error) {
@@ -22,7 +45,7 @@ function describeError(error) {
  * otherwise emit one error per reconnect attempt — and reconnection is bounded so an unreachable
  * broker fails the start instead of retrying forever.
  */
-export function createRedisStreamsClient(url, field, onError, clientOptions = {}) {
+export function createRedisStreamsClient(url, field, onError, clientOptions = {}, readOptions = {}) {
     // Operator-supplied passthrough (`.ace.json` `options`): the Redis client owns its own schema,
     // so this is the one place where configuration is handed over unchecked.
     const operatorOptions = clientOptions;
@@ -102,6 +125,12 @@ export function createRedisStreamsClient(url, field, onError, clientOptions = {}
             return await run(client);
         }
         catch (error) {
+            if (error instanceof ReadWatchdogError) {
+                // The connection held the command and never answered it: replace it, because every later read
+                // on that socket would hang the same way.
+                await replaceClient();
+                throw error;
+            }
             if (client.isOpen && client.isReady)
                 throw error;
             await replaceClient();
@@ -129,10 +158,10 @@ export function createRedisStreamsClient(url, field, onError, clientOptions = {}
         },
         async read(stream, group, consumer, count, blockMs) {
             return await command(async (client) => {
-                const reply = await client.xReadGroup(group, consumer, [{ key: stream, id: ">" }], {
+                const reply = await withWatchdog(client.xReadGroup(group, consumer, [{ key: stream, id: ">" }], {
                     COUNT: count,
                     BLOCK: blockMs,
-                });
+                }), blockMs + (readOptions.watchdogSlackMs ?? READ_WATCHDOG_SLACK_MS), stream);
                 // A completed command means the connection is healthy again, so a later outage may be
                 // reported once more.
                 outageReported = false;

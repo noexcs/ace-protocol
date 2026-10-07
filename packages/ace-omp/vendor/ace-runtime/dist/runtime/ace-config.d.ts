@@ -99,7 +99,6 @@ export interface ResolvedAceConfig {
      */
     shadowed?: string;
 }
-/** Validate a parsed `.ace.json` document. */
 export declare function parseAceConfig(value: unknown, source: string): AceConfigFile;
 /**
  * Load `.ace.json` from `$ACE_CONFIG`, `<cwd>/.ace.json`, then the host's global candidates.

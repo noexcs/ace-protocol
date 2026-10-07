@@ -237,8 +237,10 @@ function createLogger(ctx: ExtensionContext): AceLogger {
  * own files. The host computes it and hands it over as a fallback candidate.
  */
 export function ompGlobalConfigPath(env: Readonly<Record<string, string | undefined>>): string {
-	const directory =
-		env.XDG_CONFIG_HOME === undefined ? join(env.HOME ?? "", ".omp", "agent") : join(env.XDG_CONFIG_HOME, "omp");
+	const xdg = env.XDG_CONFIG_HOME;
+	// An empty variable means "not set" (shells export it that way), not "the current directory": a
+	// relative candidate would quietly read a file out of whatever cwd the session happens to have.
+	const directory = xdg === undefined || xdg.length === 0 ? join(env.HOME ?? "", ".omp", "agent") : join(xdg, "omp");
 	return join(directory, "ace.json");
 }
 

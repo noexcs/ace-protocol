@@ -102,6 +102,20 @@ describe("RedisStreamsClient recovery from a spent reconnect budget (audit B')",
 		expect(first.destroyCalls).toBe(2);
 	});
 
+	it("treats a read that never answers as a dead connection", async () => {
+		const client = createRedisStreamsClient("redis://127.0.0.1:1", "message", () => {}, {}, { watchdogSlackMs: 5 });
+		await client.connect();
+		const first = hoisted.created[0] as unknown as Fake;
+		first.xReadGroup = () => new Promise(() => {});
+
+		// The socket completes the handshake and then answers nothing: without a watchdog the read (and the
+		// loop behind it) waits forever while the session looks healthy.
+		await expect(client.read("s", "g", "c", 1, 1)).rejects.toThrow(/did not return within/);
+
+		expect(hoisted.created).toHaveLength(2);
+		expect(first.destroyed).toBe(true);
+	});
+
 	it("retries a command once on a fresh client when the socket dies mid-command", async () => {
 		const client = createRedisStreamsClient("redis://127.0.0.1:1", "message", () => {});
 		await client.connect();

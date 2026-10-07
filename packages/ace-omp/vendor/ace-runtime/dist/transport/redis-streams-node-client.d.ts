@@ -6,5 +6,7 @@ import type { RedisStreamsClient } from "./redis-streams-client.ts";
  * otherwise emit one error per reconnect attempt — and reconnection is bounded so an unreachable
  * broker fails the start instead of retrying forever.
  */
-export declare function createRedisStreamsClient(url: string, field: string, onError: (error: unknown) => void, clientOptions?: Record<string, unknown>): RedisStreamsClient;
+export declare function createRedisStreamsClient(url: string, field: string, onError: (error: unknown) => void, clientOptions?: Record<string, unknown>, readOptions?: {
+    watchdogSlackMs?: number;
+}): RedisStreamsClient;
 //# sourceMappingURL=redis-streams-node-client.d.ts.map

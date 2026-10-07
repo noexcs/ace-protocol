@@ -64,7 +64,7 @@ export interface GetFileResult {
 }
 
 /** Refuse a missing path, a directory and an unreadable path by name, each in its own sentence. */
-async function assertReadableFile(absolute: string, written: string): Promise<void> {
+async function assertReadableFile(absolute: string, written: string): Promise<Stats> {
 	let info: Stats;
 	try {
 		info = await stat(absolute);
@@ -78,6 +78,7 @@ async function assertReadableFile(absolute: string, written: string): Promise<vo
 		throw new Error(XFER_ERROR_TEXT.unreadableFile(written, reason));
 	}
 	if (info.isDirectory()) throw new Error(XFER_ERROR_TEXT.notAFile(written));
+	return info;
 }
 
 /**
@@ -102,7 +103,10 @@ export async function storeFile(options: {
 }): Promise<StoreFileResult> {
 	const { root, input, targets } = options;
 	const absolute = resolve(root, input.path);
-	await assertReadableFile(absolute, input.path);
+	const info = await assertReadableFile(absolute, input.path);
+	// Judge the ceiling from the directory entry, before the file is in memory: reading first and checking
+	// afterwards means a huge file is pulled in whole only to be refused (finding F5).
+	assertTransferSize(info.size, options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes });
 	let bytes: Uint8Array;
 	try {
 		bytes = await readFile(absolute);
@@ -110,6 +114,7 @@ export async function storeFile(options: {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(XFER_ERROR_TEXT.unreadableFile(input.path, reason));
 	}
+	// Backstop: the file can change between the stat and the read, and the bytes are what is stored.
 	assertTransferSize(bytes.byteLength, options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes });
 
 	const sha256 = createHash("sha256").update(bytes).digest("hex");

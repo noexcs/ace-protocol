@@ -11,6 +11,10 @@ describe("ompGlobalConfigPath", () => {
 		expect(ompGlobalConfigPath({ HOME: "/home/u" })).toBe("/home/u/.omp/agent/ace.json");
 	});
 
+	it("treats an empty XDG_CONFIG_HOME as unset, not as the current directory", () => {
+		expect(ompGlobalConfigPath({ HOME: "/home/u", XDG_CONFIG_HOME: "" })).toBe("/home/u/.omp/agent/ace.json");
+	});
+
 	it("follows XDG when oh-my-pi was initialised that way", () => {
 		expect(ompGlobalConfigPath({ HOME: "/home/u", XDG_CONFIG_HOME: "/cfg" })).toBe("/cfg/omp/ace.json");
 	});
