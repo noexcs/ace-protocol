@@ -62,9 +62,37 @@ describe("PendingEventStore", () => {
 	it("restores events from an earlier session under the current caps", () => {
 		const store = new PendingEventStore({ max: 2 });
 
-		expect(store.restore("inbox", [message("e1"), message("e2"), message("e3")])).toBe(3);
+		expect(
+			store.restore("inbox", [
+				{ message: message("e1"), storedAt: Date.now() },
+				{ message: message("e2"), storedAt: Date.now() },
+				{ message: message("e3"), storedAt: Date.now() },
+			]),
+		).toBe(3);
 
 		expect(store.list().map((event) => event.message.id)).toEqual(["e2", "e3"]);
+	});
+});
+
+describe("restoring retained events (finding D)", () => {
+	it("keeps the record's own clock and drops one that is already past the TTL", () => {
+		let now = 1_000_000;
+		const store = new PendingEventStore({ ttlMs: 1_000, now: () => now });
+		const fresh = now - 500;
+		const stale = now - 5_000;
+
+		expect(
+			store.restore("inbox", [
+				{ message: message("old"), storedAt: stale },
+				{ message: message("new"), storedAt: fresh },
+			]),
+		).toBe(1);
+
+		// A record that lapsed while nobody was running is not revived by the restart: it keeps its own
+		// clock, so it expires on the original schedule rather than getting a fresh window.
+		expect(store.list().map((event) => event.message.id)).toEqual(["new"]);
+		now += 600;
+		expect(store.list()).toEqual([]);
 	});
 });
 

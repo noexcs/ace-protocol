@@ -113,6 +113,19 @@ describe("AceRuntime dispatch (RFC §7, §9, §19)", () => {
 		expect(runtime.pendingEvents[0]?.message.id).toBe("evt_001");
 	});
 
+	it("keeps a retained event pending when the injection is refused (finding D)", async () => {
+		const { engine, runtime, input } = setup();
+		await runtime.handleRawMessage({ ...validRaw, activation: "manual" }, input);
+		engine.failures = 1;
+
+		await expect(runtime.activatePendingEvent(validRaw.sender, validRaw.id)).rejects.toThrow(
+			/fake engine unavailable/,
+		);
+
+		// Taking it before injecting would have thrown the user's only copy away.
+		expect(runtime.pendingEvents).toHaveLength(1);
+	});
+
 	it("activates a retained manual event on demand", async () => {
 		const { engine, runtime, input } = setup();
 		await runtime.start();

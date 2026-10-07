@@ -234,7 +234,9 @@ export class AceRuntime {
      * Identity is `(sender, id)` (RFC §5.2).
      */
     async activatePendingEvent(sender, id) {
-        const event = this.pendingEventStore.take(sender, id);
+        // Look it up without removing it: the injection below can fail, and this retained copy is the only
+        // one the user has (the transport acknowledged the stream entry when it was stored).
+        const event = this.pendingEventStore.find(sender, id);
         if (!event) {
             throw new Error(`No pending ACE event for sender="${sender}" id="${id}"`);
         }
@@ -248,6 +250,10 @@ export class AceRuntime {
             activation: event.message.activation,
             ...(this.selfSenders.has(event.message.sender) ? { self: true } : {}),
         });
+        // Only now is it delivered: drop it from memory and mark it delivered on disk, so a restart does not
+        // resurrect an event the user has already acted on.
+        this.pendingEventStore.take(sender, id);
+        this.spool?.forgetManual(event.subscriptionName, event.message);
     }
     /** A turn this runtime started ended in failure; counted for `/ace stats` and logged. */
     recordRunFailure(error) {
@@ -264,10 +270,10 @@ export class AceRuntime {
         if (!spool)
             return;
         for (const subscription of this.subscribe) {
-            const messages = spool.loadManual(subscription.name);
-            if (messages.length === 0)
+            const records = spool.loadManual(subscription.name);
+            if (records.length === 0)
                 continue;
-            const restored = this.pendingEventStore.restore(subscription.name, messages);
+            const restored = this.pendingEventStore.restore(subscription.name, records);
             this.logger.info?.(`[ACE] restored ${restored} pending manual event(s) subscribe=${subscription.name}`);
         }
     }

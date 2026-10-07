@@ -10,6 +10,13 @@ export interface PendingAceEvent {
 
 export type PendingEvictionReason = "expired" | "capacity";
 
+/** One record read back from a manual file: the event and when it was stored. */
+export interface RestoredManualEvent {
+	message: AceMessage;
+	/** Epoch ms the event was stored; its own clock, not the restorer's. */
+	storedAt: number;
+}
+
 export interface PendingEventStoreOptions {
 	/** Retain at most this many events; the oldest is evicted first (default 100). */
 	max?: number;
@@ -68,6 +75,12 @@ export class PendingEventStore {
 		return event;
 	}
 
+	/** The first event matching `(sender, id)`, without removing it (activation injects first). */
+	find(sender: string, id: string): PendingAceEvent | undefined {
+		this.evictExpired();
+		return this.events.find((event) => event.message.sender === sender && event.message.id === id);
+	}
+
 	/** Remove and return the first event matching `(sender, id)`. */
 	take(sender: string, id: string): PendingAceEvent | undefined {
 		this.evictExpired();
@@ -76,12 +89,19 @@ export class PendingEventStore {
 		return this.events.splice(index, 1)[0];
 	}
 
-	/** Adopt events persisted by an earlier session, honouring the current caps. */
-	restore(subscriptionName: string, messages: readonly AceMessage[]): number {
+	/**
+	 * Adopt events persisted by an earlier session, honouring the current caps.
+	 *
+	 * The record's own `storedAt` is kept, and a record that is already past the TTL is dropped rather than
+	 * adopted: restoring with the clock at hand would hand a day-old event a fresh day, which is not
+	 * retention, and the event would then be re-injected long after its window closed.
+	 */
+	restore(subscriptionName: string, records: readonly RestoredManualEvent[]): number {
 		let restored = 0;
-		for (const message of messages) {
-			const event: PendingAceEvent = { message, subscriptionName, storedAt: this.now() };
-			this.events.push(event);
+		const cutoff = this.now() - this.ttlMs;
+		for (const record of records) {
+			if (record.storedAt < cutoff) continue;
+			this.events.push({ message: record.message, subscriptionName, storedAt: record.storedAt });
 			restored += 1;
 		}
 		this.evictOverCapacity();

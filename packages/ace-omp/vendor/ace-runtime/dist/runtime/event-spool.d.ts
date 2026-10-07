@@ -7,6 +7,12 @@ export interface SpooledBatch {
     /** The events that went into the file, in arrival order. */
     events: readonly AceMessage[];
 }
+/** One retained `manual` event read back from disk. */
+export interface ManualRecord {
+    message: AceMessage;
+    /** Epoch ms the event was stored, as the record itself says. */
+    storedAt: number;
+}
 /** Per-subscription thresholds: events beyond this in a window are spooled. */
 export interface SpoolRule {
     afterEvents: number;
@@ -70,10 +76,28 @@ export declare class EventSpool {
         spooled: boolean;
         path?: string;
     }>;
-    /** Append a retained `manual` event so it survives a restart. */
+    /**
+     * Append a retained `manual` event so it survives a restart.
+     *
+     * The record carries its own `storedAt`; the retainer's clock is not the event's clock.
+     */
     appendManual(subscription: string, message: AceMessage): void;
-    /** Manual events persisted by earlier sessions, oldest first. */
-    loadManual(subscription: string): AceMessage[];
+    /**
+     * Mark a retained event as delivered, by appending a tombstone.
+     *
+     * Appending rather than rewriting: activation is a user action taken one event at a time, and rewriting
+     * the whole file for each one is both O(n) and non-atomic — a crash mid-rewrite loses every other
+     * pending event. The tombstone is compacted away later, in {@link prune}.
+     */
+    forgetManual(subscription: string, message: AceMessage): void;
+    /**
+     * Manual events persisted by earlier sessions, oldest first, with tombstones applied.
+     *
+     * Three line shapes are understood: the current `{storedAt, message}`, a tombstone
+     * `{removedSender, removedId}`, and a bare message envelope written before records carried a time (its
+     * time is then the file's mtime, which is the closest honest answer available).
+     */
+    loadManual(subscription: string): ManualRecord[];
     /** Close every open window now (called on shutdown). */
     flush(): Promise<void>;
     /** Open windows, for `/ace stats`. */
@@ -88,6 +112,17 @@ export declare class EventSpool {
     private appendDurably;
     /** Keep one subscription's spool files bounded: age first, then count. */
     private prune;
+    /**
+     * Bound one subscription's manual file: drop records the tombstones retired and records past the
+     * retention window, then rewrite it only when there is enough to gain.
+     *
+     * Public because it is also the answer for a host that wants to compact on its own schedule; {@link prune}
+     * calls it after every flush.
+     *
+     * A manual file grows by one line per retained event and one per activation, so it is the one file that
+     * can only ever get longer; compaction is what makes the tombstone approach bounded.
+     */
+    pruneManual(subscription: string): void;
     private newFilePath;
     private manualPath;
     private report;

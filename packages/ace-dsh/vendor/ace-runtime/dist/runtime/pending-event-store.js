@@ -40,6 +40,11 @@ export class PendingEventStore {
         this.persist?.(event);
         return event;
     }
+    /** The first event matching `(sender, id)`, without removing it (activation injects first). */
+    find(sender, id) {
+        this.evictExpired();
+        return this.events.find((event) => event.message.sender === sender && event.message.id === id);
+    }
     /** Remove and return the first event matching `(sender, id)`. */
     take(sender, id) {
         this.evictExpired();
@@ -48,12 +53,20 @@ export class PendingEventStore {
             return undefined;
         return this.events.splice(index, 1)[0];
     }
-    /** Adopt events persisted by an earlier session, honouring the current caps. */
-    restore(subscriptionName, messages) {
+    /**
+     * Adopt events persisted by an earlier session, honouring the current caps.
+     *
+     * The record's own `storedAt` is kept, and a record that is already past the TTL is dropped rather than
+     * adopted: restoring with the clock at hand would hand a day-old event a fresh day, which is not
+     * retention, and the event would then be re-injected long after its window closed.
+     */
+    restore(subscriptionName, records) {
         let restored = 0;
-        for (const message of messages) {
-            const event = { message, subscriptionName, storedAt: this.now() };
-            this.events.push(event);
+        const cutoff = this.now() - this.ttlMs;
+        for (const record of records) {
+            if (record.storedAt < cutoff)
+                continue;
+            this.events.push({ message: record.message, subscriptionName, storedAt: record.storedAt });
             restored += 1;
         }
         this.evictOverCapacity();

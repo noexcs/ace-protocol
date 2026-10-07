@@ -1,11 +1,45 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync, } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync, } from "node:fs";
 import { join } from "node:path";
+/** How many records a manual file may hold before it is compacted on the next prune. */
+const MANUAL_COMPACT_AFTER = 200;
 /**
  * Burst thresholds used for every subscription: a surge (more than 20 events inside one second) spills to
  * a file and injects one summary instead of 20 turns. Not configuration — the mechanism is a default
  * implementation detail, not a tuning knob.
  */
 export const DEFAULT_SPOOL_RULE = { afterEvents: 20, windowMs: 1000 };
+/** The `(sender, id)` identity a record and its tombstone share. */
+function manualKeyOf(value) {
+    if (typeof value !== "object" || value === null)
+        return undefined;
+    const record = value;
+    const sender = typeof record.removedSender === "string" ? record.removedSender : undefined;
+    const id = typeof record.removedId === "string" ? record.removedId : undefined;
+    if (sender !== undefined && id !== undefined)
+        return `${sender}\u0000${id}`;
+    const message = messageOf(record);
+    return message === undefined ? undefined : `${message.sender}\u0000${message.id}`;
+}
+function isTombstone(value) {
+    return typeof value === "object" && value !== null && "removedId" in value;
+}
+/** The envelope inside a record, or a bare envelope as older files wrote it. */
+function messageOf(value) {
+    if (typeof value !== "object" || value === null)
+        return undefined;
+    const record = value;
+    const candidate = "message" in record ? record.message : value;
+    if (typeof candidate !== "object" || candidate === null)
+        return undefined;
+    const message = candidate;
+    return typeof message.id === "string" && typeof message.sender === "string" ? candidate : undefined;
+}
+function storedAtOf(value) {
+    if (typeof value !== "object" || value === null)
+        return undefined;
+    const storedAt = value.storedAt;
+    return typeof storedAt === "number" && Number.isFinite(storedAt) ? storedAt : undefined;
+}
 /**
  * Turns a burst into one file plus one summary event.
  *
@@ -71,11 +105,38 @@ export class EventSpool {
             spooling.waiters.push({ resolve, reject });
         });
     }
-    /** Append a retained `manual` event so it survives a restart. */
+    /**
+     * Append a retained `manual` event so it survives a restart.
+     *
+     * The record carries its own `storedAt`; the retainer's clock is not the event's clock.
+     */
     appendManual(subscription, message) {
-        this.appendDurably(this.manualPath(subscription), `${JSON.stringify(message)}\n`);
+        this.appendDurably(this.manualPath(subscription), `${JSON.stringify({ storedAt: this.now(), message })}\n`);
     }
-    /** Manual events persisted by earlier sessions, oldest first. */
+    /**
+     * Mark a retained event as delivered, by appending a tombstone.
+     *
+     * Appending rather than rewriting: activation is a user action taken one event at a time, and rewriting
+     * the whole file for each one is both O(n) and non-atomic — a crash mid-rewrite loses every other
+     * pending event. The tombstone is compacted away later, in {@link prune}.
+     */
+    forgetManual(subscription, message) {
+        try {
+            this.appendDurably(this.manualPath(subscription), `${JSON.stringify({ removedSender: message.sender, removedId: message.id, at: this.now() })}\n`);
+        }
+        catch (error) {
+            // The event is already injected; failing to mark it is a duplicate risk on the next restart, which
+            // is worth reporting but not worth failing the activation over.
+            this.report(error);
+        }
+    }
+    /**
+     * Manual events persisted by earlier sessions, oldest first, with tombstones applied.
+     *
+     * Three line shapes are understood: the current `{storedAt, message}`, a tombstone
+     * `{removedSender, removedId}`, and a bare message envelope written before records carried a time (its
+     * time is then the file's mtime, which is the closest honest answer available).
+     */
     loadManual(subscription) {
         const path = this.manualPath(subscription);
         let content;
@@ -85,18 +146,44 @@ export class EventSpool {
         catch {
             return [];
         }
-        const messages = [];
+        let fallbackAt = this.now();
+        try {
+            fallbackAt = statSync(path).mtimeMs;
+        }
+        catch {
+            // Keep the clock at hand; the file is readable but its mtime is not, which is odd but harmless.
+        }
+        const records = [];
+        const removed = new Set();
         for (const line of content.split("\n")) {
             if (line.trim().length === 0)
                 continue;
+            let parsed;
             try {
-                messages.push(JSON.parse(line));
+                parsed = JSON.parse(line);
             }
             catch {
                 this.report(new Error(`ignoring malformed line in ${path}`));
+                continue;
             }
+            const key = manualKeyOf(parsed);
+            if (key !== undefined && isTombstone(parsed)) {
+                removed.add(key);
+                const index = records.findIndex((record) => manualKeyOf(record.message) === key);
+                if (index !== -1)
+                    records.splice(index, 1);
+                continue;
+            }
+            const message = messageOf(parsed);
+            if (message === undefined) {
+                this.report(new Error(`ignoring unrecognised line in ${path}`));
+                continue;
+            }
+            if (key !== undefined && removed.has(key))
+                continue;
+            records.push({ message, storedAt: storedAtOf(parsed) ?? fallbackAt });
         }
-        return messages;
+        return records;
     }
     /** Close every open window now (called on shutdown). */
     async flush() {
@@ -180,6 +267,40 @@ export class EventSpool {
                 this.report(error);
             }
         });
+        this.pruneManual(subscription);
+    }
+    /**
+     * Bound one subscription's manual file: drop records the tombstones retired and records past the
+     * retention window, then rewrite it only when there is enough to gain.
+     *
+     * Public because it is also the answer for a host that wants to compact on its own schedule; {@link prune}
+     * calls it after every flush.
+     *
+     * A manual file grows by one line per retained event and one per activation, so it is the one file that
+     * can only ever get longer; compaction is what makes the tombstone approach bounded.
+     */
+    pruneManual(subscription) {
+        const path = this.manualPath(subscription);
+        let content;
+        try {
+            content = readFileSync(path, "utf8");
+        }
+        catch {
+            return;
+        }
+        const lines = content.split("\n").filter((line) => line.trim().length > 0);
+        if (lines.length <= MANUAL_COMPACT_AFTER)
+            return;
+        const cutoff = this.now() - this.retentionMs;
+        const kept = this.loadManual(subscription).filter((record) => record.storedAt >= cutoff);
+        try {
+            const rewritten = kept.map((record) => `${JSON.stringify(record)}\n`).join("");
+            writeFileSync(path, rewritten, { mode: 0o600 });
+            this.logger.info?.(`[ACE] compacted manual subscribe=${subscription} lines=${lines.length} kept=${kept.length}`);
+        }
+        catch (error) {
+            this.report(error);
+        }
     }
     newFilePath(subscription) {
         return join(this.dir, `${subscription}.${this.now()}.jsonl`);

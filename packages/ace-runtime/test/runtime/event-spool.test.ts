@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -150,7 +150,7 @@ describe("EventSpool", () => {
 		spool.appendManual("inbox", message("m1"));
 		spool.appendManual("inbox", message("m2"));
 
-		expect(spool.loadManual("inbox").map((entry) => entry.id)).toEqual(["m1", "m2"]);
+		expect(spool.loadManual("inbox").map((entry) => entry.message.id)).toEqual(["m1", "m2"]);
 		expect(spool.loadManual("other")).toEqual([]);
 	});
 
@@ -170,5 +170,70 @@ describe("EventSpool", () => {
 		await second;
 
 		expect(readdirSync(dir).filter((entry) => entry.startsWith("inbox."))).toHaveLength(1);
+	});
+});
+
+describe("manual persistence (finding D)", () => {
+	function spoolFor(): { spool: EventSpool; dir: string } {
+		const dir = temporaryDirectory();
+		const spool = new EventSpool({
+			dir,
+			rules: () => undefined,
+			onBatch: () => {},
+			now: () => 1_000,
+		});
+		return { spool, dir };
+	}
+
+	it("carries the record's own time, not the reader's clock", () => {
+		const { spool } = spoolFor();
+		spool.appendManual("inbox", message("m1"));
+
+		const [record] = spool.loadManual("inbox");
+		expect(record?.message.id).toBe("m1");
+		expect(record?.storedAt).toBe(1_000);
+	});
+
+	it("retires an activated event with a tombstone instead of rewriting the file", () => {
+		const { spool } = spoolFor();
+		spool.appendManual("inbox", message("m1"));
+		spool.appendManual("inbox", message("m2"));
+		spool.forgetManual("inbox", message("m1"));
+
+		// m1 was delivered; m2 is still waiting, and the file only ever grew.
+		expect(spool.loadManual("inbox").map((entry) => entry.message.id)).toEqual(["m2"]);
+	});
+
+	it("still reads a bare envelope written before records carried a time", () => {
+		const { spool, dir } = spoolFor();
+		writeFileSync(join(dir, "manual-inbox.jsonl"), `${JSON.stringify(message("legacy"))}\n`);
+
+		const [record] = spool.loadManual("inbox");
+		expect(record?.message.id).toBe("legacy");
+		// The file's own mtime is the closest honest answer for a record with no time of its own.
+		expect(record?.storedAt).toBeGreaterThan(0);
+	});
+
+	it("compacts away tombstones and expired records once the file is long", () => {
+		const dir = temporaryDirectory();
+		let now = 1_000;
+		const spool = new EventSpool({
+			dir,
+			rules: () => undefined,
+			onBatch: () => {},
+			now: () => now,
+			retentionMs: 500,
+		});
+		for (let index = 0; index < 150; index += 1) spool.appendManual("inbox", message(`m${index}`));
+		for (let index = 0; index < 150; index += 1) spool.forgetManual("inbox", message(`m${index}`));
+
+		const before = readFileSync(join(dir, "manual-inbox.jsonl"), "utf8").split("\n").filter(Boolean).length;
+		spool.pruneManual("inbox");
+		const after = readFileSync(join(dir, "manual-inbox.jsonl"), "utf8").split("\n").filter(Boolean).length;
+
+		expect(before).toBe(300);
+		expect(after).toBe(0); // every record was retired (and the rest are past retention)
+		expect(spool.loadManual("inbox")).toEqual([]);
+		now += 1;
 	});
 });
