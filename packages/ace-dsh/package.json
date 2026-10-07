@@ -1,6 +1,6 @@
 {
 	"name": "ace-dsh",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "ACE (Agent Context Event Protocol) 0.1 host plugin for DeepSeek Harness: external events (CI results, alerts, peer agents) as an active input to a running session.",
 	"private": false,
 	"type": "module",

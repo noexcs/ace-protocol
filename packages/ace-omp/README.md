@@ -23,7 +23,7 @@ oh-my-pi discovers plugins through the `omp.extensions` field of an installed pa
 plugin — installing it is all the host needs.
 
 ```bash
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.20/ace-omp-0.2.20.tgz
 omp plugin list                        # → ace-omp, enabled, manifest ./extensions/ace.ts
 ```
 
@@ -62,7 +62,7 @@ install still pointing at it loads **nothing at all** — no plugin, and no erro
 `omp plugin list --json` shows it as `"manifest": null`. Move the install over:
 
 ```bash
-omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.19/ace-omp-0.2.19.tgz
+omp plugin install https://github.com/noexcs/ace-protocol/releases/download/v0.2.20/ace-omp-0.2.20.tgz
 omp plugin uninstall ace-runtime
 ```
 
